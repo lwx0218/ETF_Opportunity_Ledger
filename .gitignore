@@ -1,0 +1,35 @@
+# Credentials and machine-local configuration
+.env
+.env.*
+!.env.example
+.pi/auth.json
+.pi/settings.local.json
+
+# Dependency caches and agent runtime
+node_modules/
+.pi/npm/
+.pi/git/
+.pi/sessions/
+.pi/subagent-runs/
+.pi/subagents/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Bulk data and generated output; explicitly allow reviewed small samples later
+/data/*
+!/data/universe.csv
+/outputs/
+/artifacts/
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.log
+.DS_Store

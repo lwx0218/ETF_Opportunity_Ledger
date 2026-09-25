@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "note": "Harness 交付清单。由 harness.sh 维护，不要手工编辑。只有列在这里的文件才会被 Harness 删除。",
+  "delivered": [
+    ".pi/agents/README.md",
+    ".pi/agents/builder.md",
+    ".pi/agents/planner.md",
+    ".pi/agents/reviewer.md",
+    ".pi/prompt-templates/governance-loop.md",
+    ".pi/prompt-templates/project-kickoff.md",
+    ".pi/settings.json",
+    ".pi/skills/domain-modeling/ADR-FORMAT.md",
+    ".pi/skills/domain-modeling/CONTEXT-FORMAT.md",
+    ".pi/skills/domain-modeling/LICENSE",
+    ".pi/skills/domain-modeling/SKILL.md",
+    ".pi/skills/domain-modeling/SOURCE.md",
+    ".pi/skills/governance-loop-entry/SKILL.md",
+    ".pi/skills/grill-me/SKILL.md",
+    ".pi/skills/grill-with-docs/SKILL.md",
+    "AGENTS.md",
+    "Harness_manual.md",
+    "README.md",
+    "docs/manual/document-governance.md",
+    "operations/planning/.gitkeep",
+    "operations/reviews/.gitkeep",
+    "operations/work_logs/.gitkeep"
+  ]
+}

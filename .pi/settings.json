@@ -1,0 +1,19 @@
+{
+  "project_name": "ETF_Opportunity-Ledger",
+  "project_root": ".",
+  "instructions_file": "AGENTS.md",
+  "agents_doc": ".pi/agents/README.md",
+  "prompts": [
+    "prompt-templates"
+  ],
+  "skills": [
+    "skills"
+  ],
+  "enableSkillCommands": true,
+  "packages": [
+    "npm:pi-subagents@0.60.0",
+    "npm:@dietrichgebert/ponytail",
+    "npm:pi-web-access",
+    "npm:pi-frontend-check@1.1.0"
+  ]
+}
