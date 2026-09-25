@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;display=swap">
+  <style>
+    body { margin: 0; background: #fbfbf9; color: #141413; font-family: "Geist",-apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif; font-size: 13px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+    a { color: #1c5cab; } a:hover { color: #2a78d6; }
+    .eyebrow { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #8a8983; font-weight: 500; }
+    .h1 { font-size: 22px; font-weight: 600; letter-spacing: -.01em; line-height: 1.3; }
+    .h2 { font-size: 14px; font-weight: 600; }
+    .k { color: #8a8983; font-size: 12px; }
+    .m { color: #5c5b56; }
+    .num { font-variant-numeric: tabular-nums; }
+    .acc { color: #1c5cab; font-weight: 600; }
+    .row { display: grid; gap: 16px; padding: 10px 0; border-bottom: 1px solid #e4e3dd; align-items: baseline; }
+    .sec { border-top: 1px solid #e4e3dd; padding: 18px 0 22px; }
+    .chip { display: inline-block; padding: 1px 7px; border: 1px solid #d3d2cb; border-radius: 3px; font-size: 11px; color: #5c5b56; }
+    .chip.on { border-color: #2a78d6; color: #1c5cab; }
+    .strike { color: #8a8983; }
+  </style>
+</helmet>
+<div style="width: 1200px; min-height: 900px; background: #fbfbf9; padding: 32px 40px 40px; box-sizing: border-box; display: flex; flex-direction: column; gap: 0;">
+
+  <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 24px;">
+    <div style="display: flex; flex-direction: column; gap: 4px;">
+      <div class="eyebrow">ETF 前向机会台账 · 机会</div>
+      <div class="h1">2026-09-14 收盘 <span class="k" style="font-weight: 400; font-size: 13px;">· 每日收盘后更新 · 方向 C · 三问</span></div>
+    </div>
+    <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;">
+      <span class="chip">存量 · 收缩</span><span class="chip num">两融 2.65 万亿 · 自 6 月峰 −12%</span><span class="chip num">成交 1.6 万亿 · 连续 4 日 &lt;2 万亿</span><span class="chip num">沪深300 近 1 月 −3.7%</span>
+    </div>
+  </div>
+
+  <div class="sec" style="margin-top: 22px; border-top: 0; padding-top: 0;">
+    
+    <div class="row" style="grid-template-columns: 260px 1fr; padding: 18px 0;">
+      <div class="h1" style="font-size: 20px;">现在能进什么？</div>
+      <div style="display: flex; flex-direction: column; gap: 6px;"><div style="font-size: 16px; line-height: 1.5;">只有防守：银行，9-07 起，第 5 天 <b class="num">+2.5%</b>，持有到 10-12 或源头转强。进攻：<b>没有</b>。</div><div class="k num">四个「回踩」信号在跑（煤炭、黄金、红利、纳指100），全部 −1% 到 −3%；这条规则今年 32 次中位 −1.7%，不算机会。</div></div>
+    </div>
+    
+    <div class="row" style="grid-template-columns: 260px 1fr; padding: 18px 0;">
+      <div class="h1" style="font-size: 20px;">什么在等条件？</div>
+      <div style="display: flex; flex-direction: column; gap: 6px;"><div style="font-size: 16px; line-height: 1.5;">原油等回踩（现离均线 2.4 ATR，溢价 3%）；半导体链等启动（下跌中 60 天，回撤 −25% 到 −37%）；全球半导体等溢价回到 5% 以下（现 14%）。</div><div class="k num">参考周期：上升中→回踩 中位 3 日；下行→进场态 中位 14 日，本轮已远超；溢价从 48% 到 14% 用了 110 天。</div></div>
+    </div>
+    
+    <div class="row" style="grid-template-columns: 260px 1fr; padding: 18px 0;">
+      <div class="h1" style="font-size: 20px;">上一次对了吗？</div>
+      <div style="display: flex; flex-direction: column; gap: 6px;"><div style="font-size: 16px; line-height: 1.5;">对。红利 8-05 → 9-02，<b class="num">+6.2%</b>，沪深300 同期 −2.0%，对源头少亏 +10.9%。</div><div class="k num">今年最大：半导体设备 5-29 回踩 → 6-29 过热出，+59.0%。最差：半导体 7-06 回踩 → 8-03 到期，−29.5%。</div></div>
+    </div>
+    <div class="row" style="grid-template-columns: 260px 1fr; padding: 18px 0; border-bottom: 0;">
+      <div class="h1" style="font-size: 20px;">今天不做的事</div>
+      <div style="display: flex; flex-direction: column; gap: 4px;"><div>不碰美股 QDII（溢价 10% 到 23%）</div><div>不抄底半导体 / AI / 科创50（下跌中，排名 13–17）</div><div>不追农业（上周 −2.7%，9-10 全线跌）</div></div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div style="display: flex; align-items: baseline; gap: 14px; margin-bottom: 6px;"><div class="h2">这套规则今年值多少</div><div class="k">预期收益从这里来，不是承诺</div></div>
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px;">
+      <div class="num"><span class="k">进攻（回踩/启动/平台突破 + 排名前五 + 溢价 &lt;20%）</span><br>32 次 · 胜率 44% · 中位 <b>−1.7%</b> · 均值 +2.8% · 最好 +58% · 最差 −24%</div>
+      <div class="num"><span class="k">防守（源头衰竭 → 红利/银行/黄金/现金里最强的）</span><br>2 次 · +0.4%、+8.2%</div>
+    </div>
+    <div class="m" style="margin-top: 10px; max-width: 70em;">进攻信号单独不值钱，钱在少数有物理催化的尾部（2 月原油、5–6 月半导体）。所以进攻必须叠加论点；防守单靠状态就能用。</div>
+  </div>
+
+  <div style="border-top: 1px solid #e4e3dd; padding-top: 12px; margin-top: 6px;" class="k">怎么用：先看结论；结论说有机会，再看「当下」那一行的「今天」列；「下一个可能」是观察不是动作；「上一次」是复盘；「今天不碰」是不做的事。数据每天收盘后更新，价格复权，QDII 与 LOF 的价格含溢价。</div>
+</div>
+</x-dc>
+</body>
+</html>

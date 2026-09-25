@@ -1,0 +1,6 @@
+# 研究与原型脚本（src/）的运行依赖。2026-09 在 Python 3.11 + pandas 3.0.2 + numpy 2.4.4 上跑通。
+# pandas 2.x 的 pct_change 默认会前向填充缺失值，与 3.x 行为不同，月度统计会有细微差异，故锁 3.x。
+pandas>=3.0,<4
+numpy>=2.0,<3
+# 可选：仅 src/rotation/etf_probe.py 需要，且从未在真实接口上跑过
+# akshare

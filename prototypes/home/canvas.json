@@ -1,0 +1,152 @@
+{
+ "pages": [
+  {
+   "id": "page-1",
+   "name": "三卡首页"
+  },
+  {
+   "id": "page-2",
+   "name": "旧稿 · 平铺三方向"
+  }
+ ],
+ "artboards": [
+  {
+   "file": "Main.dc.html",
+   "title": "首屏三卡 v2 · 深",
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 1000,
+   "page": "page-1"
+  },
+  {
+   "file": "Detail.dc.html",
+   "title": "点开中卡 → 展开到底 · 深",
+   "x": 1560,
+   "y": 0,
+   "w": 1440,
+   "h": 1280,
+   "page": "page-1"
+  },
+  {
+   "file": "Scroll.dc.html",
+   "title": "往下滚 · 深",
+   "x": 3120,
+   "y": 0,
+   "w": 1440,
+   "h": 1560,
+   "page": "page-1"
+  },
+  {
+   "file": "HomeLight.dc.html",
+   "title": "首屏三卡 v2 · 浅",
+   "x": 0,
+   "y": 1420,
+   "w": 1440,
+   "h": 1000,
+   "page": "page-1"
+  },
+  {
+   "file": "DetailLight.dc.html",
+   "title": "点开中卡 → 展开到底 · 浅",
+   "x": 1560,
+   "y": 1420,
+   "w": 1440,
+   "h": 1280,
+   "page": "page-1"
+  },
+  {
+   "file": "ScrollLight.dc.html",
+   "title": "往下滚 · 浅",
+   "x": 3120,
+   "y": 1700,
+   "w": 1440,
+   "h": 1560,
+   "page": "page-1"
+  },
+  {
+   "file": "DirectionA.dc.html",
+   "title": "旧 A · 结论优先 · 浅",
+   "x": 0,
+   "y": 0,
+   "w": 1200,
+   "h": 1360,
+   "page": "page-2"
+  },
+  {
+   "file": "DirectionB.dc.html",
+   "title": "旧 B · 时间轴 · 浅",
+   "x": 1320,
+   "y": 0,
+   "w": 1200,
+   "h": 920,
+   "page": "page-2"
+  },
+  {
+   "file": "DirectionC.dc.html",
+   "title": "旧 C · 三问 · 浅",
+   "x": 2640,
+   "y": 0,
+   "w": 1200,
+   "h": 900,
+   "page": "page-2"
+  },
+  {
+   "file": "DirectionADark.dc.html",
+   "title": "旧 A · 深",
+   "x": 0,
+   "y": 1520,
+   "w": 1200,
+   "h": 1360,
+   "page": "page-2"
+  },
+  {
+   "file": "DirectionBDark.dc.html",
+   "title": "旧 B · 深",
+   "x": 1320,
+   "y": 1520,
+   "w": 1200,
+   "h": 920,
+   "page": "page-2"
+  },
+  {
+   "file": "DirectionCDark.dc.html",
+   "title": "旧 C · 深",
+   "x": 2640,
+   "y": 1520,
+   "w": 1200,
+   "h": 900,
+   "page": "page-2"
+  }
+ ],
+ "annotations": [
+  {
+   "id": "note-old",
+   "x": 0,
+   "y": -160,
+   "w": 520,
+   "page": "page-2",
+   "text": "09-15 上午的三个平铺方向稿，留档对比用。"
+  },
+  {
+   "id": "note-v2",
+   "x": 0,
+   "y": -220,
+   "w": 720,
+   "page": "page-1",
+   "text": "v2.1 三卡：每张卡三层——① 数 + 动作词 + 一句话；② 小价格图（铺底 = 持有窗口）+ 两三行「为什么进 / 什么时候退」；③ 底部「点开 ›」写明点进去还有什么。\n三卡之间用一条细线和一句话连起来：上一次 9-02 到期出 → 源头仍衰竭 → 9-07 换到银行；当下 → 源头转强或原油回踩 → 切换到下一个。左右卡内容是中卡的同一模板缩小版，所以能层层递进。"
+  },
+  {
+   "id": "note-expand",
+   "x": 1560,
+   "y": -160,
+   "w": 620,
+   "page": "page-1",
+   "text": "点开中卡直接展开到底，就是这块。动效：卡撑到全宽、侧卡滑出、小图长成价格图、两行「为什么」展开成段——约 300ms 的一次过渡，不是一个停留页。"
+  }
+ ],
+ "launch": {
+  "view": "canvas",
+  "page": "page-1"
+ }
+}

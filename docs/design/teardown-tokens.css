@@ -1,0 +1,143 @@
+/* 参考副本：自 lwx0218/serenity_quant_research@1c3311c 的 web/src/styles/tokens.css
+   （Teardown design-rules v3 的数值来源）于 2026-09-25 原样导入，以下内容未改。
+   注意：@font-face 指向 /fonts/Geist-Variable.woff2 与 /fonts/GeistMono-Variable.woff2，字体文件未随本副本导入；
+   --m-* 爆炸图材质变量为 Teardown 专属，本项目不使用。规则见 docs/design/teardown-design-rules-v3.md。 */
+
+/* ------------------------------------------------------------------
+   Design tokens. One place for every colour, font and scale.
+   Light is the default; dark is `[data-theme="dark"]` or the system
+   preference when no explicit theme is stored.
+   See docs/product/design-rules.md for what these mean and the rules
+   for using them.
+   ------------------------------------------------------------------ */
+
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/fonts/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  /* ---- surfaces & ink (light) ---- */
+  --bg: #f7f6f3;
+  --ink: #1a1b1e;
+  --ink-2: #44474d;
+  --muted: #8a8e96;
+  --faint: #b8bbc1;
+  --hair: #e4e2dd;
+  --hair-2: #d3d0ca;
+  --accent: #2f5fc9;
+  --accent-ink: #ffffff;
+  --dim: 0.14;           /* opacity of de-emphasised layers */
+
+  /* ---- direction colours (the only semantic colour axis, see design-rules §5) ---- */
+  --sig-up: #c0392b;     /* A股: red = up */
+  --sig-down: #2e7d5b;   /* A股: green = down */
+  --sig-pos: var(--sig-up);
+  --sig-neg: var(--sig-down);
+  --sig-neu: #8a8e96;
+  --shadow: 0 18px 28px -14px rgba(0, 0, 0, 0.28);
+
+  /* ---- materials for the exploded stack (top / left / right faces) ---- */
+  --m-alu-t: #dcdfe3;  --m-alu-l: #aeb3ba;  --m-alu-r: #c4c8ce;  --m-alu-fin: #b9bec5;
+  --m-pcb-t: #3e5a4c;  --m-pcb-l: #25382f;  --m-pcb-r: #31473c;
+  --m-die-t: #2a2d33;  --m-die-l: #151719;  --m-die-r: #1f2226;  --m-die-txt: #8e949c;
+  --m-si-t:  #9db2c8;  --m-si-l:  #6d8299;  --m-si-r:  #84999f;  --m-si-trace: #dce7f2;
+  --m-gold-t:#d4b369;  --m-gold-l:#a3843f;  --m-gold-r:#bc9c55;
+  --m-tan-t: #d9c89c;  --m-tan-l: #a5945f;  --m-tan-r: #c0ae7b;  --m-tan-grid: #c9b77f;
+  --m-blk-t: #3a3c40;  --m-blk-l: #1d1e21;  --m-blk-r: #2b2d31;
+  --m-fiber: #6fa3e0;
+
+  /* ---- type ---- */
+  --font-sans: "Geist", system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --fs-eyebrow: 12px;
+  --fs-small: 13px;
+  --fs-body: 15px;
+  --fs-lead: 17px;
+  --fs-row: 16px;
+  --fs-h2: 34px;
+  --fs-h1: 56px;
+  --fs-display: 68px;
+
+  /* ---- layout ---- */
+  --page-x: 80px;
+  --content-max: 1280px;
+
+  color-scheme: light;
+}
+
+/* dark palette (system preference, only when no explicit theme is stored) */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1012;
+    --ink: #f1f0ec;
+    --ink-2: #c3c4c8;
+    --muted: #7e8189;
+    --faint: #4e5158;
+    --hair: #25272b;
+    --hair-2: #33363b;
+    --accent: #7aa2f5;
+    --accent-ink: #0f1012;
+    --dim: 0.16;
+    --shadow: 0 18px 30px -12px rgba(0, 0, 0, 0.7);
+    --sig-up: #f07a6a;
+    --sig-down: #5dc391;
+    --sig-neu: #7e8189;
+
+    --m-alu-t: #e3e6ea;  --m-alu-l: #9ea4ab;  --m-alu-r: #bfc4ca;  --m-alu-fin: #b0b6bd;
+    --m-pcb-t: #4b6d5b;  --m-pcb-l: #2a3f34;  --m-pcb-r: #3a5546;
+    --m-die-t: #34383f;  --m-die-l: #191b1f;  --m-die-r: #262a30;  --m-die-txt: #a2a8b1;
+    --m-si-t:  #a9bfd6;  --m-si-l:  #74899f;  --m-si-r:  #8ea3ad;  --m-si-trace: #e8f0f8;
+    --m-gold-t:#e0c07a;  --m-gold-l:#a98b47;  --m-gold-r:#c5a55f;
+    --m-tan-t: #e2d3ab;  --m-tan-l: #ab9a66;  --m-tan-r: #c8b786;  --m-tan-grid: #d3c28c;
+    --m-blk-t: #45484e;  --m-blk-l: #212327;  --m-blk-r: #33363b;
+    --m-fiber: #7fb2f0;
+
+    color-scheme: dark;
+  }
+}
+
+/* dark palette (explicit toggle) */
+:root[data-theme="dark"] {
+  --bg: #0f1012;
+  --ink: #f1f0ec;
+  --ink-2: #c3c4c8;
+  --muted: #7e8189;
+  --faint: #4e5158;
+  --hair: #25272b;
+  --hair-2: #33363b;
+  --accent: #7aa2f5;
+  --accent-ink: #0f1012;
+  --dim: 0.16;
+  --shadow: 0 18px 30px -12px rgba(0, 0, 0, 0.7);
+  --sig-up: #f07a6a;
+  --sig-down: #5dc391;
+  --sig-neu: #7e8189;
+
+  --m-alu-t: #e3e6ea;  --m-alu-l: #9ea4ab;  --m-alu-r: #bfc4ca;  --m-alu-fin: #b0b6bd;
+  --m-pcb-t: #4b6d5b;  --m-pcb-l: #2a3f34;  --m-pcb-r: #3a5546;
+  --m-die-t: #34383f;  --m-die-l: #191b1f;  --m-die-r: #262a30;  --m-die-txt: #a2a8b1;
+  --m-si-t:  #a9bfd6;  --m-si-l:  #74899f;  --m-si-r:  #8ea3ad;  --m-si-trace: #e8f0f8;
+  --m-gold-t:#e0c07a;  --m-gold-l:#a98b47;  --m-gold-r:#c5a55f;
+  --m-tan-t: #e2d3ab;  --m-tan-l: #ab9a66;  --m-tan-r: #c8b786;  --m-tan-grid: #d3c28c;
+  --m-blk-t: #45484e;  --m-blk-l: #212327;  --m-blk-r: #33363b;
+  --m-fiber: #7fb2f0;
+
+  color-scheme: dark;
+}
+
+/* 绿涨红跌 (international convention): swap which colour means "positive" */
+:root[data-signal="intl"] {
+  --sig-pos: var(--sig-down);
+  --sig-neg: var(--sig-up);
+}
