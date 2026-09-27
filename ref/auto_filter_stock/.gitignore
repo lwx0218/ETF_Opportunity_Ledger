@@ -1,0 +1,7 @@
+
+# Cookie缓存文件 (敏感信息)
+.cookie_cache.json
+
+# 环境变量文件 (敏感信息)
+.env
+.env.local

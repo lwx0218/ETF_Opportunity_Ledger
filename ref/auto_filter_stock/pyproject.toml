@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "auto-filter-stock"
+version = "0.1.0"
+description = "Stock Backtesting Tool"
+authors = ["Stock Screening Team <team@stockscreening.com>"]
+readme = "README.md"
+packages = [{include = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+pandas = "^2.1.0"
+numpy = "^1.24.0"
+matplotlib = "^3.7.0"
+pyreadstat = "^1.2.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

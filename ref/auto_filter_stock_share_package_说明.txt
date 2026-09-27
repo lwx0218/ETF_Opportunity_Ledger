@@ -1,0 +1,39 @@
+强势股回测系统 - 分享包说明
+=====================================
+
+📦 分享包信息
+- 文件名：auto_filter_stock_share_package.tar.gz
+- 大小：149MB
+- 创建日期：2025-01-21
+- 版本：v1.0
+
+📋 包含内容
+✅ 完整源代码（strong_backtest.py）
+✅ 所有数据文件（data/目录）
+✅ 详细文档（多个.md文件）
+✅ 回测结果示例
+✅ 依赖包列表（requirements.txt）
+✅ 源代码模块（src/目录）
+
+🚀 快速使用
+1. 解压文件：tar -xzf auto_filter_stock_share_package.tar.gz
+2. 进入目录：cd auto_filter_stock
+3. 安装依赖：pip install -r requirements.txt
+4. 运行回测：python strong_backtest.py
+
+📚 文档说明
+- 项目分享说明.md：完整项目说明
+- 快速使用指南.md：5分钟快速上手
+- README.md：基础使用说明
+- TECHNICAL_DOCS.md：技术文档
+- 分享包文件清单.md：文件清单
+
+⚠️ 注意事项
+- 需要Python 3.11+
+- 需要安装依赖包：pandas, numpy, matplotlib, pyreadstat
+- 数据文件仅供研究使用，不构成投资建议
+
+📞 技术支持 VX:DataAnalysisModel
+如有问题请参考项目文档或联系开发者
+
+
