@@ -86,6 +86,8 @@
 
 执行层面：台账是纸面记账，出场、评分都自动完成；实际下单由 Owner 看卡片手动操作，不做自动下单。
 
+固定信息源：`docs/etf-fixed-sources-v1.md`（Claude 2026-09-27 完成境外可核部分）§7 列出需要国内网络核实的来源，建议并入 R0（同属「逐个核实、核不到就剔除」的工作），结果写回 `docs/etf-fixed-sources-v1.csv`。清单须在 R4 上线前冻结；R2 按清单 §4 的要求给 `evidence[]` 增加 `first_seen_at`、`available_at`、快照字段，并在存储层校验。
+
 ---
 
 ## C. 待 Owner 说明
