@@ -20,8 +20,10 @@ __pycache__/
 # Bulk data and generated output; explicitly allow reviewed small samples later
 /data/*
 !/data/universe.csv
-# Reference import: exclude only the large trading dataset
-/ref/auto_filter_stock/data/trading_data.dta
+# Reference import: keep market/signal data, macOS metadata and machine-local settings out of Git
+/ref/auto_filter_stock/data/
+/ref/**/.claude/settings.local.json
+._*
 /outputs/
 /artifacts/
 *.sqlite
