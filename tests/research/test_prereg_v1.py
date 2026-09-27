@@ -17,7 +17,7 @@ from src.research.prereg_v1 import run as runner                          # noqa
 from src.research.prereg_v1.characterize import characterize               # noqa: E402
 from src.research.prereg_v1.config import Params                           # noqa: E402
 from src.research.prereg_v1.engine import random_entry_null, simulate      # noqa: E402
-from src.research.prereg_v1.metrics import acceptance, r_stats             # noqa: E402
+from src.research.prereg_v1.metrics import acceptance, is_fragile, r_stats # noqa: E402
 from src.research.prereg_v1.panel import (PanelError, ew_daily_returns,    # noqa: E402
                                           reference_atr, validate_panel)
 from src.research.prereg_v1.signals import all_signals, breakout_signals   # noqa: E402
@@ -249,6 +249,12 @@ class MetricTests(unittest.TestCase):
         self.assertAlmostEqual(s["mean_R"], 2.8)
         self.assertAlmostEqual(s["mean_R_drop_best_1"], (5 + 1 - 1 - 1) / 4)
         self.assertAlmostEqual(s["mean_R_drop_best_3"], -1.0)
+
+    def test_fragility(self):
+        self.assertFalse(is_fragile(0.30, [0.25, 0.20, 0.35, 0.16, 0.40, 0.28]))
+        self.assertTrue(is_fragile(0.30, [0.25, 0.10, 0.35, 0.20, 0.40, 0.28]))   # 0.10 < 0.15
+        self.assertTrue(is_fragile(0.10, [0.12, -0.01, 0.09, 0.11, 0.08, 0.10]))  # 变号
+        self.assertFalse(is_fragile(-0.10, [-0.2, -0.05, -0.1, -0.3, -0.1, -0.1]))
 
     def test_acceptance(self):
         p = Params()

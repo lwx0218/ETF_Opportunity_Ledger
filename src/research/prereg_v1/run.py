@@ -23,7 +23,7 @@ import pandas as pd
 from .characterize import characterize
 from .config import DESIGN_END, OOS_END, OOS_START, PERTURB_FACTORS, PERTURB_PARAMS, Params
 from .engine import random_entry_null, simulate
-from .metrics import acceptance, avg_pairwise_corr, portfolio_stats, r_by, r_stats
+from .metrics import acceptance, avg_pairwise_corr, is_fragile, portfolio_stats, r_by, r_stats
 from .panel import validate_bench, validate_panel
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -74,12 +74,13 @@ def main(argv=None):
         cov = panel.groupby("container")["date"].agg(["min", "max", "count"])
         print(cov.to_string())
         print(f"\n容器 {len(cov)} 个；设计期行数 {len(design)}；基准 {hs300.index.min().date()} → {hs300.index.max().date()}")
+        print("提醒（I-18）：hs300 必须是沪深300全收益指数 H00300；容器价格必须是全收益或后复权口径。")
         return 0
 
     if a.step == "characterize":
         c = characterize(design, p, DESIGN_END)
         print(c["by_class"].to_string()); print(); print(c["by_state"].to_string())
-        print(f"\n可进 − 非可进：{c['diff_entry_minus_rest']:+.4f}，95% 区间 {c['ci95'][0]:+.4f} ~ {c['ci95'][1]:+.4f}（{c['n_months']} 个月）")
+        print(f"\n可进 − 非可进：{c['diff_entry_minus_rest']:+.4f}，95% 区间 {c['ci95'][0]:+.4f} ~ {c['ci95'][1]:+.4f}（{c['n_blocks']} 个季度块）")
         char_file.write_text(json.dumps({k: v for k, v in c.items() if k not in ("by_state", "by_class")}, ensure_ascii=False, indent=1))
         if not c["separable"]:
             stop_file.write_text("形态状态在设计期无区分度：按 prereg-v1 §10 第 2 步就地停止，不进回测。\n")
@@ -100,9 +101,9 @@ def main(argv=None):
             rows.append(dict(variant="基准" if name is None else f"{name}×{f}", **{k: rs.get(k) for k in ("n", "mean_R", "mean_R_drop_best_3", "share_lt_neg1R")}))
         t = pd.DataFrame(rows)
         base = t.loc[0, "mean_R"]
-        fragile = bool(((t["mean_R"] > 0) != (base > 0)).any())                   # I-16
+        fragile = is_fragile(base, t["mean_R"].iloc[1:])
         print(t.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
-        print(f"\n脆弱（任一扰动使期望 R 变号）：{fragile}")
+        print(f"\n脆弱（任一扰动变号或不到基准一半）：{fragile}（只报告，不阻断冻结样本外）")
         design_file.write_text(json.dumps({"table": t.to_dict("records"), "fragile": fragile}, ensure_ascii=False, indent=1, default=float))
         return 0
 

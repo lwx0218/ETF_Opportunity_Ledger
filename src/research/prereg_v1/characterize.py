@@ -2,7 +2,8 @@
 
 I-14：只在设计期（≤ 2015-12-31）上做，避免在冻结样本外跑之前先看到 2016 年以后的数据。
 I-15：前向窗口 20 个交易日，用「对当日等权的超额」；区分度判据 = 可进态均值 − 非可进态均值，
-      按自然月做块自助（bootstrap），95% 区间下界 > 0 才算「分得开」。窗口与判据须在看数据前确认。
+      按自然季度做块自助（bootstrap；20 日窗口会跨月，按月分块会低估相关、区间偏窄），
+      95% 区间下界 > 0 才算「分得开」。
 """
 import numpy as np
 import pandas as pd
@@ -39,9 +40,9 @@ def characterize(panel: pd.DataFrame, p: Params, end, seed: int = 0) -> dict:
     by_state = df.groupby("state")["fwd_excess"].apply(agg).unstack()
     by_class = df.groupby("class")["fwd_excess"].apply(agg).unstack()
 
-    df["month"] = df["date"].dt.to_period("M")
+    df["block"] = df["date"].dt.to_period("Q")
     df["is_entry"] = df["class"].eq("可进")
-    m = df.groupby(["month", "is_entry"])["fwd_excess"].agg(["sum", "count"]).unstack(fill_value=0)
+    m = df.groupby(["block", "is_entry"])["fwd_excess"].agg(["sum", "count"]).unstack(fill_value=0)
     months = m.index.to_numpy()
     s_in, n_in = m[("sum", True)].to_numpy(), m[("count", True)].to_numpy()
     s_out, n_out = m[("sum", False)].to_numpy(), m[("count", False)].to_numpy()
@@ -55,4 +56,4 @@ def characterize(panel: pd.DataFrame, p: Params, end, seed: int = 0) -> dict:
             boots.append(s_in[idx].sum() / a - s_out[idx].sum() / b)
     lo, hi = np.percentile(boots, [2.5, 97.5]) if boots else (np.nan, np.nan)
     return dict(by_state=by_state, by_class=by_class, diff_entry_minus_rest=float(diff),
-                ci95=(float(lo), float(hi)), separable=bool(lo > 0), n_months=len(months))
+                ci95=(float(lo), float(hi)), separable=bool(lo > 0), n_blocks=len(months))

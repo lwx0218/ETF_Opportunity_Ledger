@@ -109,3 +109,9 @@ def acceptance(trades: pd.DataFrame, port: dict, p: Params) -> dict:
     checks = {k: bool(v) for k, v in checks.items()}
     checks["v1 成立"] = all(checks.values())
     return checks
+
+
+def is_fragile(base: float, variants) -> bool:
+    """I-16：任一扰动使期望 R 变号，或（基准为正时）保留不到基准的一半 → 脆弱。只报告，不阻断冻结样本外。"""
+    v = np.asarray(list(variants), float)
+    return bool(((v > 0) != (base > 0)).any() or (base > 0 and (v < 0.5 * base).any()))
