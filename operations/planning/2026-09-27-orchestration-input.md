@@ -10,6 +10,8 @@
 - Source of truth: AGENTS.md；docs/project-intake/etf-opportunity-ledger.md §7、§10；docs/etf-card-schema-v1.md §8；docs/etf-rotation-prereg-v1.md §9、§10
 - 副本：claude.ai Project「QTradeResearch」`claude/orchestration-input-2026-09-27.md` 为同日同内容副本；Owner 的「决定」写在本文件。
 
+> **2026-09-29 更新**：A1–A7 与 C 已由 Owner 口头批准（记录见 `2026-09-27-astra-execution.md`）；§B 的 round 切分由 `2026-09-29-replan-three-lanes.md` 取代（按执行者分包：CC 建底座，Cowork 验证策略，astra 服务器补全）。本文件保留作决定依据。
+>
 > 这是 Owner 带进 Orchestration session 的输入，**不是已批准的 Plan**。下面每条「建议」在 Owner 写下「决定」之前都不生效（AGENTS.md：建议不等于决议）。
 >
 > **读法**：A1 和 A7 是真正需要 Owner 判断的取舍（A1 关系到 Owner 每周要花的时间，A7 是「等验证」还是「先开跑」）。A2–A6 是技术或流程选择，由 Claude 依据研究纪律和常规做法给出，Owner 只需看理由说不说得通；同意就在「决定」后写「同意」。V1 的实现口径另见 `operations/planning/2026-09-27-prereg-v1-implementation-notes.md`，同样由 Claude 决定、Owner 验收。
