@@ -17,9 +17,9 @@
 | probe 实跑（CC 云端，`--end 2026-09-29`） | 39 行；面板容器 37 个：有路由 **0**，明确 error **37**；T29 已剔除不拉取；T34 只查执行序列（也失败） |
 | 失败原因 | 出网策略拒绝。curl 预检 replan 列的 7 个域名（www / oss-ch.csindex、web.ifzq.gtimg、push2his.eastmoney、query1.finance.yahoo、stooq、www.eia.gov）CONNECT 全部 403；probe 实际请求了其中 5 个 host（代码不用 oss-ch；EIA 因未设 key 没发请求，且走的是 `api.eia.gov`） |
 | 请求记录 | 167 次请求全部失败，逐条写入 `outputs/data/probe-requests.jsonl`（sha256 `f083fffe…`）；coverage.csv sha256 `3097eb12…`（均不入 Git） |
-| 单元测试 | `python -m unittest discover -s tests -t .`：77 个全过（原 31 + 数据层 46） |
+| 单元测试 | `python -m unittest discover -s tests -t .`：78 个全过（原 31 + 数据层 47） |
 | 完成判据「37 个面板容器每个有 route_used 或明确 error」 | 形式上满足；**实质判据（有路由）须在服务器上重跑 probe**（astra S1） |
-| 包末复核 | `approve_with_follow_up`；F1–F9 已在本包修掉，见下表 |
+| 包末复核 | 首轮 `approve_with_follow_up`，F1–F10 修掉；复验 `approve_with_follow_up`，新指出的 4 条小问题也已修掉（见下） |
 
 ## 复核发现与处理
 
@@ -36,7 +36,13 @@
 | F9 | 布伦特标 `price_only=False` 会被读成「不用打折」 | 改标 `n/a`，文档说明 |
 | F10 | 本日志对出网失败的表述不准 | 已改（见上表） |
 
-另按复核建议：中证在基日之前的年份若返回业务错误码，视为「还没有数据」（拿到数据后再出错才算失败）；coverage 加 `price_first_date`、`ohlc_missing_rows`、`volume_missing_rows`，供 P2 与 Cowork 判断。
+另按复核建议：coverage 加 `price_first_date`、`ohlc_missing_rows`、`volume_missing_rows`，供 P2 与 Cowork 判断。
+
+复验新指出、已修：
+1. 业务错误码会静默截短起点：东财 rc≠0 一律报错（上市前是 rc=0 + 空数据）；中证在拿到数据前返回的业务错误照收但写进 notes「起点前 N 段返回业务错误，first_date 可能被截短」。
+2. 全部分段都是业务错误时只记「0 行」：改为报出最后一个错误码与信息。
+3. 缺 tzdata 时 probe 中断：北京用固定 +8；纽约缺时区库时按 UTC−5（收盘判定更保守）。
+4. 「用 `--start` 缩短」会丢设计期：删去该建议，新增只缩短执行 ETF 起点的 `backfill --exec-start`。
 
 ## 交付
 
@@ -56,4 +62,6 @@
 
 - 顺序：`probe --record` → 全量 `backfill --end 2026-09-30`（不带 `--only`）→ `package --end 2026-09-30` → `verify`。backfill 之后不要再跑 probe（package 会把不一致的容器标 error，但数据就缺了）。
 - `package --end 2026-09-30` 要等北京时间 2026-10-01 05:00（美股 09-30 收盘）之后。
-- 首次实网重点看：中证对基日之前年份的返回；东财执行序列从 2000 年按 120 天分段约 82 次请求 / 只，41 条序列约 80 分钟，若被限流可用 `--start` 缩短。
+- 首次实网重点看：中证对基日之前年份的返回（notes 里若出现「first_date 可能被截短」要逐条看）；T07（931743）中证元数据发布日早于基日，若早年只有零星几行、之后整年为空，会按空段规则整条失败，看它的 error。
+- 东财执行序列从 2000 年按 120 天分段约 82 次请求 / 只，41 条序列约 80 分钟；若被限流用 `backfill --exec-start 2005-01-01` 之类只缩短执行序列，**不要调 `--start`**（会丢研究序列的设计期）。
+- 服务器需有 tzdata（`python -c "import zoneinfo; zoneinfo.ZoneInfo('America/New_York')"`）；缺了也能跑，但收盘判定按冬令时，夏令时期间会多等一小时。

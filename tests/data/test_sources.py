@@ -42,10 +42,16 @@ class FixtureParse(NoSleep):
         self.assertEqual(got.rows[1]["close"], 4580.4)
         self.assertEqual(got.name, "沪深300指数 / CSI 300 Index")
 
-    def test_csindex_error_code_before_data_is_empty_after_data_fails(self):
-        with mock.patch.object(http, "get", return_value=b'{"code":"500","msg":"bad","data":null}'):
-            self.assertEqual(S.fetch_csindex("000300", self.D0, self.D1).rows, [])        # 上层记「0 行」
+    def test_csindex_business_errors(self):
+        bad = b'{"code":"403","msg":"blocked","data":null}'
+        with mock.patch.object(http, "get", return_value=bad):                             # 全部业务错误：报出错误，不是「0 行」
+            with self.assertRaisesRegex(http.FetchError, "code=403 msg=blocked"):
+                S.fetch_csindex("000300", self.D0, self.D1)
         ok = (FX / "csindex_000300.json").read_bytes()
+        with mock.patch.object(http, "get", side_effect=[bad, ok]):                         # 起点前出错：数据照收，但写明可能被截
+            got = S.fetch_csindex("000300", date(2025, 6, 1), date(2026, 9, 25))
+        self.assertEqual(len(got.rows), 2)
+        self.assertIn("first_date 可能被截短", got.warnings[0])
         bad = b'{"code":"500","msg":"bad","data":null}'
         with mock.patch.object(http, "get", side_effect=[ok, bad]):
             with self.assertRaisesRegex(http.FetchError, "code=500"):
@@ -146,7 +152,7 @@ class Segmentation(NoSleep):
         with self.assertRaisesRegex(http.FetchError, "空段"):
             S.fetch_csindex("000905", date(2000, 1, 1), date(2026, 9, 30))
 
-    def test_eastmoney_nonzero_rc_mid_series_fails(self):
+    def test_eastmoney_nonzero_rc_fails(self):
         self.net.add("em", "1.518880:2", "黄金ETF", "2013-07-29", "2026-09-25")
         real = self.net.get
 
@@ -155,7 +161,7 @@ class Segmentation(NoSleep):
                 return b'{"rc":100,"data":null}'
             return real(url, params, **kw)
         with mock.patch.object(http, "get", side_effect=flaky):
-            with self.assertRaisesRegex(http.FetchError, "空段"):
+            with self.assertRaisesRegex(http.FetchError, "rc=100"):
                 S.fetch_eastmoney("1.518880", date(2013, 1, 1), date(2026, 9, 30), fqt=2)
 
     def test_trailing_empty_last_segment_is_fine(self):

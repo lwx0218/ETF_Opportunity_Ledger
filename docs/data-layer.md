@@ -13,7 +13,7 @@
 
 ```bash
 python -m src.data probe    --end 2026-09-30 [--only T01,T02] [--record outputs/data/recorded/]
-python -m src.data backfill --end 2026-09-30        # 全量 → data/raw/（不入 Git）
+python -m src.data backfill --end 2026-09-30 [--exec-start 2005-01-01]   # 全量 → data/raw/（不入 Git）；--exec-start 只缩短执行 ETF
 python -m src.data update   [--end D]               # 增量，往回多拉 10 天覆盖修正
 python -m src.data package  --end 2026-09-30        # → outputs/research-package-2026-09-30/
 python -m src.data verify   outputs/research-package-2026-09-30/
@@ -34,7 +34,7 @@ python -m src.data compare  data/kline_510300.csv data/raw/510300.csv --out outp
 | `yahoo` → `stooq` | `query1.finance.yahoo.com/v8/finance/chart/<sym>`；`stooq.com/q/d/l/?s=` | 一次 | 海外指数 |
 | `eia` → `yahoo` | `api.eia.gov/v2/seriesid/PET.RBRTE.D`（需 `EIA_API_KEY`）→ Yahoo `BZ=F` | 5000 行一页 | 布伦特（现货 → 期货；两者不拼接） |
 
-- 失败只记一行，至多重试一次；出网策略拒绝（代理 403）不重试。任一分段请求失败即整条序列失败；拿到数据之后又出现空段（不是最后一段）也整条失败——序列中断或停更不留缺口。上市 / 基日之前的空段、以及中证在基日之前返回的业务错误码视为「还没有数据」。
+- 失败只记一行，至多重试一次；出网策略拒绝（代理 403）不重试。任一分段请求失败即整条序列失败；拿到数据之后又出现空段（不是最后一段）也整条失败——序列中断或停更不留缺口。上市 / 基日之前的空段视为「还没有数据」；东财 rc≠0 一律是错误；中证在拿到数据之前返回的业务错误码照收，但在 notes 写明「first_date 可能被截短」，全部分段都是业务错误则报出该错误。
 - 只收已收盘的 K 线：A 股路由按北京时间 15:30、海外路由按纽约时间 17:00 判断当天是否收盘，更新的一行丢弃（`notes` 记「丢弃未收盘 K 线」）。`package` 要求 `end` 在 A 股与海外都已收盘，否则拒绝。
 - 请求记录与错误信息里的 `api_key` / `token` 一律脱敏为 `***`（coverage 与请求记录会进研究数据包）。
 - 符号映射：中证 `93xxxx` / `Hxxxxx` 指数不猜东财或腾讯代码；海外 `NDX→^NDX`、`SPX→^GSPC`、`N225→^N225`、`HSTECH→HSTECH.HK`、`NDXTMC→^NDXTMC`、`BRENT→BZ=F`，stooq `^ndx / ^spx / ^nkx`。均未实网验证。

@@ -30,6 +30,11 @@ PROBE_WINDOW_DAYS = 45       # 全收益候选与执行 ETF 只看最近一段�
 OVERLAP_DAYS = 10
 MAX_GAP_DAYS = 20            # 超过即在 notes 提示（春节长假约 10 天）
 INDEX_ROUTES = {"csi", "eastmoney_index", "yahoo"}     # universe 路由里属于价格指数的：无全收益版本即 price_only
+BEIJING = timezone(timedelta(hours=8))                  # 北京不用夏令时，固定偏移即可
+try:
+    NEW_YORK = ZoneInfo("America/New_York")
+except Exception:  # noqa: BLE001 — 缺 tzdata 的精简镜像：按 UTC−5（冬令时）算，收盘判定只会更保守
+    NEW_YORK = timezone(timedelta(hours=-5))
 A_SHARE_ROUTES = {"csi", "eastmoney_index", "tencent_index", "eastmoney_etf_hfq", "eastmoney_etf", "tencent_etf"}
 STRICT_ROUTES = {"eastmoney_etf_hfq"}   # 后复权：重叠区被改写 = 复权基准变了，不能拼接
 NOT_ATTEMPTED = {"518880": "上海金 Au99.99 未尝试：固定源与 replan 均未给出接口"}
@@ -56,9 +61,9 @@ def last_complete(route: str, now: datetime | None = None) -> date:
     抓取时比它新的 K 线是盘中实时值，一律丢弃，不进 raw、更不进数据包。"""
     now = now or _utcnow()
     if route in A_SHARE_ROUTES:
-        t, cut = now.astimezone(ZoneInfo("Asia/Shanghai")), time(15, 30)
+        t, cut = now.astimezone(BEIJING), time(15, 30)
     else:
-        t, cut = now.astimezone(ZoneInfo("America/New_York")), time(17, 0)
+        t, cut = now.astimezone(NEW_YORK), time(17, 0)
     return t.date() if t.time() >= cut else t.date() - timedelta(days=1)
 
 
@@ -128,7 +133,7 @@ def _missing(rows: list[dict], cols) -> int:
     return sum(1 for r in rows if not all((r.get(c) or 0) > 0 for c in cols))
 
 
-def collect(row: dict, start: date, end: date, *, full: bool) -> tuple[dict, list[tuple[str, str, list[dict]]]]:
+def collect(row: dict, start: date, end: date, *, full: bool, exec_start: date | None = None) -> tuple[dict, list[tuple[str, str, list[dict]]]]:
     """一个容器 → (coverage 行, 要落盘的序列 [(code, route, rows)])。
     full=False（probe）：执行 ETF 只查最近一段，价格序列在已有全收益时不再拉；full=True（backfill）：全部全量。"""
     cov = {k: "" for k in COVERAGE_COLUMNS}
@@ -184,6 +189,7 @@ def collect(row: dict, start: date, end: date, *, full: bool) -> tuple[dict, lis
                     notes.append("前序路由失败：" + "; ".join(price_errs)[:200])
                 if got.dropped:
                     notes.append(f"丢弃未收盘 K 线 {got.dropped} 行")
+                notes += got.warnings
                 g = gap_note(got.rows)
                 if g:
                     notes.append(g)
@@ -205,7 +211,7 @@ def collect(row: dict, start: date, end: date, *, full: bool) -> tuple[dict, lis
     ex = row.get("execution_fund_code") or ""
     if ex:
         cov["exec_code"] = ex
-        b = start if full else end - timedelta(days=PROBE_WINDOW_DAYS)
+        b = (exec_start or start) if full else end - timedelta(days=PROBE_WINDOW_DAYS)
         r, got, errs = fetch_chain(U.EXEC_CHAIN, ex, b, end)
         if got:
             cov.update(exec_route=r, exec_last_date=got.rows[-1]["date"])
@@ -288,13 +294,14 @@ def probe(end: date, *, start: date = DEFAULT_START, only=None, uni_path: Path =
     return covs
 
 
-def backfill(end: date, *, start: date = DEFAULT_START, only=None, uni_path: Path = U.UNIVERSE,
+def backfill(end: date, *, start: date = DEFAULT_START, exec_start: date | None = None, only=None, uni_path: Path = U.UNIVERSE,
              raw_dir: Path = RAW_DIR, out_dir: Path = OUT_DIR, log=print) -> list[dict]:
+    """exec_start 只缩短执行 ETF 的起点（减少东财上市前的空段请求）；研究序列始终从 start 拉，不丢设计期。"""
     uni = U.load(uni_path)
     http.LOG.clear()
     covs = []
     for row in _select(uni, only):
-        cov, series = collect(row, start, end, full=True)
+        cov, series = collect(row, start, end, full=True, exec_start=exec_start)
         for code, route, rows in series:
             store.write(raw_dir / store.file_name(code, route), [{**r, "source": route} for r in rows])
         covs.append(cov)

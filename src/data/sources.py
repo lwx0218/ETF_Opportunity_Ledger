@@ -36,6 +36,7 @@ class Fetched:
     rows: list[dict] = field(default_factory=list)
     name: str | None = None
     dropped: int = 0            # 因未收盘被丢弃的行数（runner 填）
+    warnings: list[str] = field(default_factory=list)
 
 
 def _f(x) -> float | None:
@@ -83,15 +84,17 @@ def _year_segments(start: date, end: date):
 # ------------------------------------------------------------------ 中证指数官网
 def fetch_csindex(code: str, start: date, end: date) -> Fetched:
     """`perf/index-perf?indexCode=&startDate=&endDate=`，按年分段。任一段失败即整条失败（不留缺口）。"""
-    rows, name = [], None
+    rows, name, biz_err = [], None, []
     segs = list(_year_segments(start, end))
     for i, (b, e) in enumerate(segs):
         d = http.get_json(CSI_PERF, {"indexCode": code, "startDate": b.strftime("%Y%m%d"), "endDate": e.strftime("%Y%m%d")},
                           headers={"Referer": "https://www.csindex.com.cn/"})
         ok = isinstance(d, dict) and str(d.get("code")) == "200"
-        if not ok and rows:            # 基日之前的年份可能返回业务错误而非空数据；有数据之后再出错就是真错
-            raise http.FetchError(f"csindex {code} {b}~{e}: code={(d or {}).get('code') if isinstance(d, dict) else '?'} "
-                                  f"msg={(d or {}).get('msg') if isinstance(d, dict) else str(d)[:60]}")
+        if not ok:
+            why = (f"code={d.get('code')} msg={d.get('msg')}" if isinstance(d, dict) else str(d)[:60])
+            if rows:                   # 有数据之后再出业务错误：真错
+                raise http.FetchError(f"csindex {code} {b}~{e}: {why}")
+            biz_err.append(f"{b.year}: {why}")   # 基日之前可能返回业务错误而非空数据——先记下，不静默吞掉
         data = (d.get("data") or []) if ok else []
         if not data:
             _hole(f"csindex {code}", b, e, bool(rows), i + 1 == len(segs))
@@ -105,7 +108,10 @@ def fetch_csindex(code: str, start: date, end: date) -> Fetched:
                              r.get("tradingVol"), r.get("tradingValue")))
         if i + 1 < len(segs):
             time.sleep(PAUSE["csi"])
-    return Fetched(_finish(rows, start, end), name)
+    if not rows and biz_err:
+        raise http.FetchError(f"csindex {code}: 各段均无数据，业务错误 {len(biz_err)} 段，最后一段 {biz_err[-1]}")
+    warn = [f"起点前 {len(biz_err)} 段返回业务错误（{biz_err[-1]}），first_date 可能被截短"] if rows and biz_err else []
+    return Fetched(_finish(rows, start, end), name, warnings=warn)
 
 
 # ------------------------------------------------------------------ 东方财富 K 线
@@ -119,7 +125,9 @@ def fetch_eastmoney(secid: str, start: date, end: date, fqt: int = 0) -> Fetched
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
             "klt": 101, "fqt": fqt, "beg": b.strftime("%Y%m%d"), "end": e.strftime("%Y%m%d"), "lmt": 10000,
         }, headers={"Referer": "https://quote.eastmoney.com/"}, timeout=12)
-        data = ((d or {}).get("data") or {}) if (d or {}).get("rc", 0) == 0 else {}
+        if (d or {}).get("rc", 0) != 0:          # 上市前东财返回 rc=0 + 空数据；rc≠0 一律是错误
+            raise http.FetchError(f"eastmoney {secid} {b}~{e}: rc={d.get('rc')}")
+        data = (d or {}).get("data") or {}
         name = name or data.get("name")
         if not data.get("klines"):
             _hole(f"eastmoney {secid}", b, e, bool(rows), i + 1 == len(segs))

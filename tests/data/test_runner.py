@@ -163,6 +163,11 @@ class BackfillUpdatePackage(Base):
         self.net.add("em", "1.518880:2", "黄金ETF", "2013-07-29", "2026-09-25")
         self.net.add("em", "1.518880:0", "黄金ETF", "2013-07-29", "2026-09-25", base=3)
 
+    def test_exec_start_only_shortens_execution_series(self):
+        runner.backfill(END, start=START, exec_start=date(2020, 1, 1), only=["T01"], raw_dir=self.raw, out_dir=self.out, log=self.log.append)
+        c = read_cov(self.out / "coverage.csv")["T01"]
+        self.assertEqual((c["first_date"], c["exec_first_date"]), ("2004-12-31", "2020-01-01"))
+
     def test_backfill_writes_all_series(self):
         self.backfill(only=["T01", "T16"])
         self.assertEqual(sorted(p.name for p in self.raw.glob("*.csv")), ["000300.csv", "510300.csv", "518880.csv", "518880.hfq.csv", "H00300.csv"])

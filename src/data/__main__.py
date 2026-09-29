@@ -1,7 +1,7 @@
 """python -m src.data <命令>
 
     probe    [--end D] [--start D] [--only T01,T02] [--record DIR]   → outputs/data/coverage.csv
-    backfill --end 2026-09-30 [--start D] [--only …]                  → data/raw/*.csv + coverage
+    backfill --end 2026-09-30 [--start D] [--exec-start D] [--only …] → data/raw/*.csv + coverage
     update   [--end D] [--only …]                                     增量（往回多拉 10 天）
     package  --end 2026-09-30 [--force]                               → outputs/research-package-<end>/
     verify   <包目录>                                                  按 MANIFEST.sha256 复验
@@ -30,7 +30,9 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--end", type=_d, default=date.today() if name in ("probe", "update") else None,
                        required=name in ("backfill", "package"))
         if name in ("probe", "backfill"):
-            p.add_argument("--start", type=_d, default=runner.DEFAULT_START)
+            p.add_argument("--start", type=_d, default=runner.DEFAULT_START, help="研究序列起点；不要为省请求而调晚，会丢设计期")
+        if name == "backfill":
+            p.add_argument("--exec-start", type=_d, default=None, help="只缩短执行 ETF 的起点（东财上市前空段多、易限流时用）")
         if name != "package":
             p.add_argument("--only", type=lambda s: [x.strip() for x in s.split(",") if x.strip()], default=None,
                            help="只跑这些 theme_id，逗号分隔")
@@ -52,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"面板容器 {len(panel)}：有路由 {sum(1 for c in panel if c['route_used'])}，"
               f"error {sum(1 for c in panel if c['error'])} → {runner.OUT_DIR / 'coverage.csv'}")
     elif a.cmd == "backfill":
-        runner.backfill(a.end, start=a.start, only=a.only)
+        runner.backfill(a.end, start=a.start, exec_start=a.exec_start, only=a.only)
     elif a.cmd == "update":
         rep = runner.update(a.end, only=a.only)
         print(f"更新 {sum(1 for r in rep if r.get('ok'))} / {len(rep)} 个文件")
