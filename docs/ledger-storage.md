@@ -18,14 +18,14 @@ python -m src.ledger summary   [--db …]                     # 分母、分档�
 
 代码里用 `src.ledger.store.Ledger`：`create_card(card, evidence, agent_score)` → `owner_score` → `enter` → `append_daily` → `exit` → `finalize`；`void` 作废。数据库文件不入 Git。时间一律北京时间 `YYYY-MM-DDTHH:MM`，百分数存数值（12.5 = 12.5%）。卡片上的所有价格（失效位、进场、出场、每日收盘、止损）都在该卡的研究序列上，与信号同一口径；执行 ETF 的真实成交不在本层。
 
-**数据库时钟**：触发器用 `ledger_now()`（`Ledger` 注册，北京时间到分钟，每个事务内冻结为同一时刻）判断截止与「不能写未来」；各表的 `recorded_at` 必须等于它。没注册这个函数的裸连接（sqlite3 命令行、别的进程）写不进任何行。回放与测试通过 `Ledger(clock=…)` 注入时钟。
+**数据库时钟**：触发器用 `ledger_now()`（`Ledger` 注册，北京时间到分钟，每个事务内冻结为同一时刻）判断截止与「不能写未来」；各表的 `recorded_at` 必须等于它。没注册这个函数的连接（sqlite3 命令行、别的进程）写不进台账行与固定源版本；自己注册同名函数等于注入时钟，属于蓄意绕过，存储层不防。注入时钟只用于回放：`Ledger(回放库, clock=…, replay=True)`，不能指向正式库；库第一次打开时记下时钟模式（`ledger_meta.clock` = real / replay），之后换模式打开即拒绝——回放写出的卡进不了正式台账。
 
 ## 字段落点（schema §2 → 表.列）
 
 | schema 字段 | 落点 | 约束 |
 |---|---|---|
 | `id` | `cards.id` | `T-YYYY-NNN`，主键不复用 |
-| `created_at` | `cards.created_at` + `cards.close_date` | 到分钟、日期必须真实存在；`created_at ≥ close_date 15:00`；不晚于数据库时钟；数据库时钟过了 `owner_score_deadline`（下一次开盘）就不能再立这张卡 |
+| `created_at` | `cards.created_at` + `cards.close_date` | 到分钟、日期必须真实存在；`close_date 15:00 ≤ created_at ≤ 其后第一个工作日 09:30`（不能看了后面的行情再补卡）；不晚于数据库时钟；数据库时钟过了 `owner_score_deadline` 也不能再立 |
 | （扫描自然键） | `cards.scan_key` | 可空、唯一；P5 同一候选重跑不重复立卡 |
 | `container` / `instrument` | `cards.container`；`instrument_code`、`instrument_name`、`research_index_code` | 非空（研究指数可空，如现金） |
 | `trigger_type` / `state_at_entry` | `cards.trigger_type` / `cards.state_at_entry` | 枚举：三类触发；状态码 POP … NEUTRAL |
@@ -43,14 +43,14 @@ python -m src.ledger summary   [--db …]                     # 分母、分档�
 | A3 论点失效条件 | `thesis_inval_source_id`、`thesis_inval_deadline`、`thesis_inval_statement` | 事件驱动卡必填、其他卡必空；来源须 A / B 级 |
 | `supersedes` | `cards.supersedes` | 只能引用已作废的卡，且新卡晚于作废时刻；一张旧卡只能被取代一次 |
 | §2.2 每日行 | `daily` 表 | 按日期严格递增追加，不晚于数据库时钟；出场后继续追加到期满；作废或期满后拒绝 |
-| 进场 | `entries` 表 | 成交日晚于卡片创建日（不能倒填）、不晚于数据库时钟；进场价必须高于失效位（否则按「未进场而失效」作废）；只一次 |
+| 进场 | `entries` 表 | 成交不早于 `owner_score_deadline` 那次开盘（不能倒填；owner 打分时这笔交易还没发生；早盘确认的卡当天可进）、不晚于数据库时钟；进场价必须高于失效位（否则按「未进场而失效」作废）；只一次 |
 | §2.3 出场 | `exits` 表 | 须先有进场；不晚于数据库时钟；`手动` 必须写 `manual_reason` |
 | §2.4 跟踪期满 | `finals` 表 | 出场后的每日行满 `tracking_days` 行才能写；`final_score` 必须等于 §3 机械结果（触发器按 `exits` 与锁定的 `target_excess_pct` 重算） |
 | 作废 | `voids` 表 | 只有未进场的候选能作废；已进场的卡按「论点作废 / 手动」出场 |
 
-生命周期由视图 `card_status` 推出：作废 / 已结 / 过去 / 当下 / 候选。所有表拒绝 DELETE；除 `cards.sealed` 在创建事务内 0→1 外，所有表拒绝 UPDATE；每张表的插入触发器在同键行已存在时拒绝，`INSERT OR REPLACE` / `REPLACE INTO` 的隐式删除因此也改不了任何行（不依赖外键或 `recursive_triggers` 开关，后者在 `Ledger` 连接上另开一层）。数值列校验类型（`typeof`），日期与时刻做往返校验（`2026-02-31`、空格分隔一律拒绝）。
+生命周期由视图 `card_status` 推出：作废 / 已结 / 过去 / 当下 / 候选。所有表拒绝 DELETE；除 `cards.sealed` 在创建事务内 0→1 外，所有表拒绝 UPDATE；每张表的插入触发器在同键行已存在时拒绝，`INSERT OR REPLACE` / `REPLACE INTO` 的隐式删除因此也改不了任何行；表都是 `WITHOUT ROWID`，显式写 rowid 的 REPLACE 直接报错；`Ledger` 连接另开 `recursive_triggers` 作第二道防线。数值列校验类型并拒绝无穷大（`typeof` + `abs(x) < 1e15`），日期与时刻做往返校验（`2026-02-31`、空格分隔一律拒绝）。
 
-固定源清单按版本只追加：`source_loads` 记每次载入的 CSV sha256，`current_sources` 视图取最后一个版本；清单变了（如 S2 把 C 升 B）就追加新版本，已写入证据的等级快照不变。
+固定源清单按版本只追加：`source_loads` 记每次载入的 CSV sha256 与递增序号（写入须用数据库时钟），`current_sources` 视图取最后一个版本；清单变了（如 S2 把 C 升 B）就追加新版本，已写入证据的等级快照不变。
 
 ## 统计口径
 

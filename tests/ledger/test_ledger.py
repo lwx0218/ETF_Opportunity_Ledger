@@ -50,7 +50,7 @@ def bdays_after(d: str, n: int) -> list[str]:
 class Base(unittest.TestCase):
     def setUp(self):
         self.t = T0
-        self.L = Ledger(":memory:", clock=lambda: self.t)
+        self.L = Ledger(":memory:", clock=lambda: self.t, replay=True)
         self.addCleanup(self.L.close)
 
     def at(self, t):
@@ -310,6 +310,27 @@ class Lifecycle(Base):
         with self.assertRaisesRegex(LedgerError, "CHECK"):
             self.at("2026-10-31T16:00").L.append_daily(cid, dict(date="2026-10-1x", close=10.0, state="XB"))   # 非日期
 
+    def test_owner_never_sees_the_trade(self):
+        # 截止写得再晚，进场也不能早于截止那次开盘：owner 打分时这笔交易还没发生
+        cid = self.at("2026-10-13T16:00").make(created_at="2026-10-13T16:00", close_date="2026-10-13",
+                                               owner_score_deadline="2026-10-23T09:30")
+        with self.assertRaisesRegex(LedgerError, "倒填"):
+            self.at("2026-10-14T09:35").L.enter(cid, "2026-10-14", 10.0, 5)
+
+    def test_morning_confirmed_card_enters_same_day(self):
+        cid = self.at("2026-10-12T09:00").make(created_at="2026-10-12T09:00", close_date="2026-10-09")   # 周五信号，周一早盘确认
+        self.at("2026-10-12T09:35").L.enter(cid, "2026-10-12", 10.0, 5)
+        self.assertEqual(self.L.status(cid), "当下")
+
+    def test_cannot_create_card_after_seeing_later_prices(self):
+        with self.assertRaisesRegex(LedgerError, "CHECK"):          # 10-13 的信号拖到 10-22 才立
+            self.at("2026-10-22T20:00").make(created_at="2026-10-22T20:00", close_date="2026-10-13",
+                                             owner_score_deadline="2026-10-23T09:30")
+
+    def test_infinite_values_rejected(self):
+        with self.assertRaisesRegex(LedgerError, "CHECK"):
+            self.make(expectation_target_excess_pct=float("inf"))
+
     def test_no_backdated_entry(self):
         # 10-19 收盘后才立卡，不能用 10-19 当天或更早的已知价格倒填进场
         cid = self.at("2026-10-19T16:00").make(created_at="2026-10-19T16:00", close_date="2026-10-19",
@@ -356,6 +377,40 @@ class Statistics(Base):
             self.make(scan_key=f"k{i}")
         cal = self.L.calibration("agent")[0]
         self.assertEqual((cal["n"], cal["open"], cal["enough"], cal["hit_rate"]), (0, 30, False, None))
+
+
+class ClockMode(unittest.TestCase):
+    def test_injected_clock_needs_replay_and_a_separate_db(self):
+        with self.assertRaisesRegex(LedgerError, "replay=True"):
+            Ledger(":memory:", clock=lambda: T0)
+        from src.ledger.store import DEFAULT_DB
+        with self.assertRaisesRegex(LedgerError, "正式台账库"):
+            Ledger(DEFAULT_DB, clock=lambda: T0, replay=True)
+
+    def test_db_remembers_clock_mode(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "replay.sqlite"
+            Ledger(db, clock=lambda: T0, replay=True).close()
+            with self.assertRaisesRegex(LedgerError, "时钟模式是 replay"):
+                Ledger(db)
+            Ledger(db, clock=lambda: T0, replay=True).close()
+
+
+class RowidReplace(Base):
+    def test_explicit_rowid_is_an_error(self):
+        a = self.make()
+        row = self.cols("cards", a)
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.raw(f"INSERT OR REPLACE INTO cards (rowid, {', '.join(row)}) VALUES (1, {', '.join('?' * len(row))})",
+                     *{**row, "id": "T-2026-099", "sealed": 0}.values())
+        self.assertEqual(self.L.summary()["denominator"], 1)
+
+    def test_source_versions_need_database_clock(self):
+        bare = sqlite3.connect(":memory:")
+        bare.executescript((ROOT / "src" / "ledger" / "schema.sql").read_text(encoding="utf-8"))
+        with self.assertRaises(sqlite3.OperationalError):
+            bare.execute("INSERT INTO source_loads (csv_sha256, seq, loaded_at) VALUES (?, 1, ?)", ("f" * 64, T0))
+        bare.close()
 
 
 class FixedSources(Base):

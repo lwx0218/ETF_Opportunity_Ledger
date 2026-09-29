@@ -19,8 +19,8 @@
 | §2.5 每条禁令一个失败测试 | 通过：事后加证据、改证据、改 expectation / invalidation / scoring_rule / evidence_strength、删卡（含作废卡，含借 UNIQUE 冲突的隐式删除）、修正不走作废 + supersedes——每条都覆盖 UPDATE、DELETE、REPLACE 三种写法 |
 | 作废流程 | 通过：只有候选能作废；作废 → 新卡 `supersedes`；未作废不能被取代；一张旧卡只能被取代一次；两张卡都计入分母 |
 | 固定源校验 | 通过：不在清单 / C 级 / `available_at > created_at` / `first_seen_at > created_at` 均拒绝，整张卡回滚；固定源表按版本只追加 |
-| 测试 | `python -m unittest discover -s tests -t .`：61 个全过（原 31 + 台账 30） |
-| 包末复核 | 首轮 `return_to_planning`（F1 阻断）→ 已按下表逐条修复，复验见 PR |
+| 测试 | `python -m unittest discover -s tests -t .`：69 个全过（原 31 + 台账 38） |
+| 包末复核 | 首轮 `return_to_planning`（F1 阻断）→ 按下表修复 → 复验 `approve_with_follow_up`，跟进 6 条也已修掉（见下） |
 
 ## 复核发现与处理
 
@@ -36,7 +36,15 @@
 | F8 中 | 日期只用 GLOB，`2026-02-31`、`2026-19-99`、空格分隔都能进 | 日期 / 时刻往返校验 |
 | F9 低 | 重跑重复建卡；期满不查跟踪期；进场价低于失效位；tracking_days 未锁 20；recorded_at 时区不一 | `scan_key` 唯一；出场后满 20 行每日才能期满；进场价须高于失效位；`tracking_days` 固定 20；`recorded_at` 统一北京时间 |
 
-「证伪」口径（失效位出场 vs realized_r ≤ −1）与已进场卡能否 supersedes，交 Cowork 定（见 `docs/ledger-storage.md`「边界与待决」）。
+复验跟进（已修）：
+1. owner 仍可能在出场后打分（截止写晚）：进场不得早于 owner 截止那次开盘，owner 打分时交易未发生；立卡不得晚于信号日后第一个工作日 09:30。
+2. 注入时钟可能写进正式库：注入必须 `replay=True` 且不能是正式库；库记下时钟模式，换模式打开即拒绝。
+3. 显式写 rowid 的 REPLACE 可删卡、固定源版本可伪造：全部表改 `WITHOUT ROWID`；固定源版本写入也要数据库时钟，按显式序号取当前版本。
+4. 早盘确认的卡当天不能进场（误拒）：随第 1 条一起修正。
+5. 无穷大能通过类型检查：数值列加 `abs(x) < 1e15`。
+6. CLI 固定源计数跨版本：改数 `current_sources`。
+
+「证伪」口径（失效位出场 vs realized_r ≤ −1）与已进场卡能否 supersedes，交 Cowork 定（见 `docs/ledger-storage.md`「边界与待决」）。候选卡过期：P5 在下一次运行时把错过次日开盘的候选作废（「未在次一交易日开盘成交」/「次一交易日无开盘价」），schema 里没有这条口径，请 Cowork 在 v1.1 补一句。
 
 ## 实现要点
 

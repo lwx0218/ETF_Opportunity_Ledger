@@ -17,7 +17,7 @@ def main(argv: list[str] | None = None) -> int:
     L = Ledger(a.db)
     try:
         if a.cmd == "init":
-            n = L.conn.execute("SELECT count(*), sum(grade IN ('A','B')) FROM fixed_sources").fetchone()
+            n = L.conn.execute("SELECT count(*), sum(grade IN ('A','B')) FROM current_sources").fetchone()
             print(f"{a.db}：固定源 {n[0]} 个，可进卡片（A/B）{n[1]} 个")
         else:
             print(json.dumps({"summary": L.summary(), "calibration_agent": L.calibration("agent"),

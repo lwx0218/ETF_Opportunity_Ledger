@@ -2,9 +2,11 @@
 Python 层的校验只为给出可读的错误，绕过它直接写 SQL 同样会被拒绝。
 
 - 冻结：只追加的表全部拒绝 DELETE 与 UPDATE（cards 只许创建事务内 sealed 0→1）；每张表的 BEFORE INSERT 触发器
-  在同键行已存在时拒绝，堵住 INSERT OR REPLACE / REPLACE INTO 的隐式删除（不依赖 recursive_triggers 或外键开关）。
+  在同键行已存在时拒绝，堵住 INSERT OR REPLACE / REPLACE INTO 的隐式删除；表都是 WITHOUT ROWID，显式写 rowid 直接报错；
+  本类的连接另开 recursive_triggers 作第二道防线。
 - 时钟：触发器用 ledger_now()（本类注册的数据库时钟，北京时间到分钟）判断截止与「不能写未来」；每个事务内冻结为同一时刻。
-  没注册该函数的裸连接写不进任何行。回放 / 测试可注入 clock。
+  没注册该函数的连接写不进台账行。注入时钟只用于回放：必须 replay=True，且不能是正式台账库；
+  库在第一次打开时记下时钟模式（real / replay），之后用另一种模式打开即拒绝——回放的卡永远进不了正式库。
 - 边界：拿到数据库文件的人仍可 DROP TRIGGER——存储层防误改和流程绕行，防不了蓄意篡改；文件应只由台账进程写入。
 """
 from __future__ import annotations
@@ -77,16 +79,28 @@ def read_sources_csv(path: Path = FIXED_SOURCES) -> tuple[str, dict[str, tuple[s
 
 
 class Ledger:
-    def __init__(self, path: Path | str = DEFAULT_DB, sources: Path = FIXED_SOURCES, clock: Callable[[], str] = beijing_now):
+    def __init__(self, path: Path | str = DEFAULT_DB, sources: Path = FIXED_SOURCES, clock: Callable[[], str] | None = None,
+                 replay: bool = False):
+        if clock is not None and not replay:
+            raise LedgerError("注入时钟只用于回放：请传 replay=True，并使用单独的回放库")
+        if replay and str(path) != ":memory:" and Path(path).resolve() == DEFAULT_DB.resolve():
+            raise LedgerError("回放不能写正式台账库")
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self.clock, self._frozen, self.sources_path = clock, None, Path(sources)
+        self.clock, self._frozen, self.sources_path = clock or beijing_now, None, Path(sources)
         self.conn = sqlite3.connect(str(path), isolation_level=None)      # 事务由 _tx 显式控制
         self.conn.row_factory = sqlite3.Row
         self.conn.create_function("ledger_now", 0, lambda: self._frozen or self.clock())
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA recursive_triggers = ON")                # 第二道防线：REPLACE 的隐式删除也触发 DELETE 触发器
         self.conn.executescript(SCHEMA.read_text(encoding="utf-8") + "\n" + _freeze_triggers())
+        mode = "replay" if replay else "real"
+        row = self.conn.execute("SELECT value FROM ledger_meta WHERE key = 'clock'").fetchone()
+        if row is None:
+            self.conn.execute("INSERT INTO ledger_meta (key, value) VALUES ('clock', ?)", (mode,))
+        elif row[0] != mode:
+            self.conn.close()
+            raise LedgerError(f"这个库的时钟模式是 {row[0]}，不能以 {mode} 模式打开")
         self.load_sources(sources)
 
     def close(self):
@@ -121,14 +135,15 @@ class Ledger:
     def load_sources(self, path: Path = FIXED_SOURCES) -> int:
         """按版本载入固定源清单：CSV 内容变了（例如 S2 把 C 级升为 B 级）就追加一个新版本，旧版本与已写入的证据不受影响。"""
         digest, rows = read_sources_csv(path)
-        last = self.conn.execute("SELECT csv_sha256 FROM source_loads ORDER BY rowid DESC LIMIT 1").fetchone()
+        last = self.conn.execute("SELECT csv_sha256 FROM source_loads ORDER BY seq DESC LIMIT 1").fetchone()
         if last and last[0] == digest:
             return len(rows)
         if self.conn.execute("SELECT 1 FROM source_loads WHERE csv_sha256 = ?", (digest,)).fetchone():
             raise LedgerError("该版本清单曾经载入、之后被别的版本取代；回退清单需人工处理")
 
         def run():
-            self.conn.execute("INSERT INTO source_loads (csv_sha256, loaded_at) VALUES (?, ?)", (digest, self.now()))
+            self.conn.execute("INSERT INTO source_loads (csv_sha256, seq, loaded_at) "
+                              "VALUES (?, (SELECT coalesce(max(seq), 0) + 1 FROM source_loads), ?)", (digest, self.now()))
             self.conn.executemany("INSERT INTO fixed_sources (source_id, csv_sha256, name, grade) VALUES (?,?,?,?)",
                                   [(sid, digest, name, grade) for sid, (grade, name) in rows.items()])
         self._tx(run)
