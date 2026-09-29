@@ -153,3 +153,22 @@ P1–P5 已合并（PR #1–#5，main `36b660f`，145 个测试通过）。CC �
 ### astra S1 补充
 
 CC 的执行顺序与注意事项照办：`probe --record` → `backfill --end 2026-09-30` → `package` → `verify`，打包等北京时间 10-01 05:00 美股收盘后；限流时只动 `--exec-start`，不动 `--start`。另外两项：① 生成 `data/calendar/sse-trading-days.csv`（用 09-27 已验证的深交所 `monthList` 接口，覆盖 2005 至次年，一行一个交易日）并随数据包交付；② NDXTMC 若 probe 失败，试 Nasdaq 官方历史数据页一次，不成就跳过。
+
+## 9. 追加（2026-09-30）· P6a / P6b 合并后的裁定与 P6c
+
+P6a / P6b 已合并（PR #6、#7，main `7fba10a`，170 个测试通过）。两份工作日志「交 Cowork 留意」各条裁定如下，细节见 implementation-notes I-24 与 `docs/etf-card-schema-v1.md` v1.1-f。
+
+| 留意项 | 裁定 |
+|---|---|
+| 平盘 K 线压低海外容器 ATR20 / 20 日均量 | **不接受折扣，改口径**：K 线级指标（`form_states`、ATR20）在容器原生序列上算、算完再对齐，平盘日沿用上一根的指标值（I-24）。理由：prereg 的 ATR20 指该标的 20 根 K 线，平盘 K 线只是横截面与引擎的占位，让它进指标才是静默改口径。V1 报告对海外容器仍单列 D−1 折扣（I-20 的折扣不变） |
+| 长假多根 K 线只取最后一根 | **不合并**。引擎只用 open 与 close（止损按收盘判、次日开盘成交），高低点只有指标用，I-24 后指标已在原生序列上算，长假内高低点自然进入 hi20 / lo20 / ATR。面板里海外容器的 high / low 是最后一根的值，文档注明「V1 不用」 |
+| 菜单第 2 项「证伪」两种读法 | **取失效位读法**（v1.1-f）：触发出场的那根收盘 < 锁定 `invalidation_price`，或论点作废；「未达」改为 `realized_r ≤ 0` |
+| 菜单第 1 项「证伪」按失效位出场（P3 待决第 5 条） | **正确**，两项菜单统一为 v1.1-f；补上移动止盈 / 手动出场时收盘也跌破锁定失效位的情形 |
+| 事件卡 `horizon_days` 只用于评分，离场只按止损 / 移动止盈 / 论点作废 | 接受；§2.3 的「跟踪期满」出场原因暂不使用 |
+| 启用步骤（`confirmed_terms` + `enabled`） | 照办，仍待 V1 结论（A7）；P6c-2 之后版本号以 CC 升到的为准 |
+
+### P6c · CC 下一包（P6c-1 阻塞 V1，先做；P6c-2 不阻塞）
+
+- **P6c-1 `src/indicators/build.py`（I-24）**：`research_frame` 里把 `form_states` 与 `atr20` 的计算移到 `align_to_calendar` 之前（借量之后；A 股容器先丢非日历行再算）；`align_to_calendar` 把指标列随 K 线一起带到 D，平盘行沿用上一根的指标；`container_panel` 改用带来的列；`rs_1m` / `z_month` 不动。每日任务共用 `research_frame`，自然跟上。测试（构造海外序列）：(a) 平盘日的 `state` / `atr20` 等于上一根的值；(b) 美股假日后一天的 `atr20` 等于原生序列上该 K 线的 ATR20，与不对齐时逐根相等；(c) 长假内出现的最高价进入其后的 hi20（构造一个只在假期中段出现的高点，验证 BNB / tight 的判定用到了它）；(d) 截断测试仍逐行相等；(e) A 股容器结果与 P6a 完全相同。`docs/indicators-layer.md`「日历对齐与成交量来源」一节同步。
+- **P6c-2 `src/ledger/` + `src/jobs/`（v1.1-f）**：出场记录加 write-once 字段记录触发出场的那根收盘；`mechanical_score` 与 `finals_insert` 触发器改为先判证伪（该收盘 < `cards.invalidation_price` 或 `exit_reason = 论点作废`），再按菜单分档，第 2 项「未达」= `realized_r ≤ 0`；旧回放库按 P6b 做法拒绝打开，不写迁移；`TERMS_VERSION` 升一版；`docs/jobs-daily.md` 同步。测试：失效位出场次日高开（−1 < R < 0）记证伪；移动止盈出场但收盘低于锁定失效位记证伪；论点作废且 R > 0 记证伪；未证伪但跳空致 R ≤ −1 记未达；菜单第 1 项同样四例。
+- 每包仍是一页工作日志 + 包末一次复核；合并后 Cowork 做研究逻辑复核（只读）。
