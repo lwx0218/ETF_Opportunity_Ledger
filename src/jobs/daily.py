@@ -7,7 +7,7 @@
   5. 触发候选：只接「恐慌下轨」与「事件驱动」（A7），立卡即锁死
 
 幂等：每一步都先查台账已有的记录，同一天重跑不产生任何新行。所有价格都在卡片的研究序列上（后复权 / 全收益点位）。
-只验流程，不产出任何研究结论；记账口径按 schema v1.1-e（docs/jobs-daily.md）。
+只验流程，不产出任何研究结论；记账口径按 schema v1.1-e 与 v1.1-f（docs/jobs-daily.md，jobs-daily-v2）。
 """
 from __future__ import annotations
 
@@ -289,7 +289,6 @@ class DailyJob:
             self.L.finalize(cid, post_exit_return_pct=round((last["close"] / x["exit_price"] - 1) * 100, 6),
                             post_exit_r=round((last["close"] - entry["entry_price"]) / r_unit, 6),
                             final_score=mechanical_score(card, x),
-
                             missed_r=round(max(0.0, max_r_after - x["realized_r"]), 6),
                             stop_quality=int(max_r_after - x["realized_r"] >= 1),
                             trail_quality=int(x["realized_r"] >= 0.7 * mfe_at_exit) if x["exit_reason"] == "移动止盈" else None,

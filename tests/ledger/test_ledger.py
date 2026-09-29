@@ -327,6 +327,41 @@ class FalsificationV11f(Base):
             self.at("2026-11-20T16:00").L.exit(cid, exit_reason="移动止盈", exit_signal_close=9.5, **base)
         self.L.exit(cid, exit_reason="移动止盈", exit_signal_close=9.0, **base)
 
+    def test_no_backfill_before_the_exit_and_order_does_not_matter(self):
+        """触发收盘 = 出场日之前最近一行（出场按开盘成交）。出场后不能补出场日之前的行；出场日当天的行记在出场前后都一样。"""
+        base = dict(exit_date="2026-11-20", exit_price=10.5, exit_reason="手动", manual_reason="构造", realized_r=0.1,
+                    realized_excess_pct=0.5, holding_days=28)
+        self.t = T0
+        a = self.make()
+        self.at("2026-10-12T09:35").L.enter(a, "2026-10-12", 10.05, 6.25)
+        self.at("2026-11-20T09:35").L.exit(a, exit_signal_close=10.8, **base)          # 出场前没有任何每日行：只能要求为正数
+        with self.assertRaisesRegex(LedgerError, "已出场"):
+            self.at("2026-11-20T16:00").L.append_daily(a, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))   # 事后补一根跌破的收盘
+        for when in ("before", "after"):                                               # 11-20 当天的行在出场前 / 后记账
+            with self.subTest(when):
+                self.t = T0
+                cid = self.make()
+                self.at("2026-10-12T09:35").L.enter(cid, "2026-10-12", 10.05, 6.25)
+                self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))
+                if when == "after":
+                    self.at("2026-11-20T16:00").L.append_daily(cid, dict(date="2026-11-20", close=10.5, state="NEUTRAL"))
+                with self.assertRaisesRegex(LedgerError, "最近一行"):
+                    self.at("2026-11-20T16:05").L.exit(cid, exit_signal_close=10.5, **base)
+                self.L.exit(cid, exit_signal_close=9.0, **base)                            # 两种顺序都只能填 11-19 的 9.0 → 证伪
+                self.assertEqual(mechanical_score(self.L.card(cid), self.cols("exits", cid)), "证伪")
+
+    def test_close_exactly_on_the_line_is_not_falsified(self):
+        """证伪是「收盘 < 锁定失效位」：恰好等于 9.2 的移动止盈 / 手动出场不算，按菜单分档。"""
+        for reason, manual in (("移动止盈", None), ("手动", "构造")):
+            for rule, want in ((False, "部分"), (True, "部分")):
+                with self.subTest(reason, menu=2 if rule else 1):
+                    cid = self.run_to_exit(reason=reason, manual=manual, r=0.3, excess=1.0, signal=9.2, rule=rule)
+                    self.track(cid)
+                    self.assertEqual(mechanical_score(self.L.card(cid), self.cols("exits", cid)), want)
+                    with self.assertRaisesRegex(LedgerError, "机械"):
+                        self.L.finalize(cid, final_score="证伪", **self.KW)
+                    self.L.finalize(cid, final_score=want, **self.KW)
+
     def test_stop_exit_needs_a_close_below_the_line(self):
         self.t = T0
         cid = self.make()

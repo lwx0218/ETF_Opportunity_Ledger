@@ -275,6 +275,8 @@ BEGIN
     SELECT RAISE(ABORT, '每日行只能按日期向后追加') WHERE NEW.date <= coalesce((SELECT max(date) FROM daily WHERE card_id = NEW.card_id), '')
         OR NEW.date < (SELECT close_date FROM cards WHERE id = NEW.card_id);
     SELECT RAISE(ABORT, '每日行日期晚于当前日期') WHERE NEW.date > substr(ledger_now(), 1, 10);
+    SELECT RAISE(ABORT, '已出场：不能再补出场日之前的每日行（触发收盘按出场时已有的行核对）')
+     WHERE NEW.date < (SELECT exit_date FROM exits WHERE card_id = NEW.card_id);
 END;
 
 CREATE TRIGGER IF NOT EXISTS exits_insert BEFORE INSERT ON exits
@@ -284,10 +286,11 @@ BEGIN
     SELECT RAISE(ABORT, '没有进场记录') WHERE NOT EXISTS (SELECT 1 FROM entries WHERE card_id = NEW.card_id);
     SELECT RAISE(ABORT, '出场日早于进场日') WHERE NEW.exit_date < (SELECT entry_date FROM entries WHERE card_id = NEW.card_id);
     SELECT RAISE(ABORT, '出场日晚于当前日期') WHERE NEW.exit_date > substr(ledger_now(), 1, 10);
-    -- v1.1-f：触发收盘不能随手填——已有出场日及以前的每日行时，必须等于最近那一行的收盘
-    SELECT RAISE(ABORT, 'exit_signal_close 必须等于出场日及以前最近一行每日记录的收盘')
-     WHERE EXISTS (SELECT 1 FROM daily WHERE card_id = NEW.card_id AND date <= NEW.exit_date)
-       AND NEW.exit_signal_close IS NOT (SELECT close FROM daily WHERE card_id = NEW.card_id AND date <= NEW.exit_date
+    -- v1.1-f 的触发收盘（实现口径，待 Cowork 确认）：出场一律按开盘成交，触发出场的是出场日之前最近一行每日记录的收盘。
+    -- 有这样的行时必须等于它（不能随手填一个高于失效位的数躲开证伪）；配合 daily_insert 不许出场后补出场日之前的行，事后可审计
+    SELECT RAISE(ABORT, 'exit_signal_close 必须等于出场日之前最近一行每日记录的收盘')
+     WHERE EXISTS (SELECT 1 FROM daily WHERE card_id = NEW.card_id AND date < NEW.exit_date)
+       AND NEW.exit_signal_close IS NOT (SELECT close FROM daily WHERE card_id = NEW.card_id AND date < NEW.exit_date
                                           ORDER BY date DESC LIMIT 1);
     SELECT RAISE(ABORT, '「失效位」出场的触发收盘必须低于锁定的失效位')
      WHERE NEW.exit_reason = '失效位'
