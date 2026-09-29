@@ -2,6 +2,7 @@
 
 运行：python -m unittest discover -s tests -t .
 """
+import json
 import os
 import sys
 import unittest
@@ -41,10 +42,24 @@ class FixtureParse(NoSleep):
         self.assertEqual(got.rows[1]["close"], 4580.4)
         self.assertEqual(got.name, "沪深300指数 / CSI 300 Index")
 
-    def test_csindex_error_code_fails(self):
+    def test_csindex_error_code_before_data_is_empty_after_data_fails(self):
         with mock.patch.object(http, "get", return_value=b'{"code":"500","msg":"bad","data":null}'):
-            with self.assertRaises(http.FetchError):
-                S.fetch_csindex("000300", self.D0, self.D1)
+            self.assertEqual(S.fetch_csindex("000300", self.D0, self.D1).rows, [])        # 上层记「0 行」
+        ok = (FX / "csindex_000300.json").read_bytes()
+        bad = b'{"code":"500","msg":"bad","data":null}'
+        with mock.patch.object(http, "get", side_effect=[ok, bad]):
+            with self.assertRaisesRegex(http.FetchError, "code=500"):
+                S.fetch_csindex("000300", date(2025, 6, 1), date(2026, 9, 25))
+
+    def test_yahoo_uses_exchange_timezone_per_bar(self):
+        # 纽约 0 点的期货日线：夏令时 −4h、冬令时 −5h；只用当前 gmtoffset 会把一边整体挪一天
+        from datetime import datetime, timezone
+        ts = [int(datetime(2026, 10, 30, 4, tzinfo=timezone.utc).timestamp()), int(datetime(2026, 11, 3, 5, tzinfo=timezone.utc).timestamp())]
+        body = json.dumps({"chart": {"error": None, "result": [{"meta": {"gmtoffset": -18000, "exchangeTimezoneName": "America/New_York"},
+                           "timestamp": ts, "indicators": {"quote": [{"open": [1, 1], "high": [1, 1], "low": [1, 1], "close": [70.0, 71.0], "volume": [0, 0]}]}}]}}).encode()
+        with mock.patch.object(http, "get", return_value=body):
+            got = S.fetch_yahoo("BZ=F", date(2026, 10, 1), date(2026, 11, 30))
+        self.assertEqual([r["date"] for r in got.rows], ["2026-10-30", "2026-11-03"])
 
     def test_eastmoney(self):
         with serve("eastmoney_510300.json"):
@@ -125,6 +140,29 @@ class Segmentation(NoSleep):
         with self.assertRaises(http.FetchError):
             S.fetch_eastmoney("1.510300", date(2010, 1, 1), date(2026, 9, 30))
 
+    def test_empty_segment_in_the_middle_fails(self):
+        self.net.add("csi", "000905", "中证500指数", "2004-12-31", "2026-09-25")
+        self.net.csi["000905"] = ("中证500指数", [(d, c) for d, c in self.net.csi["000905"][1] if not d.startswith("2011")])
+        with self.assertRaisesRegex(http.FetchError, "空段"):
+            S.fetch_csindex("000905", date(2000, 1, 1), date(2026, 9, 30))
+
+    def test_eastmoney_nonzero_rc_mid_series_fails(self):
+        self.net.add("em", "1.518880:2", "黄金ETF", "2013-07-29", "2026-09-25")
+        real = self.net.get
+
+        def flaky(url, params=None, **kw):
+            if params and str(params.get("beg", "")).startswith("2018"):
+                return b'{"rc":100,"data":null}'
+            return real(url, params, **kw)
+        with mock.patch.object(http, "get", side_effect=flaky):
+            with self.assertRaisesRegex(http.FetchError, "空段"):
+                S.fetch_eastmoney("1.518880", date(2013, 1, 1), date(2026, 9, 30), fqt=2)
+
+    def test_trailing_empty_last_segment_is_fine(self):
+        self.net.add("em", "1.510300:0", "沪深300ETF", "2012-05-28", "2026-09-25")
+        got = S.fetch_eastmoney("1.510300", date(2026, 5, 1), date(2026, 12, 31))       # 最后一段在数据之后
+        self.assertEqual(got.rows[-1]["date"], "2026-09-25")
+
     def test_tencent_chunks_stay_under_400_rows(self):
         self.net.add("tencent", "sz399006", "创业板指", "2010-06-01", "2026-09-25")
         got = S.fetch_tencent("sz399006", date(2010, 1, 1), date(2026, 9, 30))
@@ -138,6 +176,18 @@ class Segmentation(NoSleep):
             got = S.fetch_eia("PET.RBRTE.D", date(1987, 1, 1), date(2026, 9, 30))
         self.assertGreater(len(got.rows), S.EIA_PAGE)
         self.assertGreater(self.net.calls.count("eia:PET.RBRTE.D"), 1)
+
+
+class Redaction(NoSleep):
+    def test_api_key_never_leaves_the_process(self):
+        http.LOG.clear()
+        with mock.patch.dict(os.environ, {"EIA_API_KEY": "SECRET123"}), \
+                mock.patch("src.data.http.urlopen", side_effect=OSError("boom")), mock.patch("src.data.http.time.sleep"):
+            with self.assertRaises(http.FetchError) as cm:
+                S.fetch_eia("PET.RBRTE.D", date(2026, 9, 1), date(2026, 9, 2))
+        self.assertNotIn("SECRET123", str(cm.exception))
+        self.assertIn("api_key=***", str(cm.exception))
+        self.assertTrue(http.LOG and all("SECRET123" not in json.dumps(e) for e in http.LOG))
 
 
 class Mapping(unittest.TestCase):

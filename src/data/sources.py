@@ -14,6 +14,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from . import http
 
@@ -34,6 +35,7 @@ PAUSE = {"csi": 0.3, "eastmoney": 1.5, "tencent": 0.3, "eia": 0.3}   # 段间歇
 class Fetched:
     rows: list[dict] = field(default_factory=list)
     name: str | None = None
+    dropped: int = 0            # 因未收盘被丢弃的行数（runner 填）
 
 
 def _f(x) -> float | None:
@@ -66,6 +68,13 @@ def _segments(start: date, end: date, days: int):
         beg = stop + timedelta(days=1)
 
 
+def _hole(what: str, b: date, e: date, have_rows: bool, is_last: bool) -> None:
+    """已经拿到过数据之后又出现空段（且不是最后一段）= 序列中间有洞或已停更：整条失败，不留缺口。
+    上市 / 基日之前的空段、最后一段为空（节假日）都正常。"""
+    if have_rows and not is_last:
+        raise http.FetchError(f"{what} {b}~{e}: 数据中间出现空段（中断或停更），整条不用")
+
+
 def _year_segments(start: date, end: date):
     for y in range(start.year, end.year + 1):
         yield max(start, date(y, 1, 1)), min(end, date(y, 12, 31))
@@ -79,10 +88,14 @@ def fetch_csindex(code: str, start: date, end: date) -> Fetched:
     for i, (b, e) in enumerate(segs):
         d = http.get_json(CSI_PERF, {"indexCode": code, "startDate": b.strftime("%Y%m%d"), "endDate": e.strftime("%Y%m%d")},
                           headers={"Referer": "https://www.csindex.com.cn/"})
-        if not isinstance(d, dict) or str(d.get("code")) != "200":
+        ok = isinstance(d, dict) and str(d.get("code")) == "200"
+        if not ok and rows:            # 基日之前的年份可能返回业务错误而非空数据；有数据之后再出错就是真错
             raise http.FetchError(f"csindex {code} {b}~{e}: code={(d or {}).get('code') if isinstance(d, dict) else '?'} "
                                   f"msg={(d or {}).get('msg') if isinstance(d, dict) else str(d)[:60]}")
-        for r in d.get("data") or []:
+        data = (d.get("data") or []) if ok else []
+        if not data:
+            _hole(f"csindex {code}", b, e, bool(rows), i + 1 == len(segs))
+        for r in data:
             td = str(r.get("tradeDate") or "")
             if len(td) != 8:
                 continue
@@ -106,8 +119,10 @@ def fetch_eastmoney(secid: str, start: date, end: date, fqt: int = 0) -> Fetched
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
             "klt": 101, "fqt": fqt, "beg": b.strftime("%Y%m%d"), "end": e.strftime("%Y%m%d"), "lmt": 10000,
         }, headers={"Referer": "https://quote.eastmoney.com/"}, timeout=12)
-        data = (d or {}).get("data") or {}
+        data = ((d or {}).get("data") or {}) if (d or {}).get("rc", 0) == 0 else {}
         name = name or data.get("name")
+        if not data.get("klines"):
+            _hole(f"eastmoney {secid}", b, e, bool(rows), i + 1 == len(segs))
         for line in data.get("klines") or []:
             p = line.split(",")
             if len(p) < 7:
@@ -135,6 +150,8 @@ def fetch_tencent(sym: str, start: date, end: date) -> Fetched:
         qt = (node.get("qt") or {}).get(sym)
         if isinstance(qt, list) and len(qt) > 1:
             name = name or qt[1]
+        if not node.get("day"):
+            _hole(f"tencent {sym}", b, e, bool(rows), i + 1 == len(segs))
         for p in node.get("day") or []:
             if len(p) >= 6:
                 rows.append(_row(p[0], p[1], p[3], p[4], p[2], p[5]))
@@ -144,6 +161,13 @@ def fetch_tencent(sym: str, start: date, end: date) -> Fetched:
 
 
 # ------------------------------------------------------------------ Yahoo / stooq
+def _zone(name: str | None):
+    try:
+        return ZoneInfo(name) if name else None
+    except Exception:  # noqa: BLE001 — 未知时区名
+        return None
+
+
 def fetch_yahoo(sym: str, start: date, end: date) -> Fetched:
     p1 = int(datetime(start.year, start.month, start.day, tzinfo=timezone.utc).timestamp())
     p2 = int(datetime(end.year, end.month, end.day, tzinfo=timezone.utc).timestamp()) + 86400
@@ -156,12 +180,14 @@ def fetch_yahoo(sym: str, start: date, end: date) -> Fetched:
     meta = r.get("meta") or {}
     ts = r.get("timestamp") or []
     q = ((r.get("indicators") or {}).get("quote") or [{}])[0]
+    tz = _zone(meta.get("exchangeTimezoneName"))
     off = meta.get("gmtoffset") or 0
     col = lambda k: q.get(k) or [None] * len(ts)   # noqa: E731
     o, h, l, c, v = col("open"), col("high"), col("low"), col("close"), col("volume")
     rows = []
     for i, t in enumerate(ts):
-        dd = (datetime.fromtimestamp(t, timezone.utc) + timedelta(seconds=off)).date().isoformat()
+        # 按交易所时区逐个换算（夏令时前后偏移不同）；拿不到时区名才退回当前 gmtoffset
+        dd = (datetime.fromtimestamp(t, tz) if tz else datetime.fromtimestamp(t, timezone.utc) + timedelta(seconds=off)).date().isoformat()
         rows.append(_row(dd, o[i], h[i], l[i], c[i], v[i]))    # 指数用原始收盘；不取 adjclose
     return Fetched(_finish(rows, start, end), meta.get("longName") or meta.get("shortName"))
 

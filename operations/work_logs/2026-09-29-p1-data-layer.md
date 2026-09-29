@@ -6,7 +6,7 @@
 - Task: replan §3 P1——数据层代码 + probe（数据源可用性的最小验证）
 - Timestamp (UTC): 2026-09-29
 - Owner: Faye
-- Executor: Claude Code（云端）
+- Executor: Claude Code（云端）；包末复核：只读 reviewer 子代理
 - Route: direct-execute（Owner 指示「按 §3 从 P1 开始，P1 先交 probe」）
 - Source of truth: `operations/planning/2026-09-29-replan-three-lanes.md` §3 P1、§6；`data/universe.csv` v1；AGENTS.md
 
@@ -15,15 +15,33 @@
 | 项 | 结果 |
 |---|---|
 | probe 实跑（CC 云端，`--end 2026-09-29`） | 39 行；面板容器 37 个：有路由 **0**，明确 error **37**；T29 已剔除不拉取；T34 只查执行序列（也失败） |
-| 失败原因 | 出网策略拒绝：7 个行情域名的 CONNECT 均被代理 403（csindex、oss-ch.csindex、gtimg、eastmoney push2his、Yahoo、stooq、eia）；T15 另记 `EIA_API_KEY 未设置` |
-| 请求记录 | 167 次请求，全部失败，逐条写入 `outputs/data/probe-requests.jsonl`（sha256 `7d5ea574…`）；coverage.csv sha256 `f7a18a23…`（均不入 Git） |
-| 单元测试 | `python -m unittest discover -s tests -t .`：65 个全过（原 31 + 数据层 34） |
+| 失败原因 | 出网策略拒绝。curl 预检 replan 列的 7 个域名（www / oss-ch.csindex、web.ifzq.gtimg、push2his.eastmoney、query1.finance.yahoo、stooq、www.eia.gov）CONNECT 全部 403；probe 实际请求了其中 5 个 host（代码不用 oss-ch；EIA 因未设 key 没发请求，且走的是 `api.eia.gov`） |
+| 请求记录 | 167 次请求全部失败，逐条写入 `outputs/data/probe-requests.jsonl`（sha256 `f083fffe…`）；coverage.csv sha256 `3097eb12…`（均不入 Git） |
+| 单元测试 | `python -m unittest discover -s tests -t .`：77 个全过（原 31 + 数据层 46） |
 | 完成判据「37 个面板容器每个有 route_used 或明确 error」 | 形式上满足；**实质判据（有路由）须在服务器上重跑 probe**（astra S1） |
+| 包末复核 | `approve_with_follow_up`；F1–F9 已在本包修掉，见下表 |
+
+## 复核发现与处理
+
+| # | 发现 | 处理 |
+|---|---|---|
+| F1 | EIA key 会随 URL 进 coverage / 请求记录 / 数据包 | 请求记录与错误信息统一脱敏 `api_key=***`；加测试 |
+| F2 | probe 与 backfill 共用 coverage，package 不核对文件，可能把价格指数标成全收益 | package 逐容器核对 `series_file` 存在、有行、`source = route_used`，不符改记 error 并列入 MANIFEST.json；只打包 coverage 引用的文件；update 遇到 coverage 指向的文件不存在即报错 |
+| F3 | 盘中 / 美股未收盘的实时 K 线可能被冻结进数据包 | 按路由丢弃未收盘 K 线（A 股 15:30 北京、海外 17:00 纽约）；package 拒绝未全部收盘的 `end` |
+| F4 | 数据中间的空段只进 notes，留下缺口 | 东财检查 `rc`；拿到数据后再出现空段（非最后一段）整条失败；执行序列也记缺口；coverage 加 `max_gap_days` |
+| F5 | Yahoo 用当前 gmtoffset 换算全部历史 | 按 `exchangeTimezoneName` 逐根换算；加夏令时测试 |
+| F6 | update 不留请求记录；IncompleteRead 未捕获 | 写 `update-requests.jsonl`；捕获 `http.client.HTTPException` |
+| F7 | 后复权 / 全收益序列重叠区被改写会形成两套基准拼接 | 这类序列 revised > 0 即拒绝合并，要求重新全量 backfill |
+| F8 | compare 容差等于最小价位，四舍五入被报成阶跃 | 默认容差 1.5 个最小价位；加测试 |
+| F9 | 布伦特标 `price_only=False` 会被读成「不用打折」 | 改标 `n/a`，文档说明 |
+| F10 | 本日志对出网失败的表述不准 | 已改（见上表） |
+
+另按复核建议：中证在基日之前的年份若返回业务错误码，视为「还没有数据」（拿到数据后再出错才算失败）；coverage 加 `price_first_date`、`ohlc_missing_rows`、`volume_missing_rows`，供 P2 与 Cowork 判断。
 
 ## 交付
 
-- `src/data/`：`http.py`（标准库、至多重试一次、请求留痕）、`sources.py`（中证 / 东财 / 腾讯 / Yahoo / stooq / EIA）、`universe.py`（路由链与代码映射）、`store.py`（raw 读写与防拼接合并）、`runner.py` + `__main__.py`（probe / backfill / update / package / verify / compare）。
-- `tests/data/`：fixtures 解析、分段、回退、全收益识别、声明替代、近似指数不采用、增量修正、打包截断与 MANIFEST 复验、qfq 差值阶跃。
+- `src/data/`：`http.py`、`sources.py`、`universe.py`、`store.py`、`runner.py`、`__main__.py`（probe / backfill / update / package / verify / compare）。
+- `tests/data/`：fixtures 解析、分段与空段、回退、全收益识别、声明替代、近似指数不采用、未收盘过滤、增量修正与防拼接、打包一致性与截断、MANIFEST 复验、脱敏、qfq 差值阶跃。
 - `docs/data-layer.md`：取数方式补记、研究序列选择规则、文件与字段。
 
 ## 与 replan 的差异与待决
@@ -34,7 +52,8 @@
 4. **EIA**：用 API v2（需免费 key，域名 `api.eia.gov`，不在 replan 白名单里）；无 key 时退到 Yahoo `BZ=F`，两者不拼接。
 5. **09-14 腾讯快照比对**：`data/kline_*.csv` 不在 Git，本环境无数据；`compare` 命令已备好，随 S1 执行。
 
-## 下一步
+## 下一步（astra S1 注意事项）
 
-- Faye：在 CC 环境的网络设置里加行情域名（或由 astra 跑 S1）；需要布伦特现货时给服务器配 `EIA_API_KEY`。
-- astra S1：`probe --record` → `backfill --end 2026-09-30` → `package --end 2026-09-30` → `verify`；coverage 里每个 error 一行，不逐条补证。
+- 顺序：`probe --record` → 全量 `backfill --end 2026-09-30`（不带 `--only`）→ `package --end 2026-09-30` → `verify`。backfill 之后不要再跑 probe（package 会把不一致的容器标 error，但数据就缺了）。
+- `package --end 2026-09-30` 要等北京时间 2026-10-01 05:00（美股 09-30 收盘）之后。
+- 首次实网重点看：中证对基日之前年份的返回；东财执行序列从 2000 年按 120 天分段约 82 次请求 / 只，41 条序列约 80 分钟，若被限流可用 `--start` 缩短。

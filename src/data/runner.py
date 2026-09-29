@@ -14,8 +14,9 @@ import json
 import re
 import shutil
 import subprocess
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from . import http, store
 from . import universe as U
@@ -29,11 +30,14 @@ PROBE_WINDOW_DAYS = 45       # 全收益候选与执行 ETF 只看最近一段�
 OVERLAP_DAYS = 10
 MAX_GAP_DAYS = 20            # 超过即在 notes 提示（春节长假约 10 天）
 INDEX_ROUTES = {"csi", "eastmoney_index", "yahoo"}     # universe 路由里属于价格指数的：无全收益版本即 price_only
+A_SHARE_ROUTES = {"csi", "eastmoney_index", "tencent_index", "eastmoney_etf_hfq", "eastmoney_etf", "tencent_etf"}
+STRICT_ROUTES = {"eastmoney_etf_hfq"}   # 后复权：重叠区被改写 = 复权基准变了，不能拼接
 NOT_ATTEMPTED = {"518880": "上海金 Au99.99 未尝试：固定源与 replan 均未给出接口"}
 
 COVERAGE_COLUMNS = [
     "container", "code", "route_used", "first_date", "last_date", "rows", "tr_code_used", "price_only", "error",
     "theme_id", "status", "series_code", "series_file", "series_name",
+    "max_gap_days", "price_first_date", "ohlc_missing_rows", "volume_missing_rows",
     "exec_code", "exec_route", "exec_first_date", "exec_last_date", "exec_rows", "exec_error", "checked_at", "notes",
 ]
 _TR_MARK = re.compile(r"全收益|财富|total\s*return|\bN?TR\b", re.I)
@@ -41,6 +45,28 @@ _TR_MARK = re.compile(r"全收益|财富|total\s*return|\bN?TR\b", re.I)
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def last_complete(route: str, now: datetime | None = None) -> date:
+    """该路由最近一根已收盘日线的日期：A 股按北京时间 15:30，海外按纽约时间 17:00（亚洲海外指数更早收盘，按纽约算只会更保守）。
+    抓取时比它新的 K 线是盘中实时值，一律丢弃，不进 raw、更不进数据包。"""
+    now = now or _utcnow()
+    if route in A_SHARE_ROUTES:
+        t, cut = now.astimezone(ZoneInfo("Asia/Shanghai")), time(15, 30)
+    else:
+        t, cut = now.astimezone(ZoneInfo("America/New_York")), time(17, 0)
+    return t.date() if t.time() >= cut else t.date() - timedelta(days=1)
+
+
+def price_only_flag(row: dict) -> str:
+    """价格指数 → True；商品（布伦特现货 / 期货，无分红也无展期收益）→ n/a，不按指数的每年 1% 规则处理。"""
+    if row.get("research_route") == "eia_or_yahoo":
+        return "n/a"
+    return str(row.get("research_route") in INDEX_ROUTES)
 
 
 def is_tr_name(name: str | None) -> bool:
@@ -60,6 +86,10 @@ def fetch_chain(chain: list[str], code: str, start: date, end: date):
         except Exception as e:  # noqa: BLE001 — 记一行，退下一条路
             errors.append(f"{route}: {str(e)[:200]}")
             continue
+        cutoff = last_complete(route).isoformat()
+        n0 = len(got.rows)
+        got.rows = [r for r in got.rows if r["date"] <= cutoff]
+        got.dropped = n0 - len(got.rows)
         if got.rows:
             return route, got, errors
         errors.append(f"{route}: 0 行")
@@ -80,13 +110,22 @@ def detect_tr(row: dict, route: str, end: date) -> tuple[str | None, list[str]]:
     return None, notes
 
 
-def gap_note(rows: list[dict]) -> str | None:
+def max_gap(rows: list[dict]) -> tuple[int, str | None, str | None]:
     worst = (0, None, None)
     for a, b in zip(rows, rows[1:]):
         g = (date.fromisoformat(b["date"]) - date.fromisoformat(a["date"])).days
         if g > worst[0]:
             worst = (g, a["date"], b["date"])
-    return f"最大间隔 {worst[0]} 天（{worst[1]}→{worst[2]}）" if worst[0] > MAX_GAP_DAYS else None
+    return worst
+
+
+def gap_note(rows: list[dict], what: str = "") -> str | None:
+    g, a, b = max_gap(rows)
+    return f"{what}最大间隔 {g} 天（{a}→{b}）" if g > MAX_GAP_DAYS else None
+
+
+def _missing(rows: list[dict], cols) -> int:
+    return sum(1 for r in rows if not all((r.get(c) or 0) > 0 for c in cols))
 
 
 def collect(row: dict, start: date, end: date, *, full: bool) -> tuple[dict, list[tuple[str, str, list[dict]]]]:
@@ -113,7 +152,7 @@ def collect(row: dict, start: date, end: date, *, full: bool) -> tuple[dict, lis
             if tr:
                 r, got, errs = fetch_chain([chain[0]], tr, start, end)
                 if got:
-                    used = (tr, r, got, False)
+                    used = (tr, r, got, "False")
                     cov["tr_code_used"] = tr
                 else:
                     notes.append(f"全收益 {tr} 全历史拉取失败（{'; '.join(errs)[:160]}）")
@@ -121,7 +160,7 @@ def collect(row: dict, start: date, end: date, *, full: bool) -> tuple[dict, lis
                 fcode, froute = U.DECLARED_FALLBACK[code]
                 r, got, errs = fetch_chain([froute], fcode, start, end)
                 if got:
-                    used = (fcode, r, got, False)
+                    used = (fcode, r, got, "False")
                     notes.append(f"未得全收益版本，按 replan §1 改用 {fcode} 后复权（研究 = 执行）")
                 else:
                     notes.append(f"声明的替代 {fcode} 后复权不可得（{'; '.join(errs)[:160]}）")
@@ -129,16 +168,22 @@ def collect(row: dict, start: date, end: date, *, full: bool) -> tuple[dict, lis
             if used is None or full:
                 r, got, price_errs = fetch_chain(chain, code, start, end)
                 if got:
-                    price = (code, r, got, row["research_route"] in INDEX_ROUTES)
+                    price = (code, r, got, price_only_flag(row))
             if used is None:
                 used = price
             if used:
                 ucode, uroute, got, price_only = used
                 cov.update(route_used=uroute, series_code=ucode, series_file=store.file_name(ucode, uroute),
                            series_name=got.name or "", first_date=got.rows[0]["date"], last_date=got.rows[-1]["date"],
-                           rows=len(got.rows), price_only=str(price_only))
+                           rows=len(got.rows), price_only=price_only, max_gap_days=max_gap(got.rows)[0],
+                           ohlc_missing_rows=_missing(got.rows, ("open", "high", "low")),
+                           volume_missing_rows=_missing(got.rows, ("volume",)))
+                if price:
+                    cov["price_first_date"] = price[2].rows[0]["date"]
                 if price_errs and used is price:
                     notes.append("前序路由失败：" + "; ".join(price_errs)[:200])
+                if got.dropped:
+                    notes.append(f"丢弃未收盘 K 线 {got.dropped} 行")
                 g = gap_note(got.rows)
                 if g:
                     notes.append(g)
@@ -167,6 +212,9 @@ def collect(row: dict, start: date, end: date, *, full: bool) -> tuple[dict, lis
             if full:
                 cov.update(exec_first_date=got.rows[0]["date"], exec_rows=len(got.rows))
                 series.append((ex, r, got.rows))
+                g = gap_note(got.rows, "执行序列")
+                if g:
+                    notes.append(g)
             if errs:
                 notes.append("执行序列前序路由失败：" + "; ".join(errs)[:160])
         else:
@@ -299,9 +347,15 @@ def update(end: date, *, only=None, uni_path: Path = U.UNIVERSE, raw_dir: Path =
         seen = set()
         for kind, code, fname in _container_files(cov, row):
             path = raw_dir / fname
-            if fname in seen or not path.exists():
+            if fname in seen:
                 continue
             seen.add(fname)
+            if not path.exists():
+                if kind == "research":        # coverage 指向的研究序列不在：多半是 backfill 之后又跑了 probe
+                    report.append({"at": _now(), "theme_id": row["theme_id"], "kind": kind, "file": fname, "ok": False,
+                                   "error": "coverage 指向的研究序列文件不存在：重跑 backfill"})
+                    log(f"  ERR {row['theme_id']} {fname}: 文件不存在，重跑 backfill")
+                continue
             old = store.read(path)
             route = store.source_of(old)
             ent = {"at": _now(), "theme_id": row["theme_id"], "kind": kind, "file": fname, "route": route}
@@ -311,7 +365,11 @@ def update(end: date, *, only=None, uni_path: Path = U.UNIVERSE, raw_dir: Path =
                 if fn is None:
                     raise http.FetchError(f"无 {code} 在 {route} 的代码映射")
                 got = fn(since, end)
-                merged, added, revised = store.merge(old, got.rows, route)
+                cutoff = last_complete(route).isoformat()
+                merged, added, revised = store.merge(old, [r for r in got.rows if r["date"] <= cutoff], route)
+                strict = route in STRICT_ROUTES or (kind == "research" and code == cov.get("tr_code_used"))
+                if strict and revised:
+                    raise store.MixError(f"重叠区 {revised} 行被改写：后复权 / 全收益序列的基准可能变了，不拼接，需重新全量 backfill")
                 store.write(path, merged)
                 ent.update(ok=True, since=since.isoformat(), added=added, revised=revised, last_date=merged[-1]["date"])
                 log(f"  ok  {row['theme_id']} {fname}: +{added} 行，修正 {revised} 行，至 {merged[-1]['date']}")
@@ -325,6 +383,9 @@ def update(end: date, *, only=None, uni_path: Path = U.UNIVERSE, raw_dir: Path =
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "update-log.jsonl", "a", encoding="utf-8") as f:
         for ent in report:
+            f.write(json.dumps(ent, ensure_ascii=False) + "\n")
+    with open(out_dir / "update-requests.jsonl", "a", encoding="utf-8") as f:
+        for ent in http.LOG:
             f.write(json.dumps(ent, ensure_ascii=False) + "\n")
     return report
 
@@ -349,17 +410,33 @@ def package(end: date, *, uni_path: Path = U.UNIVERSE, raw_dir: Path = RAW_DIR, 
     covs = read_coverage(out_dir / "coverage.csv")
     if not covs:
         raise SystemExit("没有 outputs/data/coverage.csv：先跑 backfill")
+    safe = min(last_complete("csi"), last_complete("yahoo"))
+    if end > safe:
+        raise SystemExit(f"end={end} 尚未全部收盘（A 股与海外都收盘后的最近日期是 {safe}）；等收盘后再打包")
     dest = pkg_root / f"research-package-{end.isoformat()}"
     if dest.exists():
         if not force:
             raise SystemExit(f"{dest} 已存在；确需重建加 --force")
         shutil.rmtree(dest)
     (dest / "raw").mkdir(parents=True)
+    uni = {r["theme_id"]: r for r in U.load(uni_path)}
+    wanted, inconsistent = set(), []
+    for c in covs:
+        if c.get("series_file"):                  # coverage 与 raw 必须一致，否则这一行按 error 处理
+            rows = store.read(raw_dir / c["series_file"])
+            src = store.source_of(rows) if rows else None
+            if not rows or src != c.get("route_used"):
+                inconsistent.append(c["theme_id"])
+                why = "缺失" if not rows else f"来源 {src} ≠ route_used {c.get('route_used')}"
+                c["error"] = f"package: {c['series_file']} {why}（coverage 与 raw 不一致，重跑 backfill）"
+                for k in ("route_used", "series_code", "series_file", "tr_code_used", "price_only", "first_date", "last_date", "rows"):
+                    c[k] = ""
+        wanted |= {f for _, _, f in _container_files(c, uni.get(c["theme_id"], {}))}
     n = 0
-    for src in sorted(raw_dir.glob("*.csv")):
-        rows = [r for r in store.read(src) if r["date"] <= end.isoformat()]
+    for fname in sorted(wanted):
+        rows = [r for r in store.read(raw_dir / fname) if r["date"] <= end.isoformat()]
         if rows:
-            store.write(dest / "raw" / src.name, rows)
+            store.write(dest / "raw" / fname, rows)
             n += 1
     for c in covs:
         _refresh(c, dest / "raw")
@@ -372,7 +449,8 @@ def package(end: date, *, uni_path: Path = U.UNIVERSE, raw_dir: Path = RAW_DIR, 
     panel = [c for c in covs if c.get("status") in U.PANEL_STATUSES]
     meta = {"end": end.isoformat(), "created_at": _now(), "git_head": _git_head(), "raw_files": n,
             "universe_sha256": _sha256(dest / "universe.csv"),
-            "panel_containers": len(panel), "with_series": sum(1 for c in panel if c.get("series_file")),
+            "panel_containers": len(panel), "with_series": sum(1 for c in panel if c.get("rows")),
+            "inconsistent_with_raw": inconsistent,
             "price_only": sum(1 for c in panel if c.get("price_only") == "True"),
             "verify": "python -m src.data verify <本目录>  或  sha256sum -c MANIFEST.sha256"}
     (dest / "MANIFEST.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
@@ -401,9 +479,9 @@ def verify(dest: Path) -> list[str]:
     return problems
 
 
-def compare(ref: Path, raw: Path, *, tol: float = 1e-3, out: Path | None = None) -> dict:
+def compare(ref: Path, raw: Path, *, tol: float = 0.0015, out: Path | None = None) -> dict:
     """重叠区间逐日比对收盘价（如仓库 data/kline_*.csv 的 09-14 腾讯快照 vs data/raw）。
-    差值 = raw − ref。腾讯 qfq 是减法复权：与不复权相比，差值在两次除息之间恒定、除息日跳变，最后一次除息后为 0；
+    差值 = raw − ref；tol 默认 1.5 个最小价位（0.001），避免三位小数的四舍五入被当成阶跃。腾讯 qfq 是减法复权：与不复权相比，差值在两次除息之间恒定、除息日跳变，最后一次除息后为 0；
     列出差值变化的日期（候选除息日）逐条解释，其余不一致需人工查。"""
     a = {r["date"][:10]: float(r["close"]) for r in store.read(ref) if r.get("close")}
     b = {r["date"][:10]: float(r["close"]) for r in store.read(raw) if r.get("close")}

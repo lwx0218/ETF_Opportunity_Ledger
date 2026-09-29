@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import http.client
 import json
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,8 +24,16 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like
 DEFAULT_TIMEOUT = 20
 RETRIES = 1                 # replan §6.4：任何数据源失败不重试超过一次
 
-LOG: list[dict] = []        # 本进程的请求记录
+LOG: list[dict] = []        # 本进程的请求记录（URL 已脱敏）
 RECORD_DIR: Path | None = None   # 设了就把原始响应落盘（probe --record），供日后替换构造的 fixtures
+
+
+_SECRET = re.compile(r"((?:api_?key|token|apikey)=)[^&\s]+", re.I)
+
+
+def redact(text: str) -> str:
+    """URL / 错误信息里的密钥换成 ***：请求记录与 coverage 会进研究数据包。"""
+    return _SECRET.sub(r"\1***", text)
 
 
 class FetchError(RuntimeError):
@@ -35,11 +45,11 @@ def _now() -> str:
 
 
 def _record(url: str, raw: bytes | None, error: str | None) -> None:
-    ent = {"url": url, "fetched_at": _now(), "bytes": len(raw) if raw is not None else None,
+    ent = {"url": redact(url), "fetched_at": _now(), "bytes": len(raw) if raw is not None else None,
            "sha256": hashlib.sha256(raw).hexdigest() if raw is not None else None, "error": error}
     if raw is not None and RECORD_DIR is not None:
         RECORD_DIR.mkdir(parents=True, exist_ok=True)
-        name = f"{hashlib.sha1(url.encode()).hexdigest()[:12]}.body"
+        name = f"{hashlib.sha1(redact(url).encode()).hexdigest()[:12]}.body"
         (RECORD_DIR / name).write_bytes(raw)
         ent["file"] = name
     LOG.append(ent)
@@ -63,15 +73,15 @@ def get(url: str, params: dict | None = None, *, timeout: int = DEFAULT_TIMEOUT,
             last = e
             if e.code in (400, 401, 403, 404):
                 break
-        except (URLError, TimeoutError, OSError) as e:
+        except (URLError, TimeoutError, OSError, http.client.HTTPException) as e:     # 含 IncompleteRead（长窗口断连）
             last = e
             if "Tunnel connection failed: 403" in str(e):     # 出网策略拒绝：重试也不会过
                 break
         if attempt < retries:
             time.sleep(backoff * (attempt + 1))
-    msg = f"{type(last).__name__}: {str(last)[:160]}"
+    msg = redact(f"{type(last).__name__}: {str(last)[:160]}")
     _record(url, None, msg)
-    raise FetchError(f"{msg}  ← {url[:160]}")
+    raise FetchError(f"{msg}  ← {redact(url)[:160]}")
 
 
 def get_json(url: str, params: dict | None = None, **kw) -> Any:
@@ -85,4 +95,4 @@ def get_json(url: str, params: dict | None = None, **kw) -> Any:
     try:
         return json.loads(text)
     except json.JSONDecodeError as e:
-        raise FetchError(f"not JSON ({e.msg}): {text[:120]!r}  ← {url[:120]}") from e
+        raise FetchError(f"not JSON ({e.msg}): {text[:120]!r}  ← {redact(url)[:120]}") from e
