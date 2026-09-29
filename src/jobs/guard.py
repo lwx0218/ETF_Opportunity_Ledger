@@ -2,7 +2,8 @@
 
 - D 必须是基准（H00300）的交易日，且基准已有 D 的行；
 - A 股路由的研究序列（指数在交易日不会停牌）在 D 必须有行，缺了就是数据没到，停止运行而不是把候选当「无开盘价」作废；
-  海外序列按各自交易所日历，D 缺行只记报告；
+  海外序列经 I-20 对齐后 D 日总有一行（没有新 K 线就是平盘），这里只剩「序列起点晚于 D」一种缺行，只记报告；
+  海外平盘与疑似停更由 live_panel 报告（末尾连续平盘行数、最后一根 K 线日期）；
 - 连续性：已处理过的交易日里若不含 D 的前一个基准交易日，说明漏跑，先按顺序补跑。
 已处理的交易日记在 data/jobs/processed-days.txt（运行数据，不入 Git），每成功跑完一天追加一行。
 """
@@ -48,5 +49,5 @@ def preflight(panel: pd.DataFrame, bench: pd.Series, day: str, coverage_csv: Pat
         if c.get("route_used") in A_SHARE_ROUTES:
             blocking.append(f"{c['container']}（{c['route_used']}）在 {day} 没有行：数据未到，先跑 update")
         else:
-            notes.append(f"{c['container']}（{c['route_used']}）在 {day} 没有行（按其交易所日历可能休市）")
+            notes.append(f"{c['container']}（{c['route_used']}）在 {day} 没有行（对齐后本应每天有行：序列起点晚于 {day} 或未能读入）")
     return blocking, notes

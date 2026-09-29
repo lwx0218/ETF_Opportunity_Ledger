@@ -282,18 +282,28 @@ class Pieces(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
         panel, _ = make_panel()
-        for name, fname, route in (("沪深300", "H00300.csv", "csi"), ("半导体", "H30184CNY010.csv", "csi")):
+        for name, fname, route in (("沪深300", "H00300.csv", "csi"), ("半导体", "H30184CNY010.csv", "csi"), ("黄金", "NDX.csv", "yahoo")):
             g = panel[panel["container"] == name]
+            if route == "yahoo":
+                g = g[g["date"] <= pd.Timestamp("2026-03-13")]              # 海外序列 03-13 之后停更
             store.write(tmp / "raw" / fname, [dict(date=d.date().isoformat(), open=o, high=h, low=l, close=c, volume=1000.0, source=route)
                                                for d, o, h, l, c in zip(g["date"], g["open"], g["high"], g["low"], g["close"])])
         cov = [dict(theme_id="T01", container="沪深300", status="retained", series_file="H00300.csv", route_used="csi"),
                dict(theme_id="T06", container="半导体", status="retained", series_file="H30184CNY010.csv", route_used="csi"),
-               dict(theme_id="T15", container="原油", status="flagged", error="eia: 403")]
-        data_runner.write_coverage(tmp / "coverage.csv", cov, ["T01", "T06", "T15"])
+               dict(theme_id="T15", container="原油", status="flagged", error="eia: 403"),
+               dict(theme_id="T35", container="纳指100", status="retained", series_file="NDX.csv", route_used="yahoo")]
+        data_runner.write_coverage(tmp / "coverage.csv", cov, ["T01", "T06", "T15", "T35"])
         p, b, problems = live_panel(tmp / "raw", tmp / "coverage.csv", date(2026, 3, 31))
-        self.assertEqual(set(p["container"]), {"沪深300", "半导体"})
+        self.assertEqual(set(p["container"]), {"沪深300", "半导体", "纳指100"})
         self.assertEqual(p["date"].max(), pd.Timestamp("2026-03-31"))
         self.assertTrue(problems and "原油" in problems[0])
+        # I-20 之后停更不再表现为缺行（D 日是平盘行），必须由报告点出来
+        stale = [x for x in problems if "纳指100" in x]
+        self.assertEqual(len(stale), 1)
+        self.assertIn("2026-03-13", stale[0])
+        self.assertIn("可能停更", stale[0])
+        _, _, problems = live_panel(tmp / "raw", tmp / "coverage.csv", date(2026, 3, 13))
+        self.assertFalse(any("纳指100" in x for x in problems))           # 03-13 用 03-12 的 K 线，不是平盘
 
     def test_replay_cli(self):
         tmp = Path(tempfile.mkdtemp())

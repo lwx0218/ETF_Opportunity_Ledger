@@ -6,7 +6,7 @@
 - Document type: reference（卡片证据的来源登记表与可用时点规则）
 - Status: draft（C 级来源与待核时刻由服务器端核实后，于台账上线前冻结为 v1）
 - Owner: Faye（验收）；Claude（研究与决定）
-- Last updated: 2026-09-27
+- Last updated: 2026-09-29（§3 第 2、3 条 max→min 更正）
 - Source of truth: docs/etf-card-schema-v1.md §2.1 `evidence[]`；docs/project-intake/etf-opportunity-ledger.md §3 第 2 条；docs/etf-rotation-framework-v0.md §8（本清单取代其粗表）
 - 机器可读版本：`docs/etf-fixed-sources-v1.csv`（60 行，一行一个来源）
 
@@ -44,8 +44,8 @@
 `available_at` 按下面顺序取：
 
 1. **发布时刻到分钟（A 级）**：`available_at = 官方发布时刻`，换算为北京时间。
-2. **只到日期（B 级）**：`available_at = max(发布日次日 00:00 北京时间, first_seen_at)`。也就是说，只知道日期的信息，当天收盘的卡片一律不能用，除非我们自己在当天收盘前已经抓到并留了快照。
-3. **巨潮等「日期不可信」的来源**：公告标注的披露日与实际上网时间不一致（常在前一晚就能看到），`available_at = first_seen_at`，披露日只作参考。
+2. **只到日期（B 级）**：`available_at = min(发布日次日 00:00 北京时间, first_seen_at)`（2026-09-29 更正：原文误写为 max，正文意思一直是「较早者」）。也就是说，只知道日期的信息，最晚从次日 00:00 起可用；如果我们自己在当天收盘前已经抓到并留了快照，从抓到的那一刻起可用。没有快照时，当天收盘的卡片不能用它。
+3. **巨潮等「日期不可信」的来源**：公告标注的披露日与实际上网时间不一致（常在前一晚就能看到）。同样按第 2 条的 min 规则：披露日次日 00:00 是上限，实际几乎总是由 `first_seen_at` 决定；披露日只作参考。
 4. **明确延迟的数据**：按延迟规则计。LME 免费库存按 T+2；两融按 T+1（核实后）；ETF 份额以接口返回的数据日期为准，不以抓取日为准。
 
 举例（卡片在 A 股收盘后生成）：

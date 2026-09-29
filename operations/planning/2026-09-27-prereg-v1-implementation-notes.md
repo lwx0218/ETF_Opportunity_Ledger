@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: V1 规则验证的框架实现（`src/research/prereg_v1/`）与 prereg 未写死之处的实现口径
-- Timestamp (UTC): 2026-09-27（同日第二版：分工改为 Claude 决定、Owner 验收；I-15 分块改为季度，I-16 判据收紧，I-18 明确全收益口径）
+- Timestamp (UTC): 2026-09-27（同日第二版：分工改为 Claude 决定、Owner 验收；I-15 分块改为季度，I-16 判据收紧，I-18 明确全收益口径）；2026-09-29 追加 E 节 I-20 ~ I-23（日历对齐、成交量来源、不替代近似指数、可用时点 min）
 - Owner: Faye
 - Route: plan
 - Source of truth: docs/etf-rotation-prereg-v1.md §3–§10；docs/etf-card-schema-v1.md；src/rotation/etf_probe.py（状态机与 ATR 算法）
@@ -78,3 +78,15 @@ V1 读一张长表（CSV 或 parquet），一行 = 一个容器一个交易日�
 - 冻结样本外「只跑一次」由 `outputs/prereg_v1/OOS_LOCK.json` 在本机强制；锁文件不入 Git，跑的那次要写进工作日志，这是程序上的约束。
 - 下一步：R1 / R3 按 B 节交付数据包；V1 按 check → characterize → design → oos → rolling 顺序执行。
 - 验收（Owner）：
+
+## E. 2026-09-29 追加（数据包到达前，由 CC P2 复核提出，Claude 决定）
+
+| # | 问题 | 决定 | 依据 |
+|---|---|---|---|
+| I-20 | 海外容器与 A 股容器交易日历不同：等权基准在日期并集上算会丢掉跨假期那天的收益（构造数据 255% vs 283%，偏向策略）；A 股休市日只有海外容器参与排名；引擎会在 A 股休市日成交 | **全部容器对齐到 A 股日历**（= H00300 的交易日），在 `src/indicators/build.py` 做，`prereg_v1` 不改。海外路由（yahoo / stooq / eia）的容器：A 股交易日 D 取**本地日期 ≤ D−1 的最后一根 K 线**；若与前一 A 股日相同（海外休市或无新 K 线），写一根**平盘 K 线**（开高低收 = 前收，成交量 0），`build-report.json` 记 `stale_days`。A 股路由的容器不在 A 股日历上的行丢弃并计数 | 执行工具全部是 A 股上市的 ETF（含 QDII），只能在 A 股交易日按 A 股价格成交；横截面排名要求同日可比；美股 D 日收盘在北京 D+1 凌晨、港股 16:00 收盘，都晚于 A 股 15:00，取 D−1 才没有未来视角（日股 14:00 收盘本可用 D，为统一口径也取 D−1，只损失几小时时效）。平盘 K 线保证对齐后 `pct_change` 无空洞，跨假期收益落在下一根 K 线里，等权基准不再漏收益 |
+| I-20 的折扣 | — | 海外容器的研究序列比可执行 ETF 滞后一个交易日；V1 报告对海外容器的 R 倍数结论单独列出并注明此折扣，作为数据陷阱第 5 条 | 指数 ≠ ETF 的一种：QDII ETF 在 A 股 D+1 开盘已反映美股 D 日收盘，研究序列没有 |
+| I-21 | 全收益指数多半没有成交量，状态机四个放量状态（启动 POP / 超跌反弹 REV / 过热 EXH / 破位 DROP）恒不出现 | **借同一指数价格版本的成交量**：研究序列 `volume_missing_rows / rows > 0.5` 时，按日期从数据包里该指数价格版本文件取 `volume`；价格版本也没有的（EIA 布伦特、可能的海外指数），成交量保持 0，四态不可达。`build-report.json` 每个容器记 `volume_source`（self / price_version / none）和各状态出现次数；V1 报告附每个容器可达状态表 | 全收益与价格版本成份相同、交易日相同，成交量是成份股合计，两者本就是同一个数；放量条件是比值（量 / 20 日均量），单位无关。不改状态机的任何阈值（prereg §3.1「一个都不调」） |
+| I-22 | 纳指科技 NDXTMC 在免费源拉不到时，universe v1 写了「用 ^NDXT 代替」，与 AGENTS.md「不用近似指数替代」冲突 | **按 AGENTS.md：不替代。** 拉不到则 T36 不进面板，coverage 记 `error = 研究指数不可得`，V1 在没有它的情况下跑；astra S1 另试 Nasdaq 官方历史数据页。universe.csv 的 open_question 已同步改写 | ^NDXT 是等权版、NDXTMC 是市值加权版，权重不同就是不同指数；执行基金 159509 跟踪的是后者 |
+| I-23 | 固定源 B 级可用时点规则写成了 max，正文意思是 min | 已更正为 `available_at = min(发布日次日 00:00, first_seen_at)`（docs/etf-fixed-sources-v1.md §3 与 CSV 10 处） | 次日 00:00 是「公众最晚可得」的上限；我们更早抓到并留快照就从抓到时可用 |
+
+上述四条与 I-01 ~ I-19 一并冻结；数据包到达后不再改。

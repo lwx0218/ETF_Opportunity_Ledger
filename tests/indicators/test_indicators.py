@@ -23,7 +23,7 @@ from src.indicators import build as B                           # noqa: E402
 from src.indicators.metrics import atr20, month_end_flags, rs_1m, z_month   # noqa: E402
 from src.indicators.states import form_states                   # noqa: E402
 from src.research.prereg_v1 import run as prereg_run             # noqa: E402
-from src.research.prereg_v1.panel import reference_atr           # noqa: E402
+from src.research.prereg_v1.panel import ew_daily_returns, reference_atr   # noqa: E402
 
 
 def legacy_probe():
@@ -164,6 +164,10 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(rep["containers"]["原油"]["volume_missing_or_zero"], rep["containers"]["原油"]["rows"])
         hs = panel[panel["container"] == "沪深300"]
         self.assertTrue(np.allclose(hs["rs_1m"].dropna(), 0))       # 基准自己对自己
+        bench = pd.read_csv(out / "bench.csv", parse_dates=["date"])
+        self.assertTrue(pd.to_datetime(panel["date"]).isin(bench["date"]).all())      # I-20：全部在 A 股日历上
+        self.assertEqual(rep["containers"]["原油"]["calendar"], "overseas_d_minus_1")
+        self.assertEqual(rep["containers"]["原油"]["volume_source"], "none")
         self.assertEqual(prereg_run.main(["check", "--panel", str(out / "panel.csv"), "--bench", str(out / "bench.csv"),
                                           "--out", str(self.tmp / "v1")]), 0)
 
@@ -188,6 +192,130 @@ class EndToEnd(unittest.TestCase):
             f.write("2026-10-01,1,1,1,1,,,eia\n")
         with self.assertRaisesRegex(B.BuildError, "MANIFEST"):
             B.build(pkg, self.tmp / "panel", log=lambda *_: None)
+
+
+def _bars(dates, start=100.0, step=0.5, volume=1000.0):
+    c = start + step * np.arange(len(dates))
+    return pd.DataFrame({"date": pd.to_datetime(dates), "open": c - 0.1, "high": c + 0.3, "low": c - 0.3, "close": c,
+                         "volume": volume})
+
+
+SPRING = pd.bdate_range("2026-02-16", "2026-02-20")                     # A 股春节休市一周
+CAL = pd.bdate_range("2025-12-01", "2026-03-31").difference(SPRING)     # A 股日历
+US_HOLIDAYS = pd.to_datetime(["2026-01-19", "2026-02-16"])
+US_DAYS = pd.bdate_range("2025-11-24", "2026-03-31").difference(US_HOLIDAYS)
+
+
+class CalendarAlignment(unittest.TestCase):
+    """I-20：全部容器对齐到 A 股日历；海外取本地 ≤ D−1 的最后一根 K 线，没有新 K 线写平盘。"""
+
+    def test_overseas_takes_previous_local_bar_and_flat_bars(self):
+        raw = _bars(US_DAYS)
+        out, rep = B.align_to_calendar(raw, CAL, overseas=True)
+        self.assertEqual(list(out["date"]), list(CAL))
+        by = raw.set_index("date")
+        for d, c in zip(out["date"], out["close"]):                     # 每一行都只用 D 之前的 K 线
+            self.assertEqual(c, by[by.index < d]["close"].iloc[-1])
+        flat = out[out["date"] == pd.Timestamp("2026-01-20")].iloc[0]  # 美股 01-19 休市：01-20 没有新 K 线
+        self.assertEqual((flat.open, flat.high, flat.low, flat.close, flat.volume), (flat.close,) * 4 + (0.0,))
+        self.assertGreaterEqual(rep["stale_days"], 1)
+        after = out[out["date"] == pd.Timestamp("2026-02-23")].iloc[0]  # 春节后第一天：用美股 02-20 的收盘
+        self.assertEqual(after.close, by.loc[pd.Timestamp("2026-02-20"), "close"])
+        self.assertGreaterEqual(rep["multi_bar_days"], 1)
+        self.assertEqual(rep["trailing_stale_days"], 0)
+
+    def test_a_share_rows_off_calendar_dropped(self):
+        raw = _bars(pd.bdate_range("2025-12-01", "2026-03-31"))            # 含春节那一周（假数据）
+        out, rep = B.align_to_calendar(raw, CAL, overseas=False)
+        self.assertEqual(rep["dropped_off_calendar"], len(SPRING))
+        self.assertTrue(out["date"].isin(CAL).all())
+        self.assertEqual(rep["missing_on_calendar"], 0)
+        _, rep = B.align_to_calendar(raw[raw["date"] != CAL[30]], CAL, overseas=False)   # A 股序列自己缺一个交易日：不补，计数
+        self.assertEqual(rep["missing_on_calendar"], 1)
+
+    def test_trailing_flats_are_reported(self):
+        raw = _bars(US_DAYS[US_DAYS <= "2026-03-20"])                       # 海外序列 03-20 以后停更
+        _, rep = B.align_to_calendar(raw, CAL, overseas=True)
+        self.assertEqual(rep["trailing_stale_days"], len(CAL[CAL > "2026-03-23"]))
+        self.assertEqual(rep["last_bar_date"], "2026-03-20")
+
+    def test_equal_weight_no_longer_drops_holiday_returns(self):
+        a = _bars(CAL, step=0.4)
+        us = _bars(US_DAYS, start=200.0, step=1.0)
+        bench = a.set_index("date")["close"]
+        end = CAL[-1].date()
+
+        def panel(frames):
+            out = []
+            for name, df in frames.items():
+                q = B.container_panel(df.reset_index(drop=True), bench, end)
+                q.insert(1, "container", name)
+                out.append(q)
+            return pd.concat(out, ignore_index=True)
+
+        old = panel({"A": a, "US": us})                                     # 旧做法：各用各的日历
+        aligned = panel({"A": B.align_to_calendar(a, CAL, False)[0], "US": B.align_to_calendar(us, CAL, True)[0]})
+        wide = aligned.pivot(index="date", columns="container", values="close")
+        self.assertEqual(int(wide.pct_change(fill_method=None).iloc[1:].isna().sum().sum()), 0)   # 没有空洞
+        # 春节后第一天 02-23：A 股收益 = 02-23 / 02-13；美股收益 = 02-20 / 02-12（两个 A 股交易日各自的 D−1），跨假期收益都在
+        ret = wide.pct_change(fill_method=None).loc[pd.Timestamp("2026-02-23")]
+        A, U = a.set_index("date")["close"], us.set_index("date")["close"]
+        self.assertAlmostEqual(ret["A"], A[pd.Timestamp("2026-02-23")] / A[pd.Timestamp("2026-02-13")] - 1)
+        self.assertAlmostEqual(ret["US"], U[pd.Timestamp("2026-02-20")] / U[pd.Timestamp("2026-02-12")] - 1)
+        old_wide = old.pivot(index="date", columns="container", values="close")
+        old_wide = old_wide[old_wide.index >= CAL[1]]
+        holes = old_wide.pct_change(fill_method=None).iloc[1:].isna().sum()
+        self.assertGreater(int(holes["A"]), 0)                              # 旧做法：A 股假期后第一天的收益被丢掉
+        self.assertGreater(int(holes["US"]), 0)                             #          美股假日后第一天的收益被丢掉
+        r = ew_daily_returns(aligned)                                       # 对齐后：等权日收益 = 当日两个容器收益的均值，无一缺席
+        both = wide.pct_change(fill_method=None).iloc[1:]
+        np.testing.assert_allclose(r.loc[both.index].to_numpy(), both.mean(axis=1).to_numpy())
+
+    def test_truncation_with_alignment(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        raw = _bars(US_DAYS)
+        bench = _bars(CAL).set_index("date")["close"]
+        cov = {"series_file": "NDX.csv", "route_used": "yahoo", "code": "NDX", "series_code": "NDX"}
+        store.write(tmp / "NDX.csv", [{**r, "date": r["date"].date().isoformat(), "source": "yahoo"} for r in raw.to_dict("records")])
+        full_df, _ = B.research_frame(tmp, cov, CAL)
+        full = B.container_panel(full_df, bench, CAL[-1].date())
+        for cut in (CAL[20], CAL[45], CAL[-5]):
+            store.write(tmp / "cut.csv", [{**r, "date": r["date"].date().isoformat(), "source": "yahoo"}
+                                          for r in raw[raw["date"] <= cut].to_dict("records")])
+            part_df, _ = B.research_frame(tmp, {**cov, "series_file": "cut.csv"}, CAL[CAL <= cut])
+            part = B.container_panel(part_df, bench[bench.index <= cut], cut.date())
+            a = full[full["date"] <= cut].reset_index(drop=True)
+            if not month_end_flags(part["date"], cut.date()).iloc[-1] and month_end_flags(full["date"], CAL[-1].date())[full["date"] == cut].any():
+                a.loc[len(a) - 1, "z_month"] = np.nan
+            pd.testing.assert_frame_equal(a, part.reset_index(drop=True), check_dtype=False, obj=f"cut={cut.date()}")
+
+
+class VolumeSource(unittest.TestCase):
+    """I-21：全收益指数缺成交量时借同一指数价格版本的成交量。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        days = pd.bdate_range("2026-01-05", periods=60)
+        tr = _bars(days, volume=np.nan)
+        px = _bars(days, volume=np.arange(60) * 10.0 + 5)
+        for name, df, route in (("H00300.csv", tr, "csi"), ("000300.csv", px, "csi")):
+            store.write(self.tmp / name, [{**r, "date": r["date"].date().isoformat(), "source": route} for r in df.to_dict("records")])
+        self.px = px
+
+    def test_borrowed_from_price_version(self):
+        df, rep = B.research_frame(self.tmp, {"series_file": "H00300.csv", "route_used": "csi", "code": "000300",
+                                              "series_code": "H00300"}, pd.DatetimeIndex(self.px["date"]))
+        self.assertEqual(rep["volume_source"], "price_version")
+        np.testing.assert_allclose(df["volume"].to_numpy(), self.px["volume"].to_numpy())
+
+    def test_self_and_none(self):
+        cal = pd.DatetimeIndex(self.px["date"])
+        _, rep = B.research_frame(self.tmp, {"series_file": "000300.csv", "route_used": "csi", "code": "000300", "series_code": "000300"}, cal)
+        self.assertEqual(rep["volume_source"], "self")
+        _, rep = B.research_frame(self.tmp, {"series_file": "H00300.csv", "route_used": "csi", "code": "999999", "series_code": "H00300"}, cal)
+        self.assertEqual(rep["volume_source"], "none")                      # 价格版本文件不存在
 
 
 class LegacyCheck(unittest.TestCase):
