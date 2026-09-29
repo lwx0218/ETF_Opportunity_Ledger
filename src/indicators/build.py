@@ -4,8 +4,8 @@
 
 输出 panel.csv（date, container, open, high, low, close, state, rs_1m, atr20, z_month）、bench.csv（date, hs300 = H00300 收盘,
 hs300_open = 原始开盘，缺则空；每日任务的基准窗口用）
-和 build-report.json（每个容器的数据处理与缺陷计数）。所有容器先对齐到 A 股日历（I-20），全收益指数借价格版本的成交量（I-21），
-再算指标。之后跑
+和 build-report.json（每个容器的数据处理与缺陷计数）。全收益指数借价格版本的成交量（I-21），K 线级指标（state、atr20）在容器
+原生序列上算（I-24），再对齐到 A 股日历（I-20）；rs_1m、z_month 在对齐后的收盘上算。之后跑
     python -m src.research.prereg_v1.run check --panel <out>/panel.csv --bench <out>/bench.csv
 """
 from __future__ import annotations
@@ -28,6 +28,8 @@ BENCH_CODE = "H00300"          # I-18：沪深300 全收益，不用价格指数
 OVERSEAS_ROUTES = {"yahoo", "stooq", "eia"}      # I-20：本地日期晚于 A 股收盘的路由，取 D−1
 VOLUME_BORROW_SHARE = 0.5      # I-21：研究序列缺成交量的行超过一半就借价格版本
 PANEL_COLUMNS = ["date", "container", "open", "high", "low", "close", "state", "rs_1m", "atr20", "z_month"]
+BAR_COLUMNS = ["date", "open", "high", "low", "close", "volume"]
+INDICATOR_COLUMNS = ["state", "atr20"]            # I-24：在原生 K 线上算、随 K 线带到 D 的列
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -91,7 +93,8 @@ def align_to_calendar(df: pd.DataFrame, cal: pd.DatetimeIndex, overseas: bool) -
     - 海外路由：A 股交易日 D 取本地日期 ≤ D−1 的最后一根 K 线（美股 / 港股收盘都晚于 A 股 15:00，取 D−1 才无未来视角）；
       没有新 K 线（海外休市）写平盘 K 线：开高低收 = 前收，成交量 0，计 stale_days。
       两个 A 股交易日之间有多根新 K 线时（A 股长假）只用最后一根，计 multi_bar_days——跨假期收益落在这一根的收盘里。
-      last_bar_date 是最后一行实际用到的 K 线日期（停更时远早于 D）。"""
+      last_bar_date 是最后一行实际用到的 K 线日期（停更时远早于 D）。
+    df 里的指标列（INDICATOR_COLUMNS，I-24：原生序列上算好的）随 K 线一起带到 D；平盘行沿用上一行的值。其他非 K 线列不带。"""
     if not overseas:
         on = df["date"].isin(cal)
         kept = df[on].reset_index(drop=True)
@@ -100,6 +103,7 @@ def align_to_calendar(df: pd.DataFrame, cal: pd.DatetimeIndex, overseas: bool) -
                       "missing_on_calendar": int((~span.isin(kept["date"])).sum())}
     src = df.sort_values("date").reset_index(drop=True)
     dates = src["date"].to_numpy()
+    extra = [c for c in INDICATOR_COLUMNS if c in src.columns]       # 只带指标列；amount / source 这类列不带（平盘行对不上）
     rows, flat, multi, prev = [], [], 0, None
     for d in cal:
         i = int(np.searchsorted(dates, d.to_datetime64(), side="left")) - 1      # 最后一根日期 < D 的 K 线
@@ -107,28 +111,41 @@ def align_to_calendar(df: pd.DataFrame, cal: pd.DatetimeIndex, overseas: bool) -
             continue
         if prev is not None and i == prev:
             c = rows[-1]["close"]
-            rows.append({"date": d, "open": c, "high": c, "low": c, "close": c, "volume": 0.0})
+            rows.append({"date": d, "open": c, "high": c, "low": c, "close": c, "volume": 0.0, **{k: rows[-1][k] for k in extra}})
             flat.append(True)
         else:
             if prev is not None and i - prev > 1:
                 multi += 1
             b = src.iloc[i]
-            rows.append({"date": d, "open": b["open"], "high": b["high"], "low": b["low"], "close": b["close"],
-                         "volume": b["volume"]})
+            rows.append({"date": d, **{k: b[k] for k in BAR_COLUMNS[1:] + extra}})
             flat.append(False)
         prev = i
-    out = pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
+    out = pd.DataFrame(rows, columns=BAR_COLUMNS + extra)
     trailing = len(flat) - (max((k for k, f in enumerate(flat) if not f), default=-1) + 1)
     return out, {"calendar": "overseas_d_minus_1", "stale_days": sum(flat), "multi_bar_days": multi, "trailing_stale_days": trailing,
                  "last_bar_date": str(src["date"].iloc[prev].date()) if prev is not None else None}
 
 
+def bar_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """I-24：K 线级指标（形态状态、ATR20）在容器自己的 K 线上算。只用 t 及以前的行，算完再对齐不引入未来。"""
+    if df.empty:
+        return df.assign(state=pd.Series(dtype=object), atr20=pd.Series(dtype=float))
+    return df.assign(state=form_states(df)["state"].to_numpy(), atr20=atr20(df).to_numpy())
+
+
 def research_frame(raw_dir: Path, cov: dict, cal: pd.DatetimeIndex) -> tuple[pd.DataFrame, dict]:
-    """一个容器的研究序列：读取 → 借成交量（I-21）→ 对齐 A 股日历（I-20）。数据包与每日任务共用，口径一致。"""
+    """一个容器的研究序列：读取 → 借成交量（I-21）→ K 线级指标（I-24）→ 对齐 A 股日历（I-20）。数据包与每日任务共用，口径一致。
+    海外容器的指标在其本地交易日的原生 K 线上算，长假内的高低点因此进入 hi20 / lo20 / ATR，平盘行不进指标（沿用上一根）；
+    A 股容器先丢弃非日历行（那些行不是交易日）再算。"""
     df, rep = load_series(Path(raw_dir) / cov["series_file"])
     df, vsrc = borrow_volume(df, raw_dir, cov)
     rep["volume_source"] = vsrc
-    df, arep = align_to_calendar(df, cal, cov.get("route_used") in OVERSEAS_ROUTES)
+    overseas = cov.get("route_used") in OVERSEAS_ROUTES
+    if overseas:
+        df, arep = align_to_calendar(bar_indicators(df), cal, True)
+    else:
+        df, arep = align_to_calendar(df, cal, False)
+        df = bar_indicators(df)
     rep.update(arep)
     rep["volume_zero_after_align"] = int((~(df["volume"] > 0)).sum()) if len(df) else 0
     return df, rep
@@ -142,11 +159,18 @@ def bench_open(path: Path) -> pd.Series:
     return s.where(s > 0)
 
 
-def container_panel(df: pd.DataFrame, bench: pd.Series, end: date, trading_days: pd.DatetimeIndex | None = None) -> pd.DataFrame:
-    st = form_states(df)
+def container_panel(df: pd.DataFrame, bench: pd.Series, end: date, trading_days: pd.DatetimeIndex | None = None, *,
+                    compute_indicators: bool = False) -> pd.DataFrame:
+    """state / atr20 用 research_frame 带来的列（I-24）。缺这两列就报错，不静默在给定序列上重算——对齐后的海外序列上
+    重算就是退回 P6a 口径（平盘进指标）。只有调用方明确给的是一条原生序列时才传 compute_indicators=True 就地算。
+    rs_1m、z_month 用对齐后的收盘（横截面口径），不变。"""
+    if compute_indicators:
+        df = bar_indicators(df[BAR_COLUMNS])
+    elif "state" not in df or "atr20" not in df:
+        raise BuildError("缺 state / atr20：先经 research_frame 在原生 K 线上算（I-24），或对原生序列显式传 compute_indicators=True")
     return pd.DataFrame({
         "date": df["date"], "open": df["open"], "high": df["high"], "low": df["low"], "close": df["close"],
-        "state": st["state"], "rs_1m": rs_1m(df["close"], df["date"], bench), "atr20": atr20(df),
+        "state": df["state"], "rs_1m": rs_1m(df["close"], df["date"], bench), "atr20": df["atr20"],
         "z_month": z_month(df["close"], df["date"], end, trading_days=trading_days),
     })
 
