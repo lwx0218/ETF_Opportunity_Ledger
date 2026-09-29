@@ -40,7 +40,7 @@ FROZEN_FIELDS = CARD_FIELDS + ("recorded_at",)
 EVIDENCE_FIELDS = ("source_id", "published_at", "summary", "url", "first_seen_at", "available_at", "snapshot_path", "snapshot_sha256")
 SCORING_RULE = "schema-v1-§3"          # 菜单第 1 项（按超额与期限）
 SCORING_RULE_R = "schema-v1.1-R"        # 菜单第 2 项（按 R 倍数，规则卡；v1.1-c）
-SCHEMA_VERSION = "v1.1"
+SCHEMA_VERSION = "v1.1-f"               # v1.1-f：出场记录加 exit_signal_close，期满先判证伪；之前建的库拒绝打开
 
 
 class LedgerError(ValueError):
@@ -65,20 +65,21 @@ BEGIN SELECT RAISE(ABORT, 'cards 创建时锁死：只能作废旧卡并新建�
     return "\n".join(sql)
 
 
-def mechanical_score(exit_reason: str, realized_excess_pct: float, target_excess_pct: float | None,
-                     scoring_rule: str = SCORING_RULE, realized_r: float | None = None, target_r: float | None = None) -> str:
-    """四档机械评分，与 finals 触发器同一口径：菜单第 1 项按 schema §3，第 2 项按 v1.1-c 的 R 倍数。"""
-    if scoring_rule == SCORING_RULE_R:
-        if realized_r <= -1:
-            return "证伪"
-        if realized_r >= target_r:
-            return "达标"
-        return "部分" if realized_r > 0 else "未达"
-    if exit_reason == "失效位":
+def mechanical_score(card: dict, exit_row: dict) -> str:
+    """四档机械评分，与 finals 触发器同一口径（v1.1-f）：先判证伪——触发出场的那根收盘 < 锁定的失效位（不论出场原因标签），
+    或论点作废（哪怕 R > 0）；未证伪的卡按锁定的菜单分三档：第 1 项按 realized_excess_pct 对 target_excess_pct（§3），
+    第 2 项按 realized_r 对 target_r（v1.1-c），「未达」= 不大于 0（没有 −1 下限：跳空低开亏过 1R 仍是未达）。
+    card 用 scoring_rule、invalidation_price、expectation_target_excess_pct、expectation_target_r；
+    exit_row 用 exit_reason、exit_signal_close、realized_excess_pct、realized_r。"""
+    if exit_row["exit_signal_close"] < card["invalidation_price"] or exit_row["exit_reason"] == "论点作废":
         return "证伪"
-    if realized_excess_pct >= target_excess_pct:
+    if card["scoring_rule"] == SCORING_RULE_R:
+        value, target = exit_row["realized_r"], card["expectation_target_r"]
+    else:
+        value, target = exit_row["realized_excess_pct"], card["expectation_target_excess_pct"]
+    if value >= target:
         return "达标"
-    return "部分" if realized_excess_pct > 0 else "未达"
+    return "部分" if value > 0 else "未达"
 
 
 def read_sources_csv(path: Path = FIXED_SOURCES) -> tuple[str, dict[str, tuple[str, str]]]:
@@ -257,6 +258,9 @@ class Ledger:
             "hit_rate_over_terminal": (by_score.get("达标", 0) / terminal) if terminal else None,
             "manual_exit_share": (exits[1] / exits[0]) if exits[0] else None,        # §6.4 触发器之一：> 30%
             "superseded": q("SELECT count(*) FROM cards WHERE supersedes IS NOT NULL")[0][0],
+            # v1.1-f：论点作废即证伪，哪怕 R > 0（判断错了、钱对了）；这类卡单列，由 exit_reason 与 realized_r 数出来
+            "falsified_thesis_void_positive_r": q("SELECT count(*) FROM card_status WHERE final_score = '证伪' "
+                                                  "AND exit_reason = '论点作废' AND realized_r > 0")[0][0],
         }
 
     def calibration(self, rater: str = "agent") -> list[dict]:

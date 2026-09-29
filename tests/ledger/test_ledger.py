@@ -93,12 +93,16 @@ class Base(unittest.TestCase):
         self.rejects(f"INSERT OR REPLACE INTO {table} {sql}", *r.values(), msg="已")
         self.rejects(f"REPLACE INTO {table} {sql}", *r.values(), msg="已")
 
-    def run_to_exit(self, reason="移动止盈", r=1.8, excess=6.0, manual=None):
-        cid = self.make()
+    def run_to_exit(self, reason="移动止盈", r=1.8, excess=6.0, manual=None, signal=None, rule=False):
+        """进场 → 两行每日记录（第二行是触发出场的那根收盘）→ 出场。signal 默认：失效位出场 9.0（< 失效位 9.2），其余 10.8。"""
+        self.t = T0
+        cid = self.make_rule_card() if rule else self.make()
+        signal = signal if signal is not None else (9.0 if reason == "失效位" else 10.8)
         self.at("2026-10-12T09:35").L.enter(cid, "2026-10-12", 10.05, 6.25)
         self.at("2026-10-12T16:00").L.append_daily(cid, dict(date="2026-10-12", close=10.2, state="TREND_UP", r_current=0.19, stop_now=9.2))
+        self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=signal, state="NEUTRAL"))
         self.at("2026-11-20T16:00").L.exit(cid, exit_date="2026-11-20", exit_price=11.5, exit_reason=reason, manual_reason=manual,
-                                           realized_r=r, realized_excess_pct=excess, holding_days=28)
+                                           realized_r=r, realized_excess_pct=excess, holding_days=28, exit_signal_close=signal)
         return cid
 
     def track(self, cid, n=20, start="2026-11-20"):
@@ -238,16 +242,15 @@ class SchemaV11(Base):
             self.make(expectation_horizon_days=None)
 
     def test_menu_two_mechanical_score(self):
-        cases = [(-1.2, "失效位", "证伪"), (-1.0, "手动", "证伪"), (-0.5, "手动", "未达"), (0.0, "论点作废", "未达"),
-                 (1.4, "移动止盈", "部分"), (2.0, "移动止盈", "达标"), (3.1, "移动止盈", "达标")]
-        for r, reason, want in cases:
+        rule = card(**RULE)
+        cases = [(-1.2, "手动", 10.0, "未达"), (-0.5, "手动", 10.0, "未达"), (0.0, "移动止盈", 10.0, "未达"),   # 未证伪：未达 = r ≤ 0
+                 (1e-6, "移动止盈", 10.0, "部分"), (1.999, "移动止盈", 10.0, "部分"), (2.0, "移动止盈", 10.0, "达标"),
+                 (-1.05, "失效位", 9.0, "证伪")]
+        for r, reason, sig, want in cases:
             with self.subTest(r=r):
-                self.assertEqual(mechanical_score(reason, 99.0, None, "schema-v1.1-R", r, 2), want)
-        self.t = T0
-        cid = self.make_rule_card()
-        self.at("2026-10-12T09:35").L.enter(cid, "2026-10-12", 10.05, 6.25)
-        self.at("2026-11-20T16:00").L.exit(cid, exit_date="2026-11-20", exit_price=11.0, exit_reason="移动止盈", manual_reason=None,
-                                           realized_r=1.4, realized_excess_pct=50.0, holding_days=28)
+                x = dict(exit_reason=reason, exit_signal_close=sig, realized_r=r, realized_excess_pct=99.0)
+                self.assertEqual(mechanical_score(rule, x), want)
+        cid = self.run_to_exit(reason="移动止盈", r=1.4, excess=50.0, rule=True)
         self.track(cid)
         kw = dict(post_exit_return_pct=0, post_exit_r=0, missed_r=0, stop_quality=0, trail_quality=0, benchmark_beat=1)
         with self.assertRaisesRegex(LedgerError, "机械"):
@@ -268,8 +271,15 @@ class SchemaV11(Base):
             L.conn.execute("DROP TRIGGER ledger_meta_no_delete")
             L.conn.execute("DELETE FROM ledger_meta WHERE key = 'schema'")          # 模拟 v1 代码建的库
             L.close()
-            with self.assertRaisesRegex(LedgerError, "schema 是 v1"):
+            with self.assertRaisesRegex(LedgerError, "schema 是 v1，"):
                 Ledger(db, clock=lambda: T0, replay=True)
+            v11 = Path(d) / "v11.sqlite"                                           # P6b（v1.1）建的回放库：出场记录没有触发收盘
+            L = Ledger(v11, clock=lambda: T0, replay=True)
+            L.conn.execute("DROP TRIGGER ledger_meta_no_update")
+            L.conn.execute("UPDATE ledger_meta SET value = 'v1.1' WHERE key = 'schema'")
+            L.close()
+            with self.assertRaisesRegex(LedgerError, "schema 是 v1.1，"):
+                Ledger(v11, clock=lambda: T0, replay=True)
             # 真正的旧库（v1 的 cards 没有 evidence_status）：拒绝，且一个字节都不改
             old = Path(d) / "older.sqlite"
             c = sqlite3.connect(old)
@@ -280,6 +290,85 @@ class SchemaV11(Base):
             with self.assertRaisesRegex(LedgerError, "需迁移"):
                 Ledger(old)
             self.assertEqual(old.read_bytes(), before)
+
+
+class FalsificationV11f(Base):
+    """docs/etf-card-schema-v1.md v1.1-f：先判证伪（触发出场的那根收盘 < 锁定失效位，或论点作废），再按菜单分档；两项菜单同一口径。
+    每个用例都走存储层：错的档写不进去，对的档写得进去；Python 的 mechanical_score 与之相同。"""
+
+    KW = dict(post_exit_return_pct=0, post_exit_r=0, missed_r=0, stop_quality=0, trail_quality=None, benchmark_beat=0)
+    # (说明, 出场原因, 触发收盘, realized_r, realized_excess_pct, 菜单 1 的档, 菜单 2 的档)；失效位 9.2
+    CASES = [("失效位出场、次日高开（−1 < R < 0）", "失效位", 9.0, -0.6, -2.0, "证伪", "证伪"),
+             ("移动止盈出场但收盘低于锁定失效位", "移动止盈", 9.1, -0.9, -3.0, "证伪", "证伪"),
+             ("论点作废且 R > 0", "论点作废", 10.6, 0.8, 4.0, "证伪", "证伪"),
+             ("未证伪但跳空致 R ≤ −1", "移动止盈", 9.3, -1.3, -5.0, "未达", "未达")]
+
+    def test_four_cases_both_menus(self):
+        for label, reason, sig, r, excess, want1, want2 in self.CASES:
+            for rule, want in ((False, want1), (True, want2)):
+                with self.subTest(label, menu=2 if rule else 1):
+                    cid = self.run_to_exit(reason=reason, r=r, excess=excess, signal=sig, rule=rule)
+                    self.track(cid)
+                    c, x = self.L.card(cid), self.cols("exits", cid)
+                    self.assertEqual(mechanical_score(c, x), want)
+                    for wrong in {"证伪", "达标", "部分", "未达"} - {want}:
+                        with self.assertRaisesRegex(LedgerError, "机械"):
+                            self.L.finalize(cid, final_score=wrong, **self.KW)
+                    self.L.finalize(cid, final_score=want, **self.KW)
+        self.assertEqual(self.L.summary()["falsified_thesis_void_positive_r"], 2)    # 论点作废、R > 0：两项菜单各一张，单列
+
+    def test_signal_close_must_match_the_ledger(self):
+        self.t = T0
+        cid = self.make()
+        self.at("2026-10-12T09:35").L.enter(cid, "2026-10-12", 10.05, 6.25)
+        self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))
+        base = dict(exit_date="2026-11-20", exit_price=9.4, realized_r=-0.8, realized_excess_pct=-3.0, holding_days=28)
+        with self.assertRaisesRegex(LedgerError, "最近一行"):                  # 不能填一个高于失效位的收盘来躲开证伪
+            self.at("2026-11-20T16:00").L.exit(cid, exit_reason="移动止盈", exit_signal_close=9.5, **base)
+        self.L.exit(cid, exit_reason="移动止盈", exit_signal_close=9.0, **base)
+
+    def test_no_backfill_before_the_exit_and_order_does_not_matter(self):
+        """触发收盘 = 出场日之前最近一行（出场按开盘成交）。出场后不能补出场日之前的行；出场日当天的行记在出场前后都一样。"""
+        base = dict(exit_date="2026-11-20", exit_price=10.5, exit_reason="手动", manual_reason="构造", realized_r=0.1,
+                    realized_excess_pct=0.5, holding_days=28)
+        self.t = T0
+        a = self.make()
+        self.at("2026-10-12T09:35").L.enter(a, "2026-10-12", 10.05, 6.25)
+        self.at("2026-11-20T09:35").L.exit(a, exit_signal_close=10.8, **base)          # 出场前没有任何每日行：只能要求为正数
+        with self.assertRaisesRegex(LedgerError, "已出场"):
+            self.at("2026-11-20T16:00").L.append_daily(a, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))   # 事后补一根跌破的收盘
+        for when in ("before", "after"):                                               # 11-20 当天的行在出场前 / 后记账
+            with self.subTest(when):
+                self.t = T0
+                cid = self.make()
+                self.at("2026-10-12T09:35").L.enter(cid, "2026-10-12", 10.05, 6.25)
+                self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))
+                if when == "after":
+                    self.at("2026-11-20T16:00").L.append_daily(cid, dict(date="2026-11-20", close=10.5, state="NEUTRAL"))
+                with self.assertRaisesRegex(LedgerError, "最近一行"):
+                    self.at("2026-11-20T16:05").L.exit(cid, exit_signal_close=10.5, **base)
+                self.L.exit(cid, exit_signal_close=9.0, **base)                            # 两种顺序都只能填 11-19 的 9.0 → 证伪
+                self.assertEqual(mechanical_score(self.L.card(cid), self.cols("exits", cid)), "证伪")
+
+    def test_close_exactly_on_the_line_is_not_falsified(self):
+        """证伪是「收盘 < 锁定失效位」：恰好等于 9.2 的移动止盈 / 手动出场不算，按菜单分档。"""
+        for reason, manual in (("移动止盈", None), ("手动", "构造")):
+            for rule, want in ((False, "部分"), (True, "部分")):
+                with self.subTest(reason, menu=2 if rule else 1):
+                    cid = self.run_to_exit(reason=reason, manual=manual, r=0.3, excess=1.0, signal=9.2, rule=rule)
+                    self.track(cid)
+                    self.assertEqual(mechanical_score(self.L.card(cid), self.cols("exits", cid)), want)
+                    with self.assertRaisesRegex(LedgerError, "机械"):
+                        self.L.finalize(cid, final_score="证伪", **self.KW)
+                    self.L.finalize(cid, final_score=want, **self.KW)
+
+    def test_stop_exit_needs_a_close_below_the_line(self):
+        self.t = T0
+        cid = self.make()
+        self.at("2026-10-12T09:35").L.enter(cid, "2026-10-12", 10.05, 6.25)
+        with self.assertRaisesRegex(LedgerError, "低于锁定的失效位"):
+            self.at("2026-11-20T16:00").L.exit(cid, exit_date="2026-11-20", exit_price=9.4, exit_reason="失效位", realized_r=-0.8,
+                                               realized_excess_pct=-3.0, holding_days=28, exit_signal_close=9.2)
 
 
 class Section25(Base):
@@ -385,10 +474,12 @@ class Lifecycle(Base):
         self.assertEqual(self.cols("exits", cid)["realized_r"], -1.2)
 
     def test_mechanical_score_rules(self):
-        self.assertEqual(mechanical_score("失效位", 10.0, 5.0), "证伪")
-        self.assertEqual(mechanical_score("移动止盈", 5.0, 5.0), "达标")
-        self.assertEqual(mechanical_score("跟踪期满", 0.1, 5.0), "部分")
-        self.assertEqual(mechanical_score("手动", 0.0, 5.0), "未达")
+        c = card(expectation_target_excess_pct=5.0, scoring_rule="schema-v1-§3")          # 菜单第 1 项，失效位 9.2
+        x = lambda reason, excess, sig=10.0: dict(exit_reason=reason, exit_signal_close=sig, realized_excess_pct=excess, realized_r=0.5)   # noqa: E731
+        self.assertEqual(mechanical_score(c, x("失效位", 10.0, sig=9.0)), "证伪")
+        self.assertEqual(mechanical_score(c, x("移动止盈", 5.0)), "达标")
+        self.assertEqual(mechanical_score(c, x("跟踪期满", 0.1)), "部分")
+        self.assertEqual(mechanical_score(c, x("手动", 0.0)), "未达")
 
     def test_stop_exit_scores_falsified(self):
         cid = self.run_to_exit(reason="失效位", r=-1.05, excess=-4.0)
@@ -407,7 +498,8 @@ class Lifecycle(Base):
     def test_time_and_order_rules(self):
         cid = self.make()
         with self.assertRaisesRegex(LedgerError, "没有进场"):
-            self.L.exit(cid, exit_date="2026-10-09", exit_price=10, exit_reason="失效位", realized_r=-1, realized_excess_pct=-3, holding_days=0)
+            self.L.exit(cid, exit_date="2026-10-09", exit_price=10, exit_reason="失效位", realized_r=-1, realized_excess_pct=-3, holding_days=0,
+                        exit_signal_close=9.0)
         with self.assertRaisesRegex(LedgerError, "晚于当前日期"):
             self.L.enter(cid, "2026-10-12", 10.0, 5)                         # 数据库时钟还在 10-09
         with self.assertRaisesRegex(LedgerError, "不高于失效位"):
@@ -473,7 +565,7 @@ class Statistics(Base):
         self.at("2026-10-12T09:31").L.void(ids[0], "未进场而失效")
         self.at("2026-10-12T09:35").L.enter(ids[1], "2026-10-12", 10.0, 5)
         self.at("2026-11-10T16:00").L.exit(ids[1], exit_date="2026-11-10", exit_price=11, exit_reason="移动止盈",
-                                           realized_r=1.2, realized_excess_pct=6.0, holding_days=20)
+                                           realized_r=1.2, realized_excess_pct=6.0, holding_days=20, exit_signal_close=10.9)
         self.track(ids[1], start="2026-11-10")
         self.L.finalize(ids[1], post_exit_return_pct=0, post_exit_r=0, final_score="达标", missed_r=0, stop_quality=0,
                         trail_quality=1, benchmark_beat=1)
@@ -569,7 +661,8 @@ class SchemaCoverage(unittest.TestCase):
         "crowding_at_entry": [("cards", c) for c in ("crowd_rs_1m_rank", "crowd_rs_3m_rank", "crowd_vol_ratio_20", "crowd_premium_pct", "crowd_share_chg_20d")],
         "supersedes": [("cards", "supersedes")],
         **{f: [("daily", f)] for f in ("date", "close", "state", "z", "rs_1m_rank", "r_current", "mfe", "mae", "stop_now", "bench_close", "note")},
-        **{f: [("exits", f)] for f in ("exit_date", "exit_price", "exit_reason", "realized_r", "realized_excess_pct", "holding_days")},
+        **{f: [("exits", f)] for f in ("exit_date", "exit_price", "exit_reason", "realized_r", "realized_excess_pct", "holding_days",
+                                       "exit_signal_close")},
         **{f: [("finals", f)] for f in ("post_exit_return_pct", "post_exit_r", "final_score", "missed_r", "stop_quality", "trail_quality", "benchmark_beat")},
     }
 

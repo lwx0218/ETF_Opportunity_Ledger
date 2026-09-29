@@ -15,7 +15,7 @@ from pathlib import Path
 import pandas as pd
 
 ACTIVE_BEFORE_V1 = ("恐慌下轨", "事件驱动")
-TERMS_VERSION = "jobs-daily-v1"        # docs/jobs-daily.md 口径版本（schema v1.1-e 确认后升级）；配置里显式确认后规则才启用
+TERMS_VERSION = "jobs-daily-v2"        # docs/jobs-daily.md 口径版本（v1：schema v1.1-e；v2：v1.1-f 证伪判定）；配置里显式确认后规则才启用
 RULE_R = {"scoring_rule": "schema-v1.1-R", "horizon_days": None, "target_excess_pct": None, "target_r": 2, "benchmark": "等权组合"}
 
 
@@ -39,7 +39,7 @@ class Candidate:
 
 def load_rule_config(path: Path, problems: list[str] | None = None) -> dict:
     """返回启用的规则 → 卡片预期：
-    {"confirmed_terms": "jobs-daily-v1",
+    {"confirmed_terms": "jobs-daily-v2",
      "恐慌下轨": {"enabled": true, "scoring_rule": "schema-v1.1-R", "horizon_days": null, "target_r": 2, "benchmark": "等权组合"},
      "事件驱动": {"enabled": true}}                                  # 事件卡的预期由草稿逐卡给
     confirmed_terms 不等于当前口径版本、或 enabled 不为真的规则不启用；恐慌规则的预期必须是菜单第 2 项（v1.1-c）。

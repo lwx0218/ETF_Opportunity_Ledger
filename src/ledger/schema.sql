@@ -162,6 +162,9 @@ CREATE TABLE IF NOT EXISTS exits (
     realized_r           REAL NOT NULL CHECK (typeof(realized_r) IN ('integer', 'real') AND abs(realized_r) < 1e15),
     realized_excess_pct  REAL NOT NULL CHECK (typeof(realized_excess_pct) IN ('integer', 'real') AND abs(realized_excess_pct) < 1e15),
     holding_days         INTEGER NOT NULL CHECK (typeof(holding_days) = 'integer' AND holding_days >= 0),
+    -- v1.1-f：触发出场的那根收盘（研究序列上），期满时与锁定的 invalidation_price 比较判证伪
+    exit_signal_close    REAL NOT NULL CHECK (typeof(exit_signal_close) IN ('integer', 'real') AND abs(exit_signal_close) < 1e15
+                                              AND exit_signal_close > 0),
     recorded_at          TEXT NOT NULL,
     CHECK ((exit_reason = '手动') = (length(trim(coalesce(manual_reason, ''))) > 0))
 ) WITHOUT ROWID;
@@ -272,6 +275,8 @@ BEGIN
     SELECT RAISE(ABORT, '每日行只能按日期向后追加') WHERE NEW.date <= coalesce((SELECT max(date) FROM daily WHERE card_id = NEW.card_id), '')
         OR NEW.date < (SELECT close_date FROM cards WHERE id = NEW.card_id);
     SELECT RAISE(ABORT, '每日行日期晚于当前日期') WHERE NEW.date > substr(ledger_now(), 1, 10);
+    SELECT RAISE(ABORT, '已出场：不能再补出场日之前的每日行（触发收盘按出场时已有的行核对）')
+     WHERE NEW.date < (SELECT exit_date FROM exits WHERE card_id = NEW.card_id);
 END;
 
 CREATE TRIGGER IF NOT EXISTS exits_insert BEFORE INSERT ON exits
@@ -281,6 +286,15 @@ BEGIN
     SELECT RAISE(ABORT, '没有进场记录') WHERE NOT EXISTS (SELECT 1 FROM entries WHERE card_id = NEW.card_id);
     SELECT RAISE(ABORT, '出场日早于进场日') WHERE NEW.exit_date < (SELECT entry_date FROM entries WHERE card_id = NEW.card_id);
     SELECT RAISE(ABORT, '出场日晚于当前日期') WHERE NEW.exit_date > substr(ledger_now(), 1, 10);
+    -- v1.1-f 的触发收盘（实现口径，待 Cowork 确认）：出场一律按开盘成交，触发出场的是出场日之前最近一行每日记录的收盘。
+    -- 有这样的行时必须等于它（不能随手填一个高于失效位的数躲开证伪）；配合 daily_insert 不许出场后补出场日之前的行，事后可审计
+    SELECT RAISE(ABORT, 'exit_signal_close 必须等于出场日之前最近一行每日记录的收盘')
+     WHERE EXISTS (SELECT 1 FROM daily WHERE card_id = NEW.card_id AND date < NEW.exit_date)
+       AND NEW.exit_signal_close IS NOT (SELECT close FROM daily WHERE card_id = NEW.card_id AND date < NEW.exit_date
+                                          ORDER BY date DESC LIMIT 1);
+    SELECT RAISE(ABORT, '「失效位」出场的触发收盘必须低于锁定的失效位')
+     WHERE NEW.exit_reason = '失效位'
+       AND NEW.exit_signal_close >= (SELECT invalidation_price FROM cards WHERE id = NEW.card_id);
 END;
 
 CREATE TRIGGER IF NOT EXISTS finals_insert BEFORE INSERT ON finals
@@ -291,15 +305,15 @@ BEGIN
     SELECT RAISE(ABORT, '跟踪期未满：出场后的每日行少于 tracking_days')
      WHERE (SELECT count(*) FROM daily d JOIN exits x ON x.card_id = d.card_id WHERE d.card_id = NEW.card_id AND d.date > x.exit_date)
          < (SELECT tracking_days FROM cards WHERE id = NEW.card_id);
-    SELECT RAISE(ABORT, 'final_score 与锁定的评分规则（schema §3）机械结果不符')
+    SELECT RAISE(ABORT, 'final_score 与锁定的评分规则（v1.1-f）机械结果不符')
      WHERE NEW.final_score IS NOT (
-        SELECT CASE WHEN c.scoring_rule = 'schema-v1.1-R' THEN      -- 菜单第 2 项：按 realized_r（含成本）
-                         CASE WHEN x.realized_r <= -1 THEN '证伪'
-                              WHEN x.realized_r >= c.expectation_target_r THEN '达标'
+        -- v1.1-f：先判证伪（两项菜单相同）：触发收盘 < 锁定失效位，或论点作废；未证伪的卡再按各自菜单分三档
+        SELECT CASE WHEN x.exit_signal_close < c.invalidation_price OR x.exit_reason = '论点作废' THEN '证伪'
+                    WHEN c.scoring_rule = 'schema-v1.1-R' THEN      -- 菜单第 2 项：按 realized_r（含成本），未达 = r ≤ 0
+                         CASE WHEN x.realized_r >= c.expectation_target_r THEN '达标'
                               WHEN x.realized_r > 0 THEN '部分'
                               ELSE '未达' END
-                    WHEN x.exit_reason = '失效位' THEN '证伪'       -- 菜单第 1 项（§3）
-                    WHEN x.realized_excess_pct >= c.expectation_target_excess_pct THEN '达标'
+                    WHEN x.realized_excess_pct >= c.expectation_target_excess_pct THEN '达标'   -- 菜单第 1 项（§3）
                     WHEN x.realized_excess_pct > 0 THEN '部分'
                     ELSE '未达' END
           FROM exits x JOIN cards c ON c.id = x.card_id WHERE x.card_id = NEW.card_id);

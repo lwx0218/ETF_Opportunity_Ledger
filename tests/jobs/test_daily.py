@@ -49,15 +49,20 @@ def semis_path() -> list[float]:
     return c
 
 
-def make_panel(extra: dict | None = None) -> tuple[pd.DataFrame, pd.Series]:
+def make_panel(extra: dict | None = None, semis: list[float] | None = None, semis_open: dict | None = None
+               ) -> tuple[pd.DataFrame, pd.Series]:
+    """semis 换掉半导体的收盘路径；semis_open {日期: 开盘} 覆盖半导体个别日子的开盘（默认 = 前收）。"""
     rows = []
-    series = {"半导体": semis_path(), "黄金": [300 + 0.2 * k for k in range(len(DAYS))], "沪深300": [4000 + k for k in range(len(DAYS))]}
+    series = {"半导体": semis or semis_path(), "黄金": [300 + 0.2 * k for k in range(len(DAYS))],
+              "沪深300": [4000 + k for k in range(len(DAYS))]}
     for name, closes in series.items():
         for k, d in enumerate(DAYS):
             cl = closes[k]
             op = closes[k - 1] if k else cl
             if name == "半导体" and d == DAYS[DAYS.index(SIGNAL) + 1]:
                 op = 100.5
+            if name == "半导体" and d in (semis_open or {}):
+                op = semis_open[d]
             rows.append(dict(date=pd.Timestamp(d), container=name, open=op, high=max(op, cl) + 0.5, low=min(op, cl) - 0.5,
                              close=cl, state="NEUTRAL", rs_1m=0.01 * (k % 7) - (0.02 if name == "黄金" else 0), atr20=2.0,
                              z_month=np.nan))
@@ -124,6 +129,7 @@ class Replay(unittest.TestCase):
         i_breach = DAYS.index("2026-02-02") + 13                       # 103.5 那天
         self.assertEqual((x["exit_date"], x["exit_reason"]), (DAYS[i_breach + 1], "移动止盈"))
         self.assertAlmostEqual(x["exit_price"], 103.5)
+        self.assertEqual(x["exit_signal_close"], 103.5)                   # v1.1-f：触发出场的那根收盘（跌破 104 的那天），不低于失效位 96
         self.assertAlmostEqual(x["realized_r"], (103.5 * (1 - 0.0005) - 100.5 * (1 + 0.0005)) / 4.5, places=6)
         rows = self.L.daily_rows(cid)
         stops = [r["stop_now"] for r in rows if r["stop_now"] is not None]
@@ -140,6 +146,34 @@ class Replay(unittest.TestCase):
         self.assertEqual(self.L.status(cid), "已结")
         self.assertEqual(f["final_score"], "部分")                      # 0 < realized_r ≈ 0.64 < 2（菜单第 2 项）
         self.assertEqual(self.L.summary()["denominator"], 1)
+
+    def falsify_path(self, tail: list[float], gap_open: float) -> dict:
+        """信号日 100 → 次日开盘 100.5 进场 → tail 的收盘，最后一根触发离场 → 次日开盘 gap_open（高开）。返回出场与期满记录。"""
+        i0 = DAYS.index(SIGNAL)
+        c = [100.0] * (i0 + 1) + tail
+        exit_day = DAYS[len(c)]
+        c += [gap_open + 0.05 * k for k in range(len(DAYS) - len(c))]
+        panel, bench = make_panel(semis=c, semis_open={exit_day: gap_open})
+        self.replay(panel, bench)
+        cid = "T-2026-001"
+        x = dict(self.L.conn.execute("SELECT * FROM exits WHERE card_id = ?", (cid,)).fetchone())
+        f = dict(self.L.conn.execute("SELECT * FROM finals WHERE card_id = ?", (cid,)).fetchone())
+        self.assertEqual((x["exit_date"], x["exit_price"], x["exit_signal_close"]), (exit_day, gap_open, tail[-1]))
+        return x | f
+
+    def test_stop_exit_with_gap_up_is_falsified(self):
+        """v1.1-f 端到端：收盘跌破失效位 96 → 次日高开 97 离场，−1 < R < 0；旧口径（R ≤ −1 才证伪）会记未达。"""
+        r = self.falsify_path([100.5, 101.0, 100.0, 95.5], gap_open=97.0)
+        self.assertEqual(r["exit_reason"], "失效位")
+        self.assertTrue(-1 < r["realized_r"] < 0)
+        self.assertEqual(r["final_score"], "证伪")
+
+    def test_trailing_exit_below_the_locked_line_is_falsified(self):
+        """激活移动止盈后单日暴跌到 90（< 锁定失效位 96）→ 标签是移动止盈，按锁定字段判证伪；次日高开 99，R ≈ −0.36。"""
+        r = self.falsify_path([100.5 + k for k in range(6)] + [90.0], gap_open=99.0)
+        self.assertEqual(r["exit_reason"], "移动止盈")
+        self.assertTrue(-1 < r["realized_r"] < 0)
+        self.assertEqual(r["final_score"], "证伪")
 
     def test_rerun_is_idempotent(self):
         panel, bench = make_panel()
@@ -354,10 +388,10 @@ class Pieces(unittest.TestCase):
         self.assertEqual(self.problems, [])                                                    # 全关：没有请求，不算问题
 
     def test_rule_config_requires_confirmed_terms_and_enabled(self):
-        self.assertEqual(R.TERMS_VERSION, "jobs-daily-v1")
+        self.assertEqual(R.TERMS_VERSION, "jobs-daily-v2")
         self.assertEqual(self.load(CONFIG), RULES)
         self.assertEqual(self.load({**CONFIG, "confirmed_terms": None}), {})                  # 没确认记账口径：不启用
-        self.assertEqual(self.load({**CONFIG, "confirmed_terms": "jobs-daily-v0"}), {})       # 旧口径的确认不算数
+        self.assertEqual(self.load({**CONFIG, "confirmed_terms": "jobs-daily-v1"}), {})       # 旧口径（v1.1-f 之前）的确认不算数
         self.assertEqual(set(self.load({**CONFIG, "事件驱动": {"enabled": False}})), {"恐慌下轨"})
         self.assertEqual(set(self.load({**CONFIG, "恐慌下轨": {**CONFIG["恐慌下轨"], "enabled": "true"}})), {"事件驱动"})
 
@@ -476,7 +510,7 @@ class Pieces(unittest.TestCase):
             self.assertEqual(jobs_main(args), 0)
         L = sqlite3.connect(tmp / "replay.sqlite")
         self.assertEqual(L.execute("SELECT value FROM ledger_meta WHERE key = 'clock'").fetchone()[0], "replay")
-        self.assertEqual(L.execute("SELECT value FROM ledger_meta WHERE key = 'schema'").fetchone()[0], "v1.1")
+        self.assertEqual(L.execute("SELECT value FROM ledger_meta WHERE key = 'schema'").fetchone()[0], "v1.1-f")
         self.assertEqual(L.execute("SELECT count(*) FROM cards").fetchone()[0], 1)
         L.close()
         ew = pd.read_csv(tmp / "replay.ew_daily.csv")                                           # 回放的等权文件跟着回放库
