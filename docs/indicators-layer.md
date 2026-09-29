@@ -23,7 +23,7 @@ build 先按 MANIFEST 复验数据包，不通过就拒绝；基准必须是数�
 
 - `panel.csv`：`date, container, open, high, low, close, state, rs_1m, atr20, z_month`（implementation-notes §B）。`container` 为 universe 的主题名；全部容器在 A 股日历（H00300 交易日）上（I-20）。
 - `bench.csv`：`date, hs300`（H00300 收盘）。
-- `build-report.json`：数据包 MANIFEST 的 sha256；每个容器的原始行数与对齐后行数、起止、路由、`price_only`、`volume_source`、各状态天数（可达状态表）、`z_month` 个数、补值 / 扩高低计数、原始无成交量行数、`dropped_off_calendar` 或 `stale_days` / `multi_bar_days` / `trailing_stale_days`；跳过的容器与原因。
+- `build-report.json`：数据包 MANIFEST 的 sha256；每个容器的原始行数与对齐后行数、起止、路由、`price_only`、`volume_source`、各状态天数（可达状态表）、`z_month` 个数、补值 / 扩高低计数、原始无成交量行数、`volume_zero_after_align`（对齐后成交量为 0 的行，含平盘）、`calendar`（`a_share` / `overseas_d_minus_1`）；A 股路由另有 `dropped_off_calendar` / `missing_on_calendar`，海外路由另有 `stale_days` / `multi_bar_days` / `trailing_stale_days` / `last_bar_date`；跳过的容器与原因。
 
 ## 口径
 
@@ -41,9 +41,10 @@ build 先按 MANIFEST 复验数据包，不通过就拒绝；基准必须是数�
 
 先对齐、再算指标；研究数据包（`build`）与每日任务（`src/jobs/live.py`）共用 `research_frame`，口径一致。
 
-- **I-20 A 股日历**：全部容器对齐到 H00300 的交易日。A 股路由的容器，不在 A 股日历上的行丢弃（`dropped_off_calendar`）。海外路由（yahoo / stooq / eia）的容器，A 股交易日 D 取本地日期 ≤ D−1 的最后一根 K 线：美股、港股收盘都晚于 A 股 15:00，取 D−1 才没有未来视角；日股为统一口径也取 D−1。没有新 K 线时写平盘 K 线（开高低收 = 前收，成交量 0，`stale_days`）。两个 A 股交易日之间有多根新 K 线（A 股长假）时只用最后一根（`multi_bar_days`），跨假期收益落在这一根的收盘里。末尾连续平盘超过 3 行时日志警告，序列可能停更（`trailing_stale_days`）。对齐后每个容器的收盘序列在 A 股日历上没有空洞，等权基准不再丢跨假期收益。
+- **I-20 A 股日历**：全部容器对齐到 H00300 的交易日。A 股路由的容器，不在 A 股日历上的行丢弃（`dropped_off_calendar`）；自身首末日期之间日历上有而序列缺的交易日不补，只计数（`missing_on_calendar`，非零时日志打印），这几天该容器的收益在等权里缺席。海外路由（yahoo / stooq / eia）的容器，A 股交易日 D 取本地日期 ≤ D−1 的最后一根 K 线：美股、港股收盘都晚于 A 股 15:00，取 D−1 才没有未来视角；日股为统一口径也取 D−1。没有新 K 线时写平盘 K 线（开高低收 = 前收，成交量 0，`stale_days`）。两个 A 股交易日之间有多根新 K 线（A 股长假）时只用最后一根（`multi_bar_days`），跨假期收益落在这一根的收盘里。末尾连续平盘超过 3 行时日志警告，序列可能停更（`trailing_stale_days`，最后用到的 K 线日期 `last_bar_date`）；每日任务在 D 日末尾有平盘时也写进报告（停更不再表现为缺行）。对齐后海外容器的收盘序列在 A 股日历上没有空洞，A 股容器只在 `missing_on_calendar` 非零时有空洞；等权基准不再丢跨假期收益。
 - **I-20 的折扣**：海外容器的研究序列比可执行的 QDII ETF 滞后一个交易日，V1 报告对海外容器单列并注明（数据陷阱第 5 条）。
-- **I-21 成交量**：研究序列缺成交量的行超过一半时，按日期换成同一指数价格版本（coverage 的 `code` 对应的原始文件）的成交量，`volume_source = price_version`；价格版本也没有的，保持原样（`none`，放量四态不可达）；自带成交量的（`self`）不动。状态机阈值一个不改。
+- **I-21 成交量**：研究序列缺成交量的行超过一半时，按日期换成同一指数价格版本（coverage 的 `code` 对应的原始文件）的成交量，`volume_source = price_version`；借不到的保持原样（`none`：研究序列就是价格版本本身、价格版本文件不存在或也没有成交量）——`none` 只表示没借到，序列自带的少量成交量照用，放量四态能不能出现以 `states` 为准；自带成交量的（`self`）不动。状态机阈值一个不改。
+- **平盘对 ATR 与均量的影响**（照 I-20 字面实现的结果，未调参）：平盘日真实波幅为 0、成交量为 0，会压低海外容器的 ATR20（失效位 = 2 × ATR20 因而偏紧，R 倍数被放大）与 20 日均量（下一天的放量门槛相对变低）。影响天数见 `stale_days`；V1 报告对海外容器的折扣说明需一并写明。
 
 ## 数据修整（非零计数打印到日志，并写进 build-report）
 
@@ -53,6 +54,6 @@ build 先按 MANIFEST 复验数据包，不通过就拒绝；基准必须是数�
 
 ## 已知局限
 
-1. **可达状态**：`volume_source = none` 的容器（EIA 布伦特、可能的海外指数）以及平盘日，放量条件恒为假，启动 / 超跌反弹 / 过热 / 破位四态不可达；`build-report.json` 每个容器的 `states` 即可达状态表，V1 报告附上。
+1. **可达状态**：没有成交量的行（`volume_source = none` 的容器中无量的行，如 EIA 布伦特；以及平盘日）放量条件恒为假；整条序列无量时启动 / 超跌反弹 / 过热 / 破位四态不可达；`build-report.json` 每个容器的 `states` 即可达状态表，V1 报告附上。
 2. **与历史产物一致**：`legacy-check` 需在有 `data/kline_*.csv` 与 `data/panel_daily.csv` 的机器上跑一次。它验证的是函数移植，不经过日历对齐与 `load_series`。
 3. **研究逻辑复核**：Cowork 已于 2026-09-29 复核通过（replan §8）。

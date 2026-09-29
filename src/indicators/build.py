@@ -84,13 +84,18 @@ def borrow_volume(df: pd.DataFrame, raw_dir: Path, cov: dict) -> tuple[pd.DataFr
 
 def align_to_calendar(df: pd.DataFrame, cal: pd.DatetimeIndex, overseas: bool) -> tuple[pd.DataFrame, dict]:
     """I-20：全部容器对齐到 A 股日历（H00300 的交易日）。
-    - A 股路由：不在 A 股日历上的行丢弃并计数；
+    - A 股路由：不在 A 股日历上的行丢弃并计数；首末日期之间日历上有、序列里缺的交易日不补，只计数（missing_on_calendar），
+      这些日子的收益在等权里会缺席；
     - 海外路由：A 股交易日 D 取本地日期 ≤ D−1 的最后一根 K 线（美股 / 港股收盘都晚于 A 股 15:00，取 D−1 才无未来视角）；
       没有新 K 线（海外休市）写平盘 K 线：开高低收 = 前收，成交量 0，计 stale_days。
-      两个 A 股交易日之间有多根新 K 线时（A 股长假）只用最后一根，计 multi_bar_days——跨假期收益落在这一根的收盘里。"""
+      两个 A 股交易日之间有多根新 K 线时（A 股长假）只用最后一根，计 multi_bar_days——跨假期收益落在这一根的收盘里。
+      last_bar_date 是最后一行实际用到的 K 线日期（停更时远早于 D）。"""
     if not overseas:
         on = df["date"].isin(cal)
-        return df[on].reset_index(drop=True), {"calendar": "a_share", "dropped_off_calendar": int((~on).sum())}
+        kept = df[on].reset_index(drop=True)
+        span = cal[(cal >= kept["date"].min()) & (cal <= kept["date"].max())] if len(kept) else cal[:0]
+        return kept, {"calendar": "a_share", "dropped_off_calendar": int((~on).sum()),
+                      "missing_on_calendar": int((~span.isin(kept["date"])).sum())}
     src = df.sort_values("date").reset_index(drop=True)
     dates = src["date"].to_numpy()
     rows, flat, multi, prev = [], [], 0, None
@@ -112,7 +117,8 @@ def align_to_calendar(df: pd.DataFrame, cal: pd.DatetimeIndex, overseas: bool) -
         prev = i
     out = pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
     trailing = len(flat) - (max((k for k, f in enumerate(flat) if not f), default=-1) + 1)
-    return out, {"calendar": "overseas_d_minus_1", "stale_days": sum(flat), "multi_bar_days": multi, "trailing_stale_days": trailing}
+    return out, {"calendar": "overseas_d_minus_1", "stale_days": sum(flat), "multi_bar_days": multi, "trailing_stale_days": trailing,
+                 "last_bar_date": str(src["date"].iloc[prev].date()) if prev is not None else None}
 
 
 def research_frame(raw_dir: Path, cov: dict, cal: pd.DatetimeIndex) -> tuple[pd.DataFrame, dict]:
@@ -181,7 +187,8 @@ def build(package: Path, out: Path | None = None, *, log=print) -> Path:
         report["containers"][name] = rep
         flags = {"补开高低": rep["ohl_filled_from_close"], "扩高低": rep["hl_clamped"], "原始无成交量": rep["volume_missing_or_zero"],
                  "缺收盘丢弃": rep["dropped_missing_close"], "重复日期": rep["dropped_duplicate_dates"],
-                 "不在 A 股日历丢弃": rep.get("dropped_off_calendar", 0), "平盘": rep.get("stale_days", 0),
+                 "不在 A 股日历丢弃": rep.get("dropped_off_calendar", 0), "日历内缺日": rep.get("missing_on_calendar", 0),
+                 "平盘": rep.get("stale_days", 0),
                  "长假并入最后一根": rep.get("multi_bar_days", 0)}
         log(f"  ok  {name}: {rep['aligned_rows']} 行 {rep['first']}→{rep['last']}；成交量 {rep['volume_source']}"
             + "".join(f"；{k} {v} 行" for k, v in flags.items() if v)

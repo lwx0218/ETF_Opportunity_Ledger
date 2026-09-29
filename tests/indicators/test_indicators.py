@@ -229,11 +229,15 @@ class CalendarAlignment(unittest.TestCase):
         out, rep = B.align_to_calendar(raw, CAL, overseas=False)
         self.assertEqual(rep["dropped_off_calendar"], len(SPRING))
         self.assertTrue(out["date"].isin(CAL).all())
+        self.assertEqual(rep["missing_on_calendar"], 0)
+        _, rep = B.align_to_calendar(raw[raw["date"] != CAL[30]], CAL, overseas=False)   # A 股序列自己缺一个交易日：不补，计数
+        self.assertEqual(rep["missing_on_calendar"], 1)
 
     def test_trailing_flats_are_reported(self):
         raw = _bars(US_DAYS[US_DAYS <= "2026-03-20"])                       # 海外序列 03-20 以后停更
         _, rep = B.align_to_calendar(raw, CAL, overseas=True)
         self.assertEqual(rep["trailing_stale_days"], len(CAL[CAL > "2026-03-23"]))
+        self.assertEqual(rep["last_bar_date"], "2026-03-20")
 
     def test_equal_weight_no_longer_drops_holiday_returns(self):
         a = _bars(CAL, step=0.4)
@@ -253,9 +257,11 @@ class CalendarAlignment(unittest.TestCase):
         aligned = panel({"A": B.align_to_calendar(a, CAL, False)[0], "US": B.align_to_calendar(us, CAL, True)[0]})
         wide = aligned.pivot(index="date", columns="container", values="close")
         self.assertEqual(int(wide.pct_change(fill_method=None).iloc[1:].isna().sum().sum()), 0)   # 没有空洞
-        for c in wide:                                                      # 每个容器的逐日收益连乘 = 首尾之比
-            r = wide[c].pct_change(fill_method=None).iloc[1:]
-            self.assertAlmostEqual(float((1 + r).prod()), float(wide[c].iloc[-1] / wide[c].iloc[0]))
+        # 春节后第一天 02-23：A 股收益 = 02-23 / 02-13；美股收益 = 02-20 / 02-12（两个 A 股交易日各自的 D−1），跨假期收益都在
+        ret = wide.pct_change(fill_method=None).loc[pd.Timestamp("2026-02-23")]
+        A, U = a.set_index("date")["close"], us.set_index("date")["close"]
+        self.assertAlmostEqual(ret["A"], A[pd.Timestamp("2026-02-23")] / A[pd.Timestamp("2026-02-13")] - 1)
+        self.assertAlmostEqual(ret["US"], U[pd.Timestamp("2026-02-20")] / U[pd.Timestamp("2026-02-12")] - 1)
         old_wide = old.pivot(index="date", columns="container", values="close")
         old_wide = old_wide[old_wide.index >= CAL[1]]
         holes = old_wide.pct_change(fill_method=None).iloc[1:].isna().sum()
