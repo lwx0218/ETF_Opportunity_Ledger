@@ -6,7 +6,7 @@
 - Document type: intake
 - Status: active（项目意图与研究约束；业务实施规划尚未批准）
 - Owner: Faye
-- Last updated: 2026-09-25
+- Last updated: 2026-09-29（§4.1 权威位置按 A6 改为仓库 `docs/`；初始化边界加状态注）
 - Source of truth: AGENTS.md；Faye 提供的 init-v1 初始化文档（下文 §0–附）
 
 ## 初始化边界
@@ -14,6 +14,8 @@
 本次仅授权最小 Harness bootstrap、项目说明和一次 GitHub 推送，不授权任务 0–7 的执行。下文保留 Owner 提供的初始化文档；其中历史数值与接口可用性均为 Owner 提供的既有记录，本次没有独立复验，也没有读取任何行情数据或运行研究。
 
 §4 的八份权威文档、数据和源码尚未导入；Teardown 的 design-rules v3 / tokens.css 尚未导入。不得把此处摘要冒充完整 card schema、固定源清单、状态机或预注册。§10 五项均待 Owner 拍板，建议不等于决议。任务 0 所需完整主题清单亦待框架文档导入。
+
+> 2026-09-29 状态：八份文档与 design-rules v3 / tokens.css 已导入 `docs/`（2026-09-25），仓库 `docs/` 为权威版本（A6）；§10 五项已由 A1–A5 决定（见 `operations/planning/2026-09-27-orchestration-input.md` 决定栏）；任务 0 已收口为 `data/universe.csv` v1，其余任务见 `operations/planning/2026-09-29-replan-three-lanes.md`。上一段保留作初始化时的原始边界。
 
 ---
 
@@ -79,7 +81,7 @@
 
 ## 4. 现有资产
 
-### 4.1 文档（权威版本在 claude.ai Project「QTradeResearch」，同名文件应同步到仓库 `docs/`）
+### 4.1 文档（权威版本在仓库 `docs/`；claude.ai Project「QTradeResearch」同名文档为 2026-09-25 的只读快照，见 A6）
 
 | 文件 | 内容 |
 |---|---|

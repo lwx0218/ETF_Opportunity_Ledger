@@ -85,8 +85,8 @@ skills 和 domain modeling 是按需能力，不是默认关卡。
 
 - Owner：Faye；中文名：ETF 前向机会台账。产出可验证的决策流程和前向证据，不以历史曲线优化为目标。
 - 接手前完整阅读 `docs/project-intake/etf-opportunity-ledger.md`，尤其 §1、§3；其研究纪律、数据陷阱、设计约束和禁令是本项目合同的一部分。
-- 八份权威文档来自 claude.ai Project「QTradeResearch」，按 intake §4.1 同名导入 `docs/`；先读 `docs/etf-card-schema-v1.md`。初始化时尚未导入，不得根据摘要补造 schema、状态机、固定源清单或研究规则。
-- 初始化仅授权治理骨架、文档与一次推送，不代表批准业务实施规划。任务 0–7 尚未开始；§10 五项均未决，建议不得当作已批准默认值。缺失材料或决策影响当前任务时停止该任务，不猜测。
+- 八份权威文档来自 claude.ai Project「QTradeResearch」，已于 2026-09-25 按 intake §4.1 同名导入 `docs/`；先读 `docs/etf-card-schema-v1.md`。自 A6 起仓库 `docs/` 为唯一权威版本，Project 同名文档只是只读快照；不得根据摘要补造 schema、状态机、固定源清单或研究规则。
+- 初始化仅授权治理骨架、文档与一次推送；业务实施以 Owner 2026-09-27 批准的 A1–A7 / C（`operations/planning/2026-09-27-orchestration-input.md` 决定栏）与 `operations/planning/2026-09-29-replan-three-lanes.md` 为准。任务 0 已收口为 `data/universe.csv` v1（2026-09-29）；任务 1–6 按 replan 的三条线分包推进；可选任务 7 仍延后。intake §10 五项已由 A1–A5 决定。缺失材料或决策影响当前任务时停止该任务，不猜测。
 
 ### 不可协商的研究纪律
 
@@ -108,7 +108,7 @@ skills 和 domain modeling 是按需能力，不是默认关卡。
 ### 交付边界
 
 - 任务顺序遵循 intake §7：先核对 universe，再数据、存储、指标、每日任务、面板、评分。可选任务 7 延后，先预注册，只做描述；无区分度就停止，不进入回测。
-- UI 必须遵守 Teardown design-rules v3 / tokens.css 和 intake §8；设计资产待导入，不以粗糙原型替代。过去 / 当下 / 未来三态、深色优先、无阴影卡片容器，不做「如何使用」说明页。
+- UI 必须遵守 Teardown design-rules v3 / tokens.css 和 intake §8；设计资产已导入 `docs/design/`，不以粗糙原型替代。过去 / 当下 / 未来三态、深色优先、无阴影卡片容器，不做「如何使用」说明页。
 - 本次不下发项目级 `pi-web-ui`，不修改共享全局配置；package 声明不是已安装或运行验证的证明。
 - 密钥、认证信息、依赖缓存、数据库、批量行情和重型输出不入 Git；保留轻量文档、清单及必要小样例。业务源码与运行数据只落本项目，不放进 Harness_Workspace。
 <!-- PROJECT:OWNED:END -->
