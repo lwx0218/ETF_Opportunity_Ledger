@@ -7,7 +7,7 @@
 - Status: active（接口均未在服务器实网验证，以首次 probe 为准）
 - Owner: Faye
 - Last updated: 2026-09-29
-- Source of truth: `operations/planning/2026-09-29-replan-three-lanes.md` §3 P1；`data/universe.csv` v1；intake §4.2、§5
+- Source of truth: `operations/planning/2026-09-29-replan-three-lanes.md` §3 P1、§8；`data/universe.csv` v1；intake §4.2、§5
 
 ## 命令
 
@@ -39,6 +39,7 @@ python -m src.data compare  data/kline_510300.csv data/raw/510300.csv --out outp
 - 请求记录与错误信息里的 `api_key` / `token` 一律脱敏为 `***`（coverage 与请求记录会进研究数据包）。
 - 符号映射：中证 `93xxxx` / `Hxxxxx` 指数不猜东财或腾讯代码；海外 `NDX→^NDX`、`SPX→^GSPC`、`N225→^N225`、`HSTECH→HSTECH.HK`、`NDXTMC→^NDXTMC`、`BRENT→BZ=F`，stooq `^ndx / ^spx / ^nkx`。均未实网验证。
 - 除 replan 列出的域名外，EIA 走 `api.eia.gov`，白名单需另加。
+- **交易日历**（schema v1.1-e，新增取数方式）：`data/calendar/sse-trading-days.csv`，一行一个 A 股交易日（`YYYY-MM-DD` 或 `YYYYMMDD`，可有表头）。由 astra 用 09-27 已验证的深交所日历接口（`monthList`）生成，覆盖 2005 年至次年，每年补一次（replan §8 astra S1）；本仓库代码只读不抓。`package` 发现该文件就复制到数据包 `calendar/` 并进 `MANIFEST.sha256`，`MANIFEST.json` 的 `calendar_file` 标明有无。用途：月末判定（P2）、owner 评分截止（P5）；没有文件时两处退回工作日规则。
 
 ## 研究序列的选择（probe 与 backfill 相同）
 
@@ -54,7 +55,7 @@ python -m src.data compare  data/kline_510300.csv data/raw/510300.csv --out outp
 - `outputs/data/coverage.csv`：`container, code, route_used, first_date, last_date, rows, tr_code_used, price_only, error`（replan 规定列），其后 `theme_id, status, series_code, series_file, series_name, max_gap_days, price_first_date, ohlc_missing_rows, volume_missing_rows, exec_code, exec_route, exec_first_date, exec_last_date, exec_rows, exec_error, checked_at, notes`。probe 只查执行 ETF 最近 45 天，不填 `exec_first_date / exec_rows`；`price_first_date` 只有 backfill 会填（看全收益版本是否比价格版本短、是否丢掉 ≤ 2015 的设计期）。`volume_missing_rows` 提醒形态状态机的放量条件：没有成交量的序列不会出现启动 / 超跌反弹 / 过热 / 破位四态。
 - `outputs/data/probe-requests.jsonl` / `backfill-requests.jsonl` / `update-requests.jsonl`：每次请求的 URL、UTC 时刻、字节数、sha256、错误（工程任务的证据标准，replan §6.1）。
 - probe 与 backfill 写同一个 `coverage.csv`；backfill 之后再跑 probe 会让 coverage 与 raw 脱节。`package` 逐个核对：`series_file` 必须存在、有行、`source` 等于 `route_used`，否则该容器改记 error；只打包 coverage 引用的文件，不一致的容器列在 `MANIFEST.json` 的 `inconsistent_with_raw`。
-- 研究数据包：`raw/`（只含 coverage 引用的文件，截到 end）、`coverage.csv`（按截断后的文件重算日期）、`universe.csv`、`MANIFEST.sha256`（`sha256sum -c` 可用）、`MANIFEST.json`。
+- 研究数据包：`raw/`（只含 coverage 引用的文件，截到 end）、`coverage.csv`（按截断后的文件重算日期）、`universe.csv`、`calendar/sse-trading-days.csv`（有才带）、`MANIFEST.sha256`（`sha256sum -c` 可用）、`MANIFEST.json`。
 
 ## 数据陷阱（intake §4.2）在本层的处理
 

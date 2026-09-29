@@ -2,7 +2,8 @@
 
     python -m src.indicators build --package outputs/research-package-2026-09-30/ [--out outputs/panel-2026-09-30/]
 
-输出 panel.csv（date, container, open, high, low, close, state, rs_1m, atr20, z_month）、bench.csv（date, hs300 = H00300）
+输出 panel.csv（date, container, open, high, low, close, state, rs_1m, atr20, z_month）、bench.csv（date, hs300 = H00300 收盘,
+hs300_open = 原始开盘，缺则空；每日任务的基准窗口用）
 和 build-report.json（每个容器的数据处理与缺陷计数）。所有容器先对齐到 A 股日历（I-20），全收益指数借价格版本的成交量（I-21），
 再算指标。之后跑
     python -m src.research.prereg_v1.run check --panel <out>/panel.csv --bench <out>/bench.csv
@@ -19,6 +20,7 @@ import pandas as pd
 
 from src.data import runner as data_runner
 from src.data import store
+from .calendar import CALENDAR, load_trading_days
 from .metrics import atr20, rs_1m, z_month
 from .states import form_states
 
@@ -132,12 +134,20 @@ def research_frame(raw_dir: Path, cov: dict, cal: pd.DatetimeIndex) -> tuple[pd.
     return df, rep
 
 
-def container_panel(df: pd.DataFrame, bench: pd.Series, end: date) -> pd.DataFrame:
+def bench_open(path: Path) -> pd.Series:
+    """基准的原始开盘价（v1.1-e 基准窗口开盘到开盘用）。不用 load_series 补过的值：缺开盘的行记 NaN，由使用方退回收盘口径。"""
+    raw = pd.read_csv(path, dtype={"date": str})
+    s = pd.Series(pd.to_numeric(raw.get("open"), errors="coerce").to_numpy(), index=pd.to_datetime(raw["date"]), dtype=float)
+    s = s[~s.index.duplicated(keep="last")].sort_index()
+    return s.where(s > 0)
+
+
+def container_panel(df: pd.DataFrame, bench: pd.Series, end: date, trading_days: pd.DatetimeIndex | None = None) -> pd.DataFrame:
     st = form_states(df)
     return pd.DataFrame({
         "date": df["date"], "open": df["open"], "high": df["high"], "low": df["low"], "close": df["close"],
         "state": st["state"], "rs_1m": rs_1m(df["close"], df["date"], bench), "atr20": atr20(df),
-        "z_month": z_month(df["close"], df["date"], end),
+        "z_month": z_month(df["close"], df["date"], end, trading_days=trading_days),
     })
 
 
@@ -161,9 +171,12 @@ def build(package: Path, out: Path | None = None, *, log=print) -> Path:
     bdf, _ = load_series(bench_path)
     bench = bdf.set_index("date")["close"]
     cal = bench.index[bench.index <= pd.Timestamp(end)]
+    cal_file = package / "calendar" / CALENDAR.name
+    trading_days = load_trading_days(cal_file)
 
     frames, report = [], {"package": str(package), "end": end.isoformat(), "manifest_sha256": _sha256(package / "MANIFEST.sha256"),
                           "bench": {"code": BENCH_CODE, "first": str(bench.index.min().date()), "last": str(bench.index.max().date())},
+                          "calendar_file": _sha256(cal_file) if trading_days is not None else None,
                           "containers": {}, "skipped": {}}
     panel_rows = cov[cov["status"].isin(["retained", "flagged"])]
     for _, c in panel_rows.iterrows():
@@ -177,7 +190,7 @@ def build(package: Path, out: Path | None = None, *, log=print) -> Path:
             report["skipped"][name] = "对齐 A 股日历后没有行"
             log(f"  --  {name}: 跳过（对齐 A 股日历后没有行）")
             continue
-        p = container_panel(df, bench, end)
+        p = container_panel(df, bench, end, trading_days)
         p.insert(1, "container", name)
         frames.append(p)
         rep.update(series_file=c["series_file"], route=c["route_used"], price_only=c["price_only"],
@@ -198,7 +211,9 @@ def build(package: Path, out: Path | None = None, *, log=print) -> Path:
     panel = pd.concat(frames, ignore_index=True).sort_values(["date", "container"]).reset_index(drop=True)
     out.mkdir(parents=True, exist_ok=True)
     panel[PANEL_COLUMNS].to_csv(out / "panel.csv", index=False, date_format="%Y-%m-%d")
-    pd.DataFrame({"date": bench.index, "hs300": bench.to_numpy()}).to_csv(out / "bench.csv", index=False, date_format="%Y-%m-%d")
+    pd.DataFrame({"date": bench.index, "hs300": bench.to_numpy(),
+                  "hs300_open": bench_open(bench_path).reindex(bench.index).to_numpy()}).to_csv(out / "bench.csv", index=False,
+                                                                                                date_format="%Y-%m-%d")
     report["created_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     report["panel_sha256"], report["bench_sha256"] = _sha256(out / "panel.csv"), _sha256(out / "bench.csv")
     (out / "build-report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")

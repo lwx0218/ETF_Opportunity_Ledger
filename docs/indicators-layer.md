@@ -22,7 +22,7 @@ build 先按 MANIFEST 复验数据包，不通过就拒绝；基准必须是数�
 ## 输出
 
 - `panel.csv`：`date, container, open, high, low, close, state, rs_1m, atr20, z_month`（implementation-notes §B）。`container` 为 universe 的主题名；全部容器在 A 股日历（H00300 交易日）上（I-20）。
-- `bench.csv`：`date, hs300`（H00300 收盘）。
+- `bench.csv`：`date, hs300, hs300_open`（H00300 收盘与原始开盘；开盘缺失时为空，不用收盘补。`hs300_open` 供每日任务的基准窗口「开盘到开盘」用，schema v1.1-e；V1 只读 `hs300`）。
 - `build-report.json`：数据包 MANIFEST 的 sha256；每个容器的原始行数与对齐后行数、起止、路由、`price_only`、`volume_source`、各状态天数（可达状态表）、`z_month` 个数、补值 / 扩高低计数、原始无成交量行数、`volume_zero_after_align`（对齐后成交量为 0 的行，含平盘）、`calendar`（`a_share` / `overseas_d_minus_1`）；A 股路由另有 `dropped_off_calendar` / `missing_on_calendar`，海外路由另有 `stale_days` / `multi_bar_days` / `trailing_stale_days` / `last_bar_date`；跳过的容器与原因。
 
 ## 口径
@@ -34,7 +34,7 @@ build 先按 MANIFEST 复验数据包，不通过就拒绝；基准必须是数�
 | `rs_1m` | 容器 21 日收益 − 基准 21 日收益；基准取容器交易日当天或之前最近的收盘 | B 节；容器与基准同日历时与 `etf_probe.build_panel` 相同 |
 | `z_month` | 仅在每月最后一个交易日有值：(月末收盘 − 前 20 个已完成月末收盘均值) / 其样本标准差 | B 节；与 `src/research/characterize.py` 同口径 |
 
-- **月末判定**：下一行在新月份即为月末；最后一行只有在其后的下一个工作日已进入新月份时才算月末（月末落在周末当天就能认出；停更的序列不会在月中冒出 z）。没有交易日历：月底最后一个工作日恰逢节假日的少数月份，最后一行要等下一行出现后才被认作月末。
+- **月末判定**：下一行在新月份即为月末。最后一行：数据包里有交易日历 `calendar/sse-trading-days.csv`（schema v1.1-e）且覆盖到它之后时，看日历里的下一个交易日是否进入新月份，节假日跨月也能当天认出；没有日历或日历没覆盖到时，看下一个工作日是否进入新月份（月末落在周末当天能认出；月底最后一个工作日恰逢节假日的少数月份，要等下一行出现后才被认作月末）。两种情况下停更的序列都不会在月中冒出 z。`build-report.json` 的 `calendar_file` 记日历文件的 sha256（没有则为 null）。
 - **只用过去**：全部指标只用 t 日及以前的数据；截断测试证明删掉 t 之后的数据，t 及以前每个值都不变。
 
 ## 日历对齐与成交量来源（I-20、I-21，implementation-notes E 节）

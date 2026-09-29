@@ -412,8 +412,11 @@ def _git_head() -> str | None:
         return None
 
 
+CALENDAR_FILE = ROOT / "data" / "calendar" / "sse-trading-days.csv"      # astra 生成（replan §8 S1），有就随包交付
+
+
 def package(end: date, *, uni_path: Path = U.UNIVERSE, raw_dir: Path = RAW_DIR, out_dir: Path = OUT_DIR,
-            pkg_root: Path = PKG_ROOT, force: bool = False, log=print) -> Path:
+            pkg_root: Path = PKG_ROOT, force: bool = False, calendar: Path | None = CALENDAR_FILE, log=print) -> Path:
     covs = read_coverage(out_dir / "coverage.csv")
     if not covs:
         raise SystemExit("没有 outputs/data/coverage.csv：先跑 backfill")
@@ -449,6 +452,9 @@ def package(end: date, *, uni_path: Path = U.UNIVERSE, raw_dir: Path = RAW_DIR, 
         _refresh(c, dest / "raw")
     write_coverage(dest / "coverage.csv", covs, [c["theme_id"] for c in covs])
     shutil.copyfile(uni_path, dest / "universe.csv")
+    if calendar is not None and Path(calendar).exists():
+        (dest / "calendar").mkdir()
+        shutil.copyfile(calendar, dest / "calendar" / Path(calendar).name)
     files = sorted(p for p in dest.rglob("*") if p.is_file())
     with open(dest / "MANIFEST.sha256", "w", encoding="utf-8", newline="\n") as f:
         for p in files:
@@ -459,6 +465,7 @@ def package(end: date, *, uni_path: Path = U.UNIVERSE, raw_dir: Path = RAW_DIR, 
             "panel_containers": len(panel), "with_series": sum(1 for c in panel if c.get("rows")),
             "inconsistent_with_raw": inconsistent,
             "price_only": sum(1 for c in panel if c.get("price_only") == "True"),
+            "calendar_file": (dest / "calendar").exists(),
             "verify": "python -m src.data verify <本目录>  或  sha256sum -c MANIFEST.sha256"}
     (dest / "MANIFEST.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     log(f"  研究数据包 {dest}：{n} 个序列文件，面板容器 {meta['with_series']}/{meta['panel_containers']} 有数据")

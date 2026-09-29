@@ -7,21 +7,23 @@
   5. 触发候选：只接「恐慌下轨」与「事件驱动」（A7），立卡即锁死
 
 幂等：每一步都先查台账已有的记录，同一天重跑不产生任何新行。所有价格都在卡片的研究序列上（后复权 / 全收益点位）。
-只验流程，不产出任何研究结论；出场后评价（missed_r、stop / trail_quality、benchmark_beat）是骨架口径，见 docs/jobs-daily.md。
+只验流程，不产出任何研究结论；记账口径按 schema v1.1-e（docs/jobs-daily.md）。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
 import pandas as pd
 
+from src.indicators.calendar import next_trading_day
 from src.ledger.store import Ledger, LedgerError, mechanical_score
 from src.research.prereg_v1.config import Params
-from src.research.prereg_v1.panel import ew_daily_returns
 from . import rules as R
+from .ew import EwStore
 
 
 @dataclass
@@ -35,19 +37,19 @@ class DayReport:
     created: list = field(default_factory=list)
     skipped: list = field(default_factory=list)
     reminders: list = field(default_factory=list)
+    blocked: str = ""                                    # 非空 = 台账一行未动（CLI 不记为已处理）
 
     def changed(self) -> bool:
         return bool(self.exits or self.entries or self.voids or self.daily_rows or self.finals or self.created)
 
 
-def default_scorer(c: R.Candidate) -> dict:
-    """机械触发且没有附证据：evidence_strength 记 0 并如实写明「未检索」。空证据数组在 schema 里表示「固定源上没有证据」，
-    而骨架并未去检索——这一冲突待 schema v1.1 给出「未检索」的表达（docs/jobs-daily.md 待决）。有证据的卡必须由起草人给分（A1）。"""
+def default_scorer(c: R.Candidate) -> dict | None:
+    """v1.1-a：机械卡 evidence_status = 未检索，不写 agent 分（为空，不是 0）；检索过的卡必须由起草人给分（A1）。"""
+    if c.evidence_status == "未检索":
+        return None
     if c.agent_score:
         return c.agent_score
-    if not c.evidence:
-        return {"score": 0, "reason": "机械触发；未检索固定源（检索未接入骨架）"}
-    raise ValueError(f"{c.container} {c.trigger_type}：有证据的候选必须带 agent_score")
+    raise ValueError(f"{c.container} {c.trigger_type}：检索过的候选必须带 agent_score")
 
 
 def creation_cutoff(d: str) -> str:
@@ -58,12 +60,15 @@ def creation_cutoff(d: str) -> str:
     return f"{x.isoformat()}T09:30"
 
 
-def next_weekday_open(d: str) -> str:
-    """owner 评分截止 = 下一交易日 09:30。没有交易日历时取下一个工作日：遇到节假日只会让截止偏早（更严），不会偏晚。"""
-    x = date.fromisoformat(d) + timedelta(days=1)
-    while x.weekday() >= 5:
-        x += timedelta(days=1)
-    return f"{x.isoformat()}T09:30"
+def next_weekday_open(d: str, trading_days=None) -> str:
+    """owner 评分截止 = 下一交易日 09:30。有交易日历文件时按日历（v1.1-e）；没有时取下一个工作日：
+    遇到节假日只会让截止偏早（更严），不会偏晚。"""
+    nxt = next_trading_day(date.fromisoformat(d), trading_days)
+    if nxt is None:
+        nxt = date.fromisoformat(d) + timedelta(days=1)
+        while nxt.weekday() >= 5:
+            nxt += timedelta(days=1)
+    return f"{nxt.isoformat()}T09:30"
 
 
 def _num(x):
@@ -72,11 +77,14 @@ def _num(x):
 
 class DailyJob:
     def __init__(self, ledger: Ledger, panel: pd.DataFrame, bench: pd.Series, *, rules: dict, instruments: dict,
-                 events_dir=None, scorer: Callable[[R.Candidate], dict] = default_scorer, p: Params = Params()):
+                 events_dir=None, scorer: Callable[[R.Candidate], dict | None] = default_scorer, p: Params = Params(),
+                 ew_path: Path | None = None, bench_open: pd.Series | None = None, trading_days=None):
         self.L, self.p, self.rules, self.instruments, self.events_dir, self.scorer = ledger, p, rules, instruments, events_dir, scorer
         self.panel = panel.assign(date=pd.to_datetime(panel["date"])).sort_values(["date", "container"])
         self.bench = bench.sort_index()
-        self.ew = (1 + ew_daily_returns(self.panel)).cumprod()        # 等权组合点位（只累积到当日，无未来）
+        self.bench_open = bench_open.sort_index() if bench_open is not None else None
+        self.trading_days = trading_days
+        self.ew_store = EwStore(ew_path)          # 等权日收益持久化（v1.1-e）；正式文件由 CLI 传入，None = 只在内存
 
     # ------------------------------------------------------------ 取数（一律截到 D）
     def _row(self, container: str, d: pd.Timestamp):
@@ -91,8 +99,17 @@ class DailyJob:
         s = series[series.index <= pd.Timestamp(d)]
         return float(s.iloc[-1]) if len(s) else None
 
-    def _bench_series(self, card: dict) -> pd.Series:
-        return self.ew if card["expectation_benchmark"] == "等权组合" else self.bench
+    def _bench_return(self, card: dict, entry_date: str, exit_date: str) -> float:
+        """v1.1-e：基准窗口 = 进场日开盘到出场日开盘（与卡片成交时点相同，H00300 有开盘价）；
+        没有开盘价（等权组合只有收盘点位）时退回前一日收盘到前一日收盘。"""
+        if card["expectation_benchmark"] == "沪深300" and self.bench_open is not None:
+            o0, o1 = self.bench_open.get(pd.Timestamp(entry_date)), self.bench_open.get(pd.Timestamp(exit_date))
+            if o0 is not None and o1 is not None and np.isfinite(o0) and np.isfinite(o1) and o0 > 0:
+                return float(o1 / o0 - 1)
+        s = self.ew_store.series() if card["expectation_benchmark"] == "等权组合" else self.bench
+        b0 = self._level(s, pd.Timestamp(entry_date) - timedelta(days=1))
+        b1 = self._level(s, pd.Timestamp(exit_date) - timedelta(days=1))
+        return (b1 / b0 - 1) if b0 and b1 else 0.0
 
     # ------------------------------------------------------------ 主流程
     def run(self, day: str) -> DayReport:
@@ -102,6 +119,14 @@ class DailyJob:
         if today.empty:
             rep.skipped.append("当日无任何容器的数据（非交易日或数据未更新）")
             return rep
+        oldest = self.L.conn.execute("SELECT min(close_date) FROM cards").fetchone()[0]
+        first = self.ew_store.first()
+        if oldest and (first is None or first > oldest):       # 等权文件丢了或被截短：基准收益会凭空变 0，不动台账
+            rep.blocked = (f"等权日收益文件{'不存在' if first is None else f'从 {first} 才开始'}，早于它的卡片（最早 {oldest}）"
+                           f"算不出等权基准；台账未动，先恢复该文件")
+            return rep
+        if self.ew_store.ensure(self.panel[self.panel["date"] <= D], D) is None:
+            rep.skipped.append(f"等权日收益文件已记到更晚的日期，{day} 不能补记（只追加）；本日反事实等权点位取最近一条")
         self._exits(D, rep)
         self._entries(D, rep)
         self._daily(D, today, rep)
@@ -137,10 +162,9 @@ class DailyJob:
             c = self.p.cost_per_side
             px = float(r.open)
             realized_r = (px * (1 - c) - entry["entry_price"] * (1 + c)) / r_unit
-            bs = self._bench_series(card)
-            b0, b1 = self._level(bs, pd.Timestamp(entry["entry_date"]) - timedelta(days=1)), self._level(bs, D - timedelta(days=1))
-            bench_ret = (b1 / b0 - 1) if b0 and b1 else 0.0
-            excess = (px / entry["entry_price"] - 1 - bench_ret) * 100
+            bench_ret = self._bench_return(card, entry["entry_date"], D.date().isoformat())
+            held_ret = px * (1 - c) / (entry["entry_price"] * (1 + c)) - 1           # v1.1-e：卡片持有收益含成本
+            excess = (held_ret - bench_ret) * 100
             held = self.panel[(self.panel["container"] == card["container"]) & (self.panel["date"] >= pd.Timestamp(entry["entry_date"]))
                               & (self.panel["date"] < D)]
             self.L.exit(cid, exit_date=D.date().isoformat(), exit_price=px, exit_reason="移动止盈" if activated else "失效位",
@@ -244,15 +268,15 @@ class DailyJob:
             last = after[-1]
             max_r_after = max((r["close"] - entry["entry_price"]) / r_unit for r in after)
             mfe_at_exit = max((r["mfe"] for r in rows if r["date"] <= x["exit_date"] and r["mfe"] is not None), default=0.0)
-            bs = self._bench_series(card)
-            b0, b1 = self._level(bs, pd.Timestamp(entry["entry_date"]) - timedelta(days=1)), self._level(bs, pd.Timestamp(x["exit_date"]) - timedelta(days=1))
+            bench_ret = self._bench_return(card, entry["entry_date"], x["exit_date"])
             self.L.finalize(cid, post_exit_return_pct=round((last["close"] / x["exit_price"] - 1) * 100, 6),
                             post_exit_r=round((last["close"] - entry["entry_price"]) / r_unit, 6),
-                            final_score=mechanical_score(x["exit_reason"], x["realized_excess_pct"], card["expectation_target_excess_pct"]),
+                            final_score=mechanical_score(x["exit_reason"], x["realized_excess_pct"], card["expectation_target_excess_pct"],
+                                                         card["scoring_rule"], x["realized_r"], card["expectation_target_r"]),
                             missed_r=round(max(0.0, max_r_after - x["realized_r"]), 6),
                             stop_quality=int(max_r_after - x["realized_r"] >= 1),
                             trail_quality=int(x["realized_r"] >= 0.7 * mfe_at_exit) if x["exit_reason"] == "移动止盈" else None,
-                            benchmark_beat=int(bool(b0 and b1 and b1 > b0)))
+                            benchmark_beat=int(bench_ret > 0))
             rep.finals.append(cid)
 
     def _triggers(self, D, today, rep):
@@ -276,28 +300,31 @@ class DailyJob:
             if not inst:
                 rep.skipped.append(f"{c.container}：universe 里没有执行标的，未立卡")
                 continue
-            cfg = self.rules[c.trigger_type]
+            exp = c.expectation if c.trigger_type == "事件驱动" else self.rules[c.trigger_type]
             stop = c.close - self.p.stop_atr * c.atr20
             r_unit = c.close - stop
             rank = ranks.get(c.container)
             card = dict(created_at=self.L.now(), close_date=day, scan_key=key, container=c.container,
                         instrument_code=inst["code"], instrument_name=inst["name"], research_index_code=inst.get("research_code"),
-                        trigger_type=c.trigger_type, state_at_entry=c.state, thesis=c.thesis,
-                        expectation_horizon_days=cfg["horizon_days"], expectation_target_excess_pct=cfg["target_excess_pct"],
-                        expectation_benchmark=cfg["benchmark"], invalidation_price=round(stop, 6),
+                        trigger_type=c.trigger_type, state_at_entry=c.state, thesis=c.thesis, evidence_status=c.evidence_status,
+                        scoring_rule=exp["scoring_rule"], expectation_horizon_days=exp["horizon_days"],
+                        expectation_target_excess_pct=exp["target_excess_pct"], expectation_target_r=exp["target_r"],
+                        expectation_benchmark=exp["benchmark"], invalidation_price=round(stop, 6),
                         invalidation_atr_value=round(c.atr20, 6), invalidation_atr_multiple=self.p.stop_atr,
                         r_unit_per_share=round(r_unit, 6), r_unit_pct_of_nav=self.p.risk_per_trade * 100,
                         planned_size_pct=round(min(self.p.risk_per_trade * c.close / r_unit, self.p.max_weight) * 100, 6),
-                        cf_ew_level=self._level(self.ew, D), cf_hs300_level=self._level(self.bench, D), cf_container_price=c.close,
+                        cf_ew_level=self._level(self.ew_store.series(), D), cf_hs300_level=self._level(self.bench, D),
+                        cf_container_price=c.close,
                         crowd_rs_1m_rank=int(rank) if rank == rank and rank is not None else None,
-                        owner_score_deadline=next_weekday_open(day))
+                        owner_score_deadline=next_weekday_open(day, self.trading_days))
             if c.trigger_type == "事件驱动" and c.thesis_invalidation:
                 ti = c.thesis_invalidation
                 card.update(thesis_inval_source_id=ti.get("source_id"), thesis_inval_deadline=ti.get("deadline"),
                             thesis_inval_statement=ti.get("statement"))
             try:
-                score = dict(self.scorer(c))
-                score.setdefault("scored_at", self.L.now())
+                score = self.scorer(c)
+                if score is not None:
+                    score = {**score, "scored_at": score.get("scored_at") or self.L.now()}
                 cid = self.L.create_card(card, c.evidence, score)
             except (LedgerError, ValueError, KeyError) as e:          # 一张卡被拒不挡住其余候选；原因进报告
                 rep.skipped.append(f"{c.container} {c.trigger_type}：立卡被拒（{str(e)[:120]}）")

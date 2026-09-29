@@ -8,10 +8,13 @@ import pandas as pd
 
 from src.data import universe as U
 from src.data.runner import read_coverage
-from src.indicators.build import BENCH_CODE, container_panel, load_series, research_frame
+from src.indicators.build import BENCH_CODE, bench_open, container_panel, load_series, research_frame
 
 
-def live_panel(raw_dir: Path, coverage_csv: Path, end: date) -> tuple[pd.DataFrame, pd.Series, list[str]]:
+def live_panel(raw_dir: Path, coverage_csv: Path, end: date, trading_days: pd.DatetimeIndex | None = None
+               ) -> tuple[pd.DataFrame, pd.Series, pd.Series, list[str]]:
+    """返回 (面板, 沪深300 全收益收盘, 沪深300 全收益开盘, 问题)。开盘价供基准窗口「开盘到开盘」用（v1.1-e）；
+    trading_days 是交易日历文件（没有时 None，月末判定退回工作日规则）。"""
     raw_dir = Path(raw_dir)
     bpath = raw_dir / f"{BENCH_CODE}.csv"
     if not bpath.exists():
@@ -19,6 +22,7 @@ def live_panel(raw_dir: Path, coverage_csv: Path, end: date) -> tuple[pd.DataFra
     bdf, _ = load_series(bpath)
     bdf = bdf[bdf["date"] <= pd.Timestamp(end)]
     bench = bdf.set_index("date")["close"]
+    bopen = bench_open(bpath).reindex(bench.index)
     cal = bench.index
     frames, problems = [], []
     for c in read_coverage(Path(coverage_csv)):
@@ -37,12 +41,12 @@ def live_panel(raw_dir: Path, coverage_csv: Path, end: date) -> tuple[pd.DataFra
         if n:
             problems.append(f"{c['container']}（{c.get('route_used')}）：{end} 沿用 {rep.get('last_bar_date')} 的 K 线，末尾连续平盘 {n} 行"
                             + ("——可能停更或数据未到，先查 update" if n > 3 else "（海外休市）"))
-        p = container_panel(df, bench, end)
+        p = container_panel(df, bench, end, trading_days)
         p.insert(1, "container", c["container"])
         frames.append(p)
     if not frames:
         raise SystemExit("没有任何容器有研究序列")
-    return pd.concat(frames, ignore_index=True), bench, problems
+    return pd.concat(frames, ignore_index=True), bench, bopen, problems
 
 
 def instruments(uni_path: Path = U.UNIVERSE, coverage_csv: Path | None = None) -> dict:
