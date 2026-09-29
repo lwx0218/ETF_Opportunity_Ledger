@@ -75,10 +75,11 @@ class NoLookahead(unittest.TestCase):
         df = ohlcv(n=900)
         bench = ohlcv(n=900, seed=9).set_index("date")["close"]
         end_full = df["date"].iloc[-1].date()
-        full = B.container_panel(df, bench, end_full)
+        full = B.container_panel(df, bench, end_full, compute_indicators=True)
         for cut in (300, 517, 640, 899):
             cd = df["date"].iloc[cut].date()
-            part = B.container_panel(df.iloc[: cut + 1].reset_index(drop=True), bench[bench.index <= df["date"].iloc[cut]], cd)
+            part = B.container_panel(df.iloc[: cut + 1].reset_index(drop=True), bench[bench.index <= df["date"].iloc[cut]], cd,
+                                     compute_indicators=True)
             a = full.iloc[: cut + 1].reset_index(drop=True)
             # 截断点若恰是日历月末之前的最后交易日，截断版不知道这个月是否已结束：只在最后一行放宽 z_month
             if not month_end_flags(part["date"], cd).iloc[-1] and month_end_flags(full["date"], end_full).iloc[cut]:
@@ -304,7 +305,7 @@ class CalendarAlignment(unittest.TestCase):
         def panel(frames):
             out = []
             for name, df in frames.items():
-                q = B.container_panel(df.reset_index(drop=True), bench, end)
+                q = B.container_panel(df.reset_index(drop=True), bench, end, compute_indicators=True)
                 q.insert(1, "container", name)
                 out.append(q)
             return pd.concat(out, ignore_index=True)
@@ -418,15 +419,40 @@ class NativeIndicators(unittest.TestCase):
         self.assertEqual(hit.set_index("date").loc[d, "high"], spike.set_index("date").loc[pd.Timestamp("2026-02-20"), "high"])  # 面板 high 是最后一根的
 
     def test_d_truncation_with_native_indicators(self):
+        """A 股日 D 只能用本地日期 < D 的 K 线：原始数据截到 D 之前（不含 D），或把 D 及以后的价格 ×3、量 ×50，D 及以前的行都不变。"""
         raw = self.us_random(seed=9)
         full, _ = self.frame(raw)
         full_p = B.container_panel(full, self.bench, CAL[-1].date())
+        cols = ["date", "open", "high", "low", "close", "state", "rs_1m", "atr20"]                # z_month 的月末判定另有截断测试
         for cut in (CAL[15], CAL[40], CAL[-3]):
-            part, _ = self.frame(raw[raw["date"] <= cut], cal=CAL[CAL <= cut])
-            part_p = B.container_panel(part, self.bench[self.bench.index <= cut], cut.date())
             a = full_p[full_p["date"] <= cut].reset_index(drop=True)
-            cols = ["date", "open", "high", "low", "close", "state", "rs_1m", "atr20"]           # z_month 的月末判定另有截断测试
+            part, _ = self.frame(raw[raw["date"] < cut], cal=CAL[CAL <= cut])
+            part_p = B.container_panel(part, self.bench[self.bench.index <= cut], cut.date())
             pd.testing.assert_frame_equal(a[cols], part_p.reset_index(drop=True)[cols], check_dtype=False, obj=f"cut={cut.date()}")
+            later = raw["date"] >= cut
+            noisy = raw.assign(**{c: raw[c].where(~later, raw[c] * 3) for c in ("open", "high", "low", "close")},
+                               volume=raw["volume"].where(~later, raw["volume"] * 50))
+            moved, _ = self.frame(noisy)
+            moved_p = B.container_panel(moved, self.bench, CAL[-1].date())
+            pd.testing.assert_frame_equal(a[cols], moved_p[moved_p["date"] <= cut].reset_index(drop=True)[cols], check_dtype=False,
+                                          obj=f"noisy future, cut={cut.date()}")
+
+    def test_f_panel_uses_native_indicators(self):
+        """面板（V1 的输入）里海外容器的 state / atr20 逐行等于原生 K 线的值；缺指标列时报错，不静默退回 P6a 口径。"""
+        raw = self.us_random(seed=3)
+        df, rep = self.frame(raw)
+        self.assertGreater(rep["stale_days"], 0)
+        self.assertEqual(list(df.columns), B.BAR_COLUMNS + B.INDICATOR_COLUMNS)                    # amount / source 不带
+        p = B.container_panel(df, self.bench, CAL[-1].date())
+        native = B.bar_indicators(B.load_series(self._raw_path(raw))[0]).set_index("date")
+        for d, st, a in zip(p["date"], p["state"], p["atr20"]):
+            src = native[native.index < d].iloc[-1]
+            self.assertEqual(st, src["state"], d)
+            self.assertTrue((np.isnan(a) and np.isnan(src["atr20"])) or a == src["atr20"], d)
+        old = B.container_panel(df[B.BAR_COLUMNS], self.bench, CAL[-1].date(), compute_indicators=True)   # P6a 口径
+        self.assertFalse(np.allclose(old["atr20"].to_numpy(), p["atr20"].to_numpy(), equal_nan=True))
+        with self.assertRaisesRegex(B.BuildError, "state / atr20"):
+            B.container_panel(df[B.BAR_COLUMNS], self.bench, CAL[-1].date())
 
     def test_e_a_share_unchanged_from_p6a(self):
         days = pd.bdate_range("2025-06-02", "2026-03-31")
@@ -436,7 +462,7 @@ class NativeIndicators(unittest.TestCase):
         new, rep = self.frame(raw, route="csi", cal=cal)
         new_p = B.container_panel(new, self.bench, cal[-1].date())
         aligned, _ = B.align_to_calendar(B.load_series(self._raw_path(raw))[0], cal, False)   # P6a：先对齐，再在对齐后的序列上算
-        old_p = B.container_panel(aligned, self.bench, cal[-1].date())
+        old_p = B.container_panel(aligned, self.bench, cal[-1].date(), compute_indicators=True)
         pd.testing.assert_frame_equal(new_p, old_p)
         self.assertEqual((rep["dropped_off_calendar"], rep["missing_on_calendar"]), (len(SPRING), 1))
 

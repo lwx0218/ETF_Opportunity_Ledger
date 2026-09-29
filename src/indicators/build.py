@@ -29,6 +29,7 @@ OVERSEAS_ROUTES = {"yahoo", "stooq", "eia"}      # I-20：本地日期晚于 A �
 VOLUME_BORROW_SHARE = 0.5      # I-21：研究序列缺成交量的行超过一半就借价格版本
 PANEL_COLUMNS = ["date", "container", "open", "high", "low", "close", "state", "rs_1m", "atr20", "z_month"]
 BAR_COLUMNS = ["date", "open", "high", "low", "close", "volume"]
+INDICATOR_COLUMNS = ["state", "atr20"]            # I-24：在原生 K 线上算、随 K 线带到 D 的列
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -93,7 +94,7 @@ def align_to_calendar(df: pd.DataFrame, cal: pd.DatetimeIndex, overseas: bool) -
       没有新 K 线（海外休市）写平盘 K 线：开高低收 = 前收，成交量 0，计 stale_days。
       两个 A 股交易日之间有多根新 K 线时（A 股长假）只用最后一根，计 multi_bar_days——跨假期收益落在这一根的收盘里。
       last_bar_date 是最后一行实际用到的 K 线日期（停更时远早于 D）。
-    df 里 K 线以外的列（I-24：原生序列上算好的指标）随 K 线一起带到 D；平盘行沿用上一行的值。"""
+    df 里的指标列（INDICATOR_COLUMNS，I-24：原生序列上算好的）随 K 线一起带到 D；平盘行沿用上一行的值。其他非 K 线列不带。"""
     if not overseas:
         on = df["date"].isin(cal)
         kept = df[on].reset_index(drop=True)
@@ -102,7 +103,7 @@ def align_to_calendar(df: pd.DataFrame, cal: pd.DatetimeIndex, overseas: bool) -
                       "missing_on_calendar": int((~span.isin(kept["date"])).sum())}
     src = df.sort_values("date").reset_index(drop=True)
     dates = src["date"].to_numpy()
-    extra = [c for c in src.columns if c not in BAR_COLUMNS]
+    extra = [c for c in INDICATOR_COLUMNS if c in src.columns]       # 只带指标列；amount / source 这类列不带（平盘行对不上）
     rows, flat, multi, prev = [], [], 0, None
     for d in cal:
         i = int(np.searchsorted(dates, d.to_datetime64(), side="left")) - 1      # 最后一根日期 < D 的 K 线
@@ -158,11 +159,15 @@ def bench_open(path: Path) -> pd.Series:
     return s.where(s > 0)
 
 
-def container_panel(df: pd.DataFrame, bench: pd.Series, end: date, trading_days: pd.DatetimeIndex | None = None) -> pd.DataFrame:
-    """state / atr20 用 research_frame 带来的列（I-24）；调用方直接给一条原生序列（没有这两列）时就地算。
+def container_panel(df: pd.DataFrame, bench: pd.Series, end: date, trading_days: pd.DatetimeIndex | None = None, *,
+                    compute_indicators: bool = False) -> pd.DataFrame:
+    """state / atr20 用 research_frame 带来的列（I-24）。缺这两列就报错，不静默在给定序列上重算——对齐后的海外序列上
+    重算就是退回 P6a 口径（平盘进指标）。只有调用方明确给的是一条原生序列时才传 compute_indicators=True 就地算。
     rs_1m、z_month 用对齐后的收盘（横截面口径），不变。"""
-    if "state" not in df or "atr20" not in df:
-        df = bar_indicators(df)
+    if compute_indicators:
+        df = bar_indicators(df[BAR_COLUMNS])
+    elif "state" not in df or "atr20" not in df:
+        raise BuildError("缺 state / atr20：先经 research_frame 在原生 K 线上算（I-24），或对原生序列显式传 compute_indicators=True")
     return pd.DataFrame({
         "date": df["date"], "open": df["open"], "high": df["high"], "low": df["low"], "close": df["close"],
         "state": df["state"], "rs_1m": rs_1m(df["close"], df["date"], bench), "atr20": df["atr20"],

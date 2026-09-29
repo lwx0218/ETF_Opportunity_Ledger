@@ -188,7 +188,7 @@ class Replay(unittest.TestCase):
             b = bench[bench.index <= cut]
             frames = []
             for n, g in raw.items():
-                q = container_panel(g[g["date"] <= cut].reset_index(drop=True), b, cut.date())
+                q = container_panel(g[g["date"] <= cut].reset_index(drop=True), b, cut.date(), compute_indicators=True)
                 q.insert(1, "container", n)
                 frames.append(q)
             live = pd.concat(frames, ignore_index=True)
