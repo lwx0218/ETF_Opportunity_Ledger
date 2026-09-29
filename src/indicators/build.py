@@ -3,7 +3,8 @@
     python -m src.indicators build --package outputs/research-package-2026-09-30/ [--out outputs/panel-2026-09-30/]
 
 输出 panel.csv（date, container, open, high, low, close, state, rs_1m, atr20, z_month）、bench.csv（date, hs300 = H00300）
-和 build-report.json（每个容器的数据处理与缺陷计数）。之后跑
+和 build-report.json（每个容器的数据处理与缺陷计数）。所有容器先对齐到 A 股日历（I-20），全收益指数借价格版本的成交量（I-21），
+再算指标。之后跑
     python -m src.research.prereg_v1.run check --panel <out>/panel.csv --bench <out>/bench.csv
 """
 from __future__ import annotations
@@ -17,10 +18,13 @@ import numpy as np
 import pandas as pd
 
 from src.data import runner as data_runner
+from src.data import store
 from .metrics import atr20, rs_1m, z_month
 from .states import form_states
 
 BENCH_CODE = "H00300"          # I-18：沪深300 全收益，不用价格指数 000300 顶替
+OVERSEAS_ROUTES = {"yahoo", "stooq", "eia"}      # I-20：本地日期晚于 A 股收盘的路由，取 D−1
+VOLUME_BORROW_SHARE = 0.5      # I-21：研究序列缺成交量的行超过一半就借价格版本
 PANEL_COLUMNS = ["date", "container", "open", "high", "low", "close", "state", "rs_1m", "atr20", "z_month"]
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -57,6 +61,71 @@ def load_series(path: Path) -> tuple[pd.DataFrame, dict]:
     return df, rep
 
 
+def borrow_volume(df: pd.DataFrame, raw_dir: Path, cov: dict) -> tuple[pd.DataFrame, str]:
+    """I-21：研究序列缺成交量的行超过一半时，按日期换成同一指数价格版本（coverage.code 的原始文件）的成交量。
+    价格版本成份与交易日相同，成交量本是同一个数；放量条件是比值，单位无关。价格版本也没有成交量则保持原样。
+    返回 (df, volume_source ∈ self / price_version / none)。"""
+    if df.empty or (~(df["volume"] > 0)).mean() <= VOLUME_BORROW_SHARE:
+        return df, "self"
+    code = cov.get("code") or ""
+    if not code or cov.get("series_code") == code:           # 研究序列就是价格版本本身（或研究 = 执行的后复权 ETF）
+        return df, "none"
+    pf = Path(raw_dir) / store.file_name(code, "csi")          # 价格版本不走后复权路由，文件名即 <code>.csv
+    if not pf.exists():
+        return df, "none"
+    pv = pd.read_csv(pf, dtype={"date": str})
+    vol = pd.Series(pd.to_numeric(pv.get("volume"), errors="coerce").to_numpy(), index=pd.to_datetime(pv["date"]))
+    vol = vol[~vol.index.duplicated(keep="last")]
+    got = df["date"].map(vol)
+    if not (got > 0).any():
+        return df, "none"
+    return df.assign(volume=got.where(got > 0, 0.0).to_numpy()), "price_version"
+
+
+def align_to_calendar(df: pd.DataFrame, cal: pd.DatetimeIndex, overseas: bool) -> tuple[pd.DataFrame, dict]:
+    """I-20：全部容器对齐到 A 股日历（H00300 的交易日）。
+    - A 股路由：不在 A 股日历上的行丢弃并计数；
+    - 海外路由：A 股交易日 D 取本地日期 ≤ D−1 的最后一根 K 线（美股 / 港股收盘都晚于 A 股 15:00，取 D−1 才无未来视角）；
+      没有新 K 线（海外休市）写平盘 K 线：开高低收 = 前收，成交量 0，计 stale_days。
+      两个 A 股交易日之间有多根新 K 线时（A 股长假）只用最后一根，计 multi_bar_days——跨假期收益落在这一根的收盘里。"""
+    if not overseas:
+        on = df["date"].isin(cal)
+        return df[on].reset_index(drop=True), {"calendar": "a_share", "dropped_off_calendar": int((~on).sum())}
+    src = df.sort_values("date").reset_index(drop=True)
+    dates = src["date"].to_numpy()
+    rows, flat, multi, prev = [], [], 0, None
+    for d in cal:
+        i = int(np.searchsorted(dates, d.to_datetime64(), side="left")) - 1      # 最后一根日期 < D 的 K 线
+        if i < 0:
+            continue
+        if prev is not None and i == prev:
+            c = rows[-1]["close"]
+            rows.append({"date": d, "open": c, "high": c, "low": c, "close": c, "volume": 0.0})
+            flat.append(True)
+        else:
+            if prev is not None and i - prev > 1:
+                multi += 1
+            b = src.iloc[i]
+            rows.append({"date": d, "open": b["open"], "high": b["high"], "low": b["low"], "close": b["close"],
+                         "volume": b["volume"]})
+            flat.append(False)
+        prev = i
+    out = pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
+    trailing = len(flat) - (max((k for k, f in enumerate(flat) if not f), default=-1) + 1)
+    return out, {"calendar": "overseas_d_minus_1", "stale_days": sum(flat), "multi_bar_days": multi, "trailing_stale_days": trailing}
+
+
+def research_frame(raw_dir: Path, cov: dict, cal: pd.DatetimeIndex) -> tuple[pd.DataFrame, dict]:
+    """一个容器的研究序列：读取 → 借成交量（I-21）→ 对齐 A 股日历（I-20）。数据包与每日任务共用，口径一致。"""
+    df, rep = load_series(Path(raw_dir) / cov["series_file"])
+    df, vsrc = borrow_volume(df, raw_dir, cov)
+    rep["volume_source"] = vsrc
+    df, arep = align_to_calendar(df, cal, cov.get("route_used") in OVERSEAS_ROUTES)
+    rep.update(arep)
+    rep["volume_zero_after_align"] = int((~(df["volume"] > 0)).sum()) if len(df) else 0
+    return df, rep
+
+
 def container_panel(df: pd.DataFrame, bench: pd.Series, end: date) -> pd.DataFrame:
     st = form_states(df)
     return pd.DataFrame({
@@ -85,6 +154,7 @@ def build(package: Path, out: Path | None = None, *, log=print) -> Path:
         raise BuildError(f"数据包里没有 {BENCH_CODE}（沪深300 全收益，I-18）；不以价格指数顶替")
     bdf, _ = load_series(bench_path)
     bench = bdf.set_index("date")["close"]
+    cal = bench.index[bench.index <= pd.Timestamp(end)]
 
     frames, report = [], {"package": str(package), "end": end.isoformat(), "manifest_sha256": _sha256(package / "MANIFEST.sha256"),
                           "bench": {"code": BENCH_CODE, "first": str(bench.index.min().date()), "last": str(bench.index.max().date())},
@@ -96,22 +166,26 @@ def build(package: Path, out: Path | None = None, *, log=print) -> Path:
             report["skipped"][name] = c["error"] or "无研究序列"
             log(f"  --  {name}: 跳过（{report['skipped'][name][:80]}）")
             continue
-        df, rep = load_series(package / "raw" / c["series_file"])
+        df, rep = research_frame(package / "raw", dict(c), cal)
+        if df.empty:
+            report["skipped"][name] = "对齐 A 股日历后没有行"
+            log(f"  --  {name}: 跳过（对齐 A 股日历后没有行）")
+            continue
         p = container_panel(df, bench, end)
         p.insert(1, "container", name)
         frames.append(p)
-        a_dates = set(bench.index)
         rep.update(series_file=c["series_file"], route=c["route_used"], price_only=c["price_only"],
-                   first=str(df["date"].min().date()), last=str(df["date"].max().date()),
+                   first=str(df["date"].min().date()), last=str(df["date"].max().date()), aligned_rows=len(df),
                    states={k: int(v) for k, v in p["state"].value_counts().items()},
-                   z_month_values=int(p["z_month"].notna().sum()),
-                   dates_not_in_bench_calendar=int((~p["date"].isin(a_dates)).sum()))
+                   z_month_values=int(p["z_month"].notna().sum()))
         report["containers"][name] = rep
-        flags = {"补开高低": rep["ohl_filled_from_close"], "扩高低": rep["hl_clamped"], "无成交量": rep["volume_missing_or_zero"],
+        flags = {"补开高低": rep["ohl_filled_from_close"], "扩高低": rep["hl_clamped"], "原始无成交量": rep["volume_missing_or_zero"],
                  "缺收盘丢弃": rep["dropped_missing_close"], "重复日期": rep["dropped_duplicate_dates"],
-                 "不在基准日历": rep["dates_not_in_bench_calendar"]}
-        log(f"  ok  {name}: {rep['rows']} 行 {rep['first']}→{rep['last']}"
-            + "".join(f"；{k} {v} 行" for k, v in flags.items() if v))
+                 "不在 A 股日历丢弃": rep.get("dropped_off_calendar", 0), "平盘": rep.get("stale_days", 0),
+                 "长假并入最后一根": rep.get("multi_bar_days", 0)}
+        log(f"  ok  {name}: {rep['aligned_rows']} 行 {rep['first']}→{rep['last']}；成交量 {rep['volume_source']}"
+            + "".join(f"；{k} {v} 行" for k, v in flags.items() if v)
+            + (f"；⚠ 末尾连续平盘 {rep['trailing_stale_days']} 行（序列可能停更）" if rep.get("trailing_stale_days", 0) > 3 else ""))
     if not frames:
         raise BuildError("没有任何容器有研究序列")
     panel = pd.concat(frames, ignore_index=True).sort_values(["date", "container"]).reset_index(drop=True)

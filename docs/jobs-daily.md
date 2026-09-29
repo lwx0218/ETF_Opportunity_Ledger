@@ -12,7 +12,7 @@
 ## 用法
 
 ```bash
-# 北京时间 05:00–09:30 运行（此时 A 股与美股的 D 日都已收盘；定时与无人值守交 astra，replan §4 S3）
+# 北京时间 15:30 之后运行（A 股 D 日已收盘；海外容器按 I-20 用 D−1 的 K 线；定时与无人值守交 astra，replan §4 S3）
 python -m src.jobs daily  --rules config/ledger-rules.json [--date D] [--events-dir data/events] [--no-update]
 # 回放冒烟（只验流程；必须用单独的回放库，正式库会被拒绝）
 python -m src.jobs replay --panel outputs/panel-2026-09-30/panel.csv --bench outputs/panel-2026-09-30/bench.csv \
@@ -21,7 +21,7 @@ python -m src.jobs replay --panel outputs/panel-2026-09-30/panel.csv --bench out
 
 `daily` = P1 `update` → 用 P2 的函数从 `data/raw` 现算面板 → 运行前检查 → 本包的台账流程。
 
-- **默认日期**：A 股与海外都已收盘的最近日期。在北京 16:00 跑时，美股当天还没收盘，海外容器会没有当日行，所以按次晨跑。
+- **默认日期**：A 股已收盘的最近日期。面板按 I-20 对齐 A 股日历，海外容器在 D 日用本地 D−1 的 K 线（北京 D 日凌晨已收盘），不必等到次晨。
 - **规则配置**：从 `config/ledger-rules.example.json` 复制。三项量化预期由 Cowork 定，`confirmed_terms` 必须等于 `src/jobs/rules.py` 的 `TERMS_VERSION`，表示已复核本文件「骨架口径」一节。未确认或任一项为 null 的规则不启用；一条规则都没启用时命令直接退出。
 
 **运行前检查**（`src/jobs/guard.py`；任一项不过就不动台账，退出码 3）：

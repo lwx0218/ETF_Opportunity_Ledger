@@ -1,5 +1,5 @@
 """python -m src.jobs daily  --rules config/ledger-rules.json [--date D] [--db data/ledger.sqlite] [--events-dir data/events] [--no-update]
-                                                             （北京时间 05:00–09:30 运行：此时 A 股与美股的 D 日都已收盘）
+                                                             （北京时间 15:30 之后运行：A 股 D 日已收盘；海外容器按 I-20 用 D−1 的 K 线，也已收盘）
 python -m src.jobs replay --panel P --bench B --from D1 --to D2 --rules R --db 回放库.sqlite [--events-dir …]
 
 daily：P1 update → 从 raw 现算面板（P2）→ 台账流程（本包）。定时与无人值守运行交 astra（replan §4 S3）。
@@ -25,15 +25,15 @@ from .live import instruments, live_panel
 
 
 def default_day() -> date:
-    """A 股与海外都已收盘的最近日期（北京时间次晨运行时即上一个 A 股交易日）。"""
-    return min(data_runner.last_complete("csi"), data_runner.last_complete("yahoo"))
+    """A 股已收盘的最近日期。I-20 之后海外容器在 D 日用本地 D−1 的 K 线，北京 15:30 时它早已收盘，不必等到次晨。"""
+    return data_runner.last_complete("csi")
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m src.jobs", description="台账每日任务")
     sub = ap.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("daily")
-    d.add_argument("--date", type=date.fromisoformat, default=None, help="默认：A 股与海外都已收盘的最近日期")
+    d.add_argument("--date", type=date.fromisoformat, default=None, help="默认：A 股已收盘的最近日期")
     d.add_argument("--no-update", action="store_true", help="不先跑数据增量（raw 已是最新时用）")
     r = sub.add_parser("replay")
     r.add_argument("--panel", type=Path, required=True)
