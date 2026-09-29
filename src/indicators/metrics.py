@@ -6,6 +6,8 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 
+from .calendar import next_trading_day
+
 
 def atr20(df: pd.DataFrame, n: int = 20) -> pd.Series:
     """真实波幅的 n 日简单均值（I-02；与 src/research/prereg_v1/panel.py: reference_atr 同一算法）。"""
@@ -29,23 +31,24 @@ def _next_weekday(d: date) -> date:
     return x
 
 
-def month_end_flags(dates: pd.Series, end: date) -> pd.Series:
-    """每月最后一个交易日为 True。下一行在新月份即为月末；最后一行只有在其后的下一个工作日已进入新月份时才算月末
-    （月末落在周末、或月底最后一个工作日就是它），不把「后面没数据」当成「后面没交易日」——停更的序列不会在月中冒出 z。
-    没有交易日历：月底最后一个工作日恰逢节假日的少数月份，最后一行要等下一行出现后才被认作月末。"""
+def month_end_flags(dates: pd.Series, end: date, trading_days: pd.DatetimeIndex | None = None) -> pd.Series:
+    """每月最后一个交易日为 True。下一行在新月份即为月末。最后一行：有交易日历文件且覆盖到它之后时，看日历里的下一个交易日
+    是否进入新月份（v1.1-e，节假日跨月也能当天认出）；否则看下一个工作日是否进入新月份（月末落在周末当天能认出，
+    停更的序列不会在月中冒出 z；月底最后一个工作日恰逢节假日的少数月份，要等下一行出现后才被认作月末）。"""
     d = pd.to_datetime(dates).reset_index(drop=True)
     per = d.dt.to_period("M")
     flag = per.ne(per.shift(-1))
     if len(d):
         last = d.iloc[-1].date()
-        flag.iloc[-1] = last <= end and _next_weekday(last).month != last.month
+        nxt = next_trading_day(last, trading_days) or _next_weekday(last)
+        flag.iloc[-1] = last <= end and nxt.month != last.month
     return pd.Series(flag.to_numpy(), index=dates.index)
 
 
-def z_month(close: pd.Series, dates: pd.Series, end: date, n: int = 20) -> pd.Series:
+def z_month(close: pd.Series, dates: pd.Series, end: date, n: int = 20, trading_days: pd.DatetimeIndex | None = None) -> pd.Series:
     """只在月末行有值：(月末收盘 − 前 n 个已完成月末收盘的均值) / 其标准差（样本标准差），其余为空。
     与 src/research/characterize.py 同口径：mu = c.shift(1).rolling(n).mean()，sd = c.shift(1).rolling(n).std()。"""
-    flag = month_end_flags(dates, end)
+    flag = month_end_flags(dates, end, trading_days)
     m = close[flag]
     mu = m.shift(1).rolling(n).mean()
     sd = m.shift(1).rolling(n).std()

@@ -29,8 +29,8 @@ APPEND_ONLY = ("cards", "evidence", "strength_scores", "entries", "daily", "exit
                "source_loads", "fixed_sources")
 CARD_FIELDS = (
     "id", "created_at", "close_date", "scan_key", "container", "instrument_code", "instrument_name", "research_index_code",
-    "trigger_type", "state_at_entry", "thesis", "expectation_horizon_days", "expectation_target_excess_pct",
-    "expectation_benchmark", "invalidation_price", "invalidation_atr_value", "invalidation_atr_multiple",
+    "trigger_type", "state_at_entry", "thesis", "evidence_status", "expectation_horizon_days", "expectation_target_excess_pct",
+    "expectation_target_r", "expectation_benchmark", "invalidation_price", "invalidation_atr_value", "invalidation_atr_multiple",
     "r_unit_per_share", "r_unit_pct_of_nav", "planned_size_pct", "scoring_rule", "tracking_days",
     "cf_ew_level", "cf_hs300_level", "cf_container_price", "crowd_rs_1m_rank", "crowd_rs_3m_rank",
     "crowd_vol_ratio_20", "crowd_premium_pct", "crowd_share_chg_20d", "thesis_inval_source_id",
@@ -38,7 +38,9 @@ CARD_FIELDS = (
 )
 FROZEN_FIELDS = CARD_FIELDS + ("recorded_at",)
 EVIDENCE_FIELDS = ("source_id", "published_at", "summary", "url", "first_seen_at", "available_at", "snapshot_path", "snapshot_sha256")
-SCORING_RULE = "schema-v1-§3"
+SCORING_RULE = "schema-v1-§3"          # 菜单第 1 项（按超额与期限）
+SCORING_RULE_R = "schema-v1.1-R"        # 菜单第 2 项（按 R 倍数，规则卡；v1.1-c）
+SCHEMA_VERSION = "v1.1"
 
 
 class LedgerError(ValueError):
@@ -63,8 +65,15 @@ BEGIN SELECT RAISE(ABORT, 'cards 创建时锁死：只能作废旧卡并新建�
     return "\n".join(sql)
 
 
-def mechanical_score(exit_reason: str, realized_excess_pct: float, target_excess_pct: float) -> str:
-    """schema §3 四档，与 finals 触发器同一口径。"""
+def mechanical_score(exit_reason: str, realized_excess_pct: float, target_excess_pct: float | None,
+                     scoring_rule: str = SCORING_RULE, realized_r: float | None = None, target_r: float | None = None) -> str:
+    """四档机械评分，与 finals 触发器同一口径：菜单第 1 项按 schema §3，第 2 项按 v1.1-c 的 R 倍数。"""
+    if scoring_rule == SCORING_RULE_R:
+        if realized_r <= -1:
+            return "证伪"
+        if realized_r >= target_r:
+            return "达标"
+        return "部分" if realized_r > 0 else "未达"
     if exit_reason == "失效位":
         return "证伪"
     if realized_excess_pct >= target_excess_pct:
@@ -93,14 +102,20 @@ class Ledger:
         self.conn.create_function("ledger_now", 0, lambda: self._frozen or self.clock())
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA recursive_triggers = ON")                # 第二道防线：REPLACE 的隐式删除也触发 DELETE 触发器
+        tables = {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if tables:                                    # 先查版本再建表：旧库不能被 IF NOT EXISTS 补上半套新触发器
+            old = dict(self.conn.execute("SELECT key, value FROM ledger_meta").fetchall()) if "ledger_meta" in tables else {}
+            if old.get("schema") != SCHEMA_VERSION:
+                self.conn.close()
+                raise LedgerError(f"这个库的 schema 是 {old.get('schema', 'v1')}，当前代码是 {SCHEMA_VERSION}；旧库不能直接打开，需迁移")
         self.conn.executescript(SCHEMA.read_text(encoding="utf-8") + "\n" + _freeze_triggers())
         mode = "replay" if replay else "real"
-        row = self.conn.execute("SELECT value FROM ledger_meta WHERE key = 'clock'").fetchone()
-        if row is None:
-            self.conn.execute("INSERT INTO ledger_meta (key, value) VALUES ('clock', ?)", (mode,))
-        elif row[0] != mode:
+        meta = {k: v for k, v in self.conn.execute("SELECT key, value FROM ledger_meta")}
+        if not meta:
+            self.conn.executemany("INSERT INTO ledger_meta (key, value) VALUES (?, ?)", [("clock", mode), ("schema", SCHEMA_VERSION)])
+        elif meta.get("clock") != mode:
             self.conn.close()
-            raise LedgerError(f"这个库的时钟模式是 {row[0]}，不能以 {mode} 模式打开")
+            raise LedgerError(f"这个库的时钟模式是 {meta.get('clock')}，不能以 {mode} 模式打开")
         self.load_sources(sources)
 
     def close(self):
@@ -154,9 +169,10 @@ class Ledger:
         return f"T-{year}-{n + 1:03d}"
 
     # ------------------------------------------------------------ 生命周期
-    def create_card(self, card: dict, evidence: list[dict], agent_score: dict) -> str:
+    def create_card(self, card: dict, evidence: list[dict], agent_score: dict | None) -> str:
         """一次事务：卡片（未封存）→ 证据 → agent 评分 → 封存。任何一步被拒，整张卡不入库。
-        evidence 可以是空列表：表示当时固定源上没有证据，这也是合法记录。"""
+        v1.1-a：evidence_status = 未检索（机械卡）时 evidence 为空、agent_score 为 None；已检索无证据时 evidence 为空；
+        有证据时至少一条。后两种必须带 agent 评分。"""
         unknown = set(card) - set(CARD_FIELDS)
         if unknown:
             raise LedgerError(f"未知字段：{sorted(unknown)}")
@@ -177,7 +193,8 @@ class Ledger:
             for i, ev in enumerate(evidence, 1):
                 self._insert("evidence", {"card_id": card["id"], "seq": i, "source_grade": csv_sources[ev["source_id"]][0], **ev},
                              stamp=False)
-            self._insert("strength_scores", {"card_id": card["id"], "rater": "agent", **agent_score})
+            if agent_score is not None:
+                self._insert("strength_scores", {"card_id": card["id"], "rater": "agent", **agent_score})
             self.conn.execute("UPDATE cards SET sealed = 1 WHERE id = ?", (card["id"],))
             return card["id"]
         return self._tx(run)
@@ -243,15 +260,16 @@ class Ledger:
         }
 
     def calibration(self, rater: str = "agent") -> list[dict]:
-        """schema §6.1：按事前 evidence_strength 分桶（0–1 / 2–3 / 4–5）。
-        n = 终态卡（已结 + 作废，作废计入分母）；达标率以 n 为分母；仍在途的卡单列 open，不进 n。"""
+        """schema §6.1 + v1.1-a：只用检索过的卡（已检索无证据 / 有证据）按事前 evidence_strength 分桶（0–1 / 2–3 / 4–5）；
+        未检索的卡单独成一桶「未检索」，仍计入分母。n = 终态卡（已结 + 作废，作废计入分母）；达标率以 n 为分母；在途卡单列 open。"""
         col = {"agent": "agent_strength", "owner": "owner_strength"}[rater]
         rows = self.conn.execute(f"""
-            SELECT CASE WHEN {col} <= 1 THEN '0–1' WHEN {col} <= 3 THEN '2–3' ELSE '4–5' END AS bucket,
+            SELECT CASE WHEN evidence_status = '未检索' THEN '未检索'
+                        WHEN {col} <= 1 THEN '0–1' WHEN {col} <= 3 THEN '2–3' ELSE '4–5' END AS bucket,
                    sum(status IN ('已结', '作废')) AS n, sum(status = '作废') AS voided, sum(status = '已结') AS closed,
                    sum(status NOT IN ('已结', '作废')) AS open,
                    sum(final_score = '达标') AS hits, avg(CASE WHEN status = '已结' THEN realized_r END) AS mean_r_closed
-              FROM card_status WHERE {col} IS NOT NULL GROUP BY bucket ORDER BY bucket""").fetchall()
+              FROM card_status WHERE evidence_status = '未检索' OR {col} IS NOT NULL GROUP BY bucket ORDER BY bucket""").fetchall()
         out = []
         for r in rows:
             d = dict(r)

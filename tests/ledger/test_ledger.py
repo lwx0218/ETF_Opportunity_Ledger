@@ -20,14 +20,21 @@ T0 = "2026-10-09T16:05"          # 周五收盘后立卡；下一交易日 10-12
 
 def card(**over):
     c = dict(created_at=T0, close_date="2026-10-09", container="半导体", instrument_code="512480",
-             instrument_name="国联安中证全指半导体ETF", research_index_code="H30184", trigger_type="形态突破",
-             state_at_entry="BNB", thesis="平台突破且近一月相对强弱前 20%", expectation_horizon_days=20,
+             instrument_name="国联安中证全指半导体ETF", research_index_code="H30184", trigger_type="事件驱动",
+             state_at_entry="BNB", thesis="库存超预期下降，一手数据确认", evidence_status="有证据", expectation_horizon_days=20,
+             thesis_inval_source_id=A_SRC, thesis_inval_deadline="2026-11-06", thesis_inval_statement="11 月 6 日前库存转增即失效",
              expectation_target_excess_pct=5.0, expectation_benchmark="等权组合", invalidation_price=9.2,
              invalidation_atr_value=0.4, invalidation_atr_multiple=2.0, r_unit_per_share=0.8, r_unit_pct_of_nav=0.5,
              planned_size_pct=6.25, cf_ew_level=1.0, cf_hs300_level=5000.0, cf_container_price=10.0,
              crowd_rs_1m_rank=2, crowd_premium_pct=None, owner_score_deadline="2026-10-12T09:30")
     c.update(over)
     return c
+
+
+RULE = dict(trigger_type="恐慌下轨", state_at_entry="NEUTRAL", thesis="月末 z=-2.40 ≤ -2，恐慌下轨", evidence_status="未检索",
+            scoring_rule="schema-v1.1-R", expectation_horizon_days=None, expectation_target_excess_pct=None,
+            expectation_target_r=2, expectation_benchmark="等权组合",
+            thesis_inval_source_id=None, thesis_inval_deadline=None, thesis_inval_statement=None)   # 规则卡字段（v1.1-a / c）
 
 
 def ev(**over):
@@ -58,10 +65,16 @@ class Base(unittest.TestCase):
         return self
 
     def make(self, evidence=None, **over):
+        if evidence == [] and "evidence_status" not in over:
+            over["evidence_status"] = "已检索无证据"
         c = card(**over)
         self.t = max(self.t, c["created_at"])
-        return self.L.create_card(c, [ev()] if evidence is None else evidence,
-                                  dict(score=3, reason="一手数据，方向与论点一致", scored_at=c["created_at"]))
+        agent = None if c["evidence_status"] == "未检索" else dict(score=3, reason="一手数据，方向与论点一致", scored_at=c["created_at"])
+        return self.L.create_card(c, [ev()] if evidence is None else evidence, agent)
+
+    def make_rule_card(self, **over):
+        """规则卡（恐慌下轨）：未检索、不写 agent 分、菜单第 2 项。"""
+        return self.make(evidence=[], **{**RULE, **over})
 
     def raw(self, sql, *args):
         self.L.conn.execute(sql, args)
@@ -124,11 +137,12 @@ class Creation(Base):
         cases = [(dict(thesis="长" * 81), "CHECK"), (dict(created_at="2026-10-09T14:59"), "CHECK"),
                  (dict(created_at="2026-11-31T16:00", close_date="2026-11-27", owner_score_deadline="2026-12-01T09:30"), "CHECK"),   # 11-31 不存在
                  (dict(scoring_rule="自由填写"), "CHECK"), (dict(expectation_benchmark="标的自身"), "CHECK"),
-                 (dict(trigger_type="事件驱动"), "CHECK"),                         # A3：事件卡缺论点失效条件
-                 (dict(trigger_type="事件驱动", thesis_inval_source_id=C_SRC, thesis_inval_deadline="2026-11-01",
+                 (dict(thesis_inval_source_id=None, thesis_inval_deadline=None, thesis_inval_statement=None), "CHECK"),   # A3：事件卡缺论点失效条件
+                 (dict(trigger_type="形态突破"), "CHECK"),                         # 规则卡不带论点失效条件、也不能是检索过的卡
+                 (dict(thesis_inval_source_id=C_SRC, thesis_inval_deadline="2026-11-01",
                        thesis_inval_statement="11 月 1 日前 OPEC 宣布增产即失效"), "A / B"),
                  (dict(owner_score_deadline="2026-10-12T10:00"), "CHECK"),        # 截止必须是开盘 09:30
-                 (dict(owner_score_deadline="2026-10-30T09:30"), "CHECK"),        # 超过 10 天不是「下一交易日」
+                 (dict(owner_score_deadline="2026-10-30T09:30"), "CHECK"),        # 超过 14 天不是「下一交易日」
                  (dict(state_at_entry="启动"), "CHECK"), (dict(planned_size_pct=30), "CHECK"),
                  (dict(tracking_days=5), "CHECK"),                                 # A2 统一 20
                  (dict(invalidation_price="abc"), "CHECK"), (dict(expectation_target_excess_pct="−3.0"), "CHECK")]
@@ -168,6 +182,104 @@ class Creation(Base):
     def test_cannot_insert_sealed_card_directly(self):
         c = card(id="T-2026-901", scoring_rule="schema-v1-§3", sealed=1, recorded_at=T0)
         self.rejects(f"INSERT INTO cards ({', '.join(c)}) VALUES ({', '.join('?' * len(c))})", *c.values(), msg="未封存")
+
+
+class SchemaV11(Base):
+    """docs/etf-card-schema-v1.md v1.1 补充：evidence_status、菜单第 2 项（R 倍数）。"""
+
+    def test_unsearched_card_has_no_agent_score_and_no_evidence(self):
+        cid = self.make_rule_card()
+        self.assertEqual(self.L.status(cid), "候选")
+        self.assertIsNone(self.L.conn.execute("SELECT agent_strength FROM card_status WHERE id = ?", (cid,)).fetchone()[0])
+        with self.assertRaisesRegex(LedgerError, "未检索的卡不写 agent"):
+            self.L.create_card(card(**RULE), [], dict(score=0, reason="机械", scored_at=T0))
+        with self.assertRaisesRegex(LedgerError, "只有 evidence_status = 有证据"):
+            self.L.create_card(card(**RULE), [ev()], None)
+
+    def test_searched_cards_need_agent_score_and_matching_evidence(self):
+        with self.assertRaisesRegex(LedgerError, "agent"):
+            self.L.create_card(card(evidence_status="已检索无证据"), [], None)
+        with self.assertRaisesRegex(LedgerError, "至少要有一条证据"):
+            self.L.create_card(card(evidence_status="有证据"), [], dict(score=1, reason="x", scored_at=T0))
+        with self.assertRaisesRegex(LedgerError, "只有 evidence_status = 有证据"):
+            self.make(evidence=[ev()], evidence_status="已检索无证据")
+        self.assertEqual(self.L.card(self.make(evidence=[]))["evidence_status"], "已检索无证据")
+
+    def test_evidence_status_matches_trigger_type(self):
+        """v1.1-a：机械卡 = 未检索；事件卡由起草人检索后填 已检索*。绕过 Python 直接写也拒。"""
+        with self.assertRaisesRegex(LedgerError, "CHECK"):
+            self.L.create_card(card(evidence_status="未检索"), [], None)                      # 事件卡不能未检索
+        with self.assertRaisesRegex(LedgerError, "CHECK"):
+            self.L.create_card(card(**{**RULE, "evidence_status": "有证据"}), [ev()], dict(score=3, reason="x", scored_at=T0))
+
+    def test_seal_only_in_the_creating_transaction(self):
+        """未封存的卡不进分母：不能先插一批、看完行情只封存赢家（复核 P6b-2）。"""
+        c = card(**RULE, id="T-2026-902", recorded_at=T0)
+        self.raw(f"INSERT INTO cards ({', '.join(c)}) VALUES ({', '.join('?' * len(c))})", *c.values())
+        self.t = "2026-10-09T16:30"
+        self.rejects("UPDATE cards SET sealed = 1 WHERE id = 'T-2026-902'", msg="同一事务")
+        self.t = "2026-10-20T16:00"
+        self.rejects("UPDATE cards SET sealed = 1 WHERE id = 'T-2026-902'", msg="同一事务|已过下一次开盘")
+        self.assertEqual(self.L.summary()["denominator"], 0)
+
+    def test_long_holiday_deadline(self):
+        """有交易日历时长假前一天的截止可达 11 天（春节）；存储层上限 14 天。"""
+        cid = self.make(owner_score_deadline="2026-10-20T09:30")
+        self.assertEqual(self.L.card(cid)["owner_score_deadline"], "2026-10-20T09:30")
+
+    def test_menu_two_constraints(self):
+        bad = [dict(trigger_type="事件驱动", evidence_status="已检索无证据", thesis_inval_source_id=A_SRC,
+                    thesis_inval_deadline="2026-10-22", thesis_inval_statement="到期未兑现即失效"),   # 事件卡只能用菜单第 1 项
+               dict(expectation_target_r=3), dict(expectation_benchmark="沪深300"), dict(expectation_horizon_days=20)]
+        for over in bad:
+            with self.subTest(over), self.assertRaisesRegex(LedgerError, "CHECK"):
+                self.make_rule_card(**over)
+        with self.assertRaisesRegex(LedgerError, "CHECK"):          # 菜单第 1 项缺 horizon
+            self.make(expectation_horizon_days=None)
+
+    def test_menu_two_mechanical_score(self):
+        cases = [(-1.2, "失效位", "证伪"), (-1.0, "手动", "证伪"), (-0.5, "手动", "未达"), (0.0, "论点作废", "未达"),
+                 (1.4, "移动止盈", "部分"), (2.0, "移动止盈", "达标"), (3.1, "移动止盈", "达标")]
+        for r, reason, want in cases:
+            with self.subTest(r=r):
+                self.assertEqual(mechanical_score(reason, 99.0, None, "schema-v1.1-R", r, 2), want)
+        self.t = T0
+        cid = self.make_rule_card()
+        self.at("2026-10-12T09:35").L.enter(cid, "2026-10-12", 10.05, 6.25)
+        self.at("2026-11-20T16:00").L.exit(cid, exit_date="2026-11-20", exit_price=11.0, exit_reason="移动止盈", manual_reason=None,
+                                           realized_r=1.4, realized_excess_pct=50.0, holding_days=28)
+        self.track(cid)
+        kw = dict(post_exit_return_pct=0, post_exit_r=0, missed_r=0, stop_quality=0, trail_quality=0, benchmark_beat=1)
+        with self.assertRaisesRegex(LedgerError, "机械"):
+            self.L.finalize(cid, final_score="达标", **kw)                 # 超额再高，菜单第 2 项也只看 R
+        self.L.finalize(cid, final_score="部分", **kw)
+
+    def test_calibration_puts_unsearched_cards_in_their_own_bucket(self):
+        self.make_rule_card(scan_key="a")
+        self.make()
+        cal = {c["bucket"]: c for c in self.L.calibration("agent")}
+        self.assertEqual(set(cal), {"未检索", "2–3"})
+        self.assertEqual((cal["未检索"]["open"], cal["2–3"]["open"]), (1, 1))
+
+    def test_old_schema_db_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "old.sqlite"
+            L = Ledger(db, clock=lambda: T0, replay=True)
+            L.conn.execute("DROP TRIGGER ledger_meta_no_delete")
+            L.conn.execute("DELETE FROM ledger_meta WHERE key = 'schema'")          # 模拟 v1 代码建的库
+            L.close()
+            with self.assertRaisesRegex(LedgerError, "schema 是 v1"):
+                Ledger(db, clock=lambda: T0, replay=True)
+            # 真正的旧库（v1 的 cards 没有 evidence_status）：拒绝，且一个字节都不改
+            old = Path(d) / "older.sqlite"
+            c = sqlite3.connect(old)
+            c.executescript("CREATE TABLE cards (id TEXT PRIMARY KEY, thesis TEXT); CREATE TABLE ledger_meta (key TEXT, value TEXT);"
+                            "INSERT INTO ledger_meta VALUES ('clock', 'real');")
+            c.close()
+            before = old.read_bytes()
+            with self.assertRaisesRegex(LedgerError, "需迁移"):
+                Ledger(old)
+            self.assertEqual(old.read_bytes(), before)
 
 
 class Section25(Base):
@@ -225,7 +337,8 @@ class Section25(Base):
             self.rejects(f"DELETE FROM {t}")
         # 借 UNIQUE(supersedes) 冲突让 REPLACE 隐式删掉别的卡：也不行
         self.t = "2026-10-12T09:05"
-        c = self.L.create_card(card(supersedes=b, created_at="2026-10-12T09:05"), [], dict(score=1, reason="重建", scored_at="2026-10-12T09:05"))
+        c = self.L.create_card(card(supersedes=b, created_at="2026-10-12T09:05", evidence_status="已检索无证据"), [],
+                               dict(score=1, reason="重建", scored_at="2026-10-12T09:05"))
         row = {**self.cols("cards", c), "id": "T-2026-777", "sealed": 0}
         self.rejects(f"INSERT OR REPLACE INTO cards ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})", *row.values(), msg="取代")
         self.assertEqual(self.L.summary()["denominator"], 3)
@@ -446,7 +559,9 @@ class SchemaCoverage(unittest.TestCase):
         "evidence[]": [("evidence", c) for c in ("source_id", "published_at", "summary", "url", "first_seen_at", "available_at",
                                                  "snapshot_path", "snapshot_sha256")],
         "evidence_strength": [("strength_scores", "score"), ("strength_scores", "reason"), ("strength_scores", "rater")],
-        "expectation": [("cards", "expectation_horizon_days"), ("cards", "expectation_target_excess_pct"), ("cards", "expectation_benchmark")],
+        "expectation": [("cards", "expectation_horizon_days"), ("cards", "expectation_target_excess_pct"), ("cards", "expectation_target_r"),
+                        ("cards", "expectation_benchmark")],
+        "evidence_status": [("cards", "evidence_status")],
         "invalidation": [("cards", "invalidation_price"), ("cards", "invalidation_atr_value"), ("cards", "invalidation_atr_multiple")],
         "r_unit": [("cards", "r_unit_per_share"), ("cards", "r_unit_pct_of_nav")], "planned_size_pct": [("cards", "planned_size_pct")],
         "scoring_rule": [("cards", "scoring_rule")], "tracking_days": [("cards", "tracking_days")],

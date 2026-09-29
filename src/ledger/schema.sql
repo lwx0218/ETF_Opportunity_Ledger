@@ -1,4 +1,4 @@
--- 机会卡片台账 · SQLite 存储（docs/etf-card-schema-v1.md；replan §3 P3）
+-- 机会卡片台账 · SQLite 存储（docs/etf-card-schema-v1.md 含 v1.1 补充；replan §3 P3、§8 P6b）
 -- 时间一律北京时间、不带时区后缀：时刻 'YYYY-MM-DDTHH:MM'，日期 'YYYY-MM-DD'。百分数存为数值（12.5 = 12.5%）。
 -- 卡片上的价格（失效位、进场、出场、每日收盘、止损）都在该卡的研究序列（后复权 / 全收益点位）上，与信号同一口径。
 -- ledger_now() 由 store.py 注册（数据库时钟）；没注册这个函数的连接写不进台账行与固定源版本（自己注册同名函数即等于注入时钟，
@@ -47,8 +47,12 @@ CREATE TABLE IF NOT EXISTS cards (
     state_at_entry        TEXT NOT NULL CHECK (state_at_entry IN ('POP', 'XB', 'BNB', 'REV', 'EXH', 'DROP', 'XBD', 'BNBD',
                                                                    'TREND_UP', 'TREND_DOWN', 'NEUTRAL')),
     thesis                TEXT NOT NULL CHECK (length(trim(thesis)) BETWEEN 1 AND 80),
-    expectation_horizon_days      INTEGER NOT NULL CHECK (typeof(expectation_horizon_days) = 'integer' AND expectation_horizon_days > 0),
-    expectation_target_excess_pct REAL NOT NULL CHECK (typeof(expectation_target_excess_pct) IN ('integer', 'real') AND abs(expectation_target_excess_pct) < 1e15),
+    evidence_status       TEXT NOT NULL CHECK (evidence_status IN ('未检索', '已检索无证据', '有证据')),   -- v1.1-a
+    expectation_horizon_days      INTEGER CHECK (expectation_horizon_days IS NULL
+                                                 OR (typeof(expectation_horizon_days) = 'integer' AND expectation_horizon_days > 0)),
+    expectation_target_excess_pct REAL CHECK (expectation_target_excess_pct IS NULL
+                                              OR (typeof(expectation_target_excess_pct) IN ('integer', 'real') AND abs(expectation_target_excess_pct) < 1e15)),
+    expectation_target_r          REAL CHECK (expectation_target_r IS NULL OR expectation_target_r IS 2),     -- v1.1-c：菜单第 2 项固定 +2R
     expectation_benchmark         TEXT NOT NULL CHECK (expectation_benchmark IN ('等权组合', '沪深300')),
     invalidation_price            REAL NOT NULL CHECK (typeof(invalidation_price) IN ('integer', 'real') AND abs(invalidation_price) < 1e15 AND invalidation_price > 0),
     invalidation_atr_value        REAL NOT NULL CHECK (typeof(invalidation_atr_value) IN ('integer', 'real') AND abs(invalidation_atr_value) < 1e15 AND invalidation_atr_value > 0),
@@ -56,7 +60,7 @@ CREATE TABLE IF NOT EXISTS cards (
     r_unit_per_share      REAL NOT NULL CHECK (typeof(r_unit_per_share) IN ('integer', 'real') AND abs(r_unit_per_share) < 1e15 AND r_unit_per_share > 0),
     r_unit_pct_of_nav     REAL NOT NULL CHECK (typeof(r_unit_pct_of_nav) IN ('integer', 'real') AND abs(r_unit_pct_of_nav) < 1e15 AND r_unit_pct_of_nav > 0),
     planned_size_pct      REAL NOT NULL CHECK (typeof(planned_size_pct) IN ('integer', 'real') AND abs(planned_size_pct) < 1e15 AND planned_size_pct > 0 AND planned_size_pct <= 25),
-    scoring_rule          TEXT NOT NULL CHECK (scoring_rule IN ('schema-v1-§3')),        -- 固定菜单，目前只有一项
+    scoring_rule          TEXT NOT NULL CHECK (scoring_rule IN ('schema-v1-§3', 'schema-v1.1-R')),   -- 固定菜单两项（§3、v1.1-c）
     tracking_days         INTEGER NOT NULL DEFAULT 20 CHECK (tracking_days IS 20),        -- A2：统一 20 个交易日
     cf_ew_level           REAL NOT NULL CHECK (typeof(cf_ew_level) IN ('integer', 'real') AND abs(cf_ew_level) < 1e15),       -- counterfactual：等权组合点位
     cf_hs300_level        REAL NOT NULL CHECK (typeof(cf_hs300_level) IN ('integer', 'real') AND abs(cf_hs300_level) < 1e15),    --                 沪深300 点位
@@ -74,12 +78,18 @@ CREATE TABLE IF NOT EXISTS cards (
     supersedes            TEXT UNIQUE REFERENCES cards(id),
     sealed                INTEGER NOT NULL DEFAULT 0 CHECK (sealed IN (0, 1)),
     recorded_at           TEXT NOT NULL,        -- 数据库时钟，写入时由触发器核对
+    -- 菜单第 1 项（§3）：按超额与期限；事件卡只能用它。菜单第 2 项（v1.1-c）：按 R 倍数，只给规则卡，horizon 为空、+2R、基准等权
+    CHECK ((scoring_rule = 'schema-v1-§3' AND expectation_horizon_days IS NOT NULL AND expectation_target_excess_pct IS NOT NULL
+            AND expectation_target_r IS NULL)
+        OR (scoring_rule = 'schema-v1.1-R' AND trigger_type IN ('形态突破', '恐慌下轨') AND expectation_horizon_days IS NULL
+            AND expectation_target_excess_pct IS NULL AND expectation_target_r IS 2 AND expectation_benchmark = '等权组合')),
     CHECK (created_at >= close_date || 'T15:00'),                    -- 收盘后才能用该日收盘
     CHECK (created_at <= date(close_date, CASE strftime('%w', close_date) WHEN '5' THEN '+3 days' WHEN '6' THEN '+2 days'
                                           ELSE '+1 days' END) || 'T09:30'),   -- 不晚于其后第一个工作日开盘：不能看了后面的行情再补卡
     CHECK (owner_score_deadline > created_at),                       -- 创建必须在下一次开盘之前
     CHECK (substr(owner_score_deadline, 1, 10) > close_date
-           AND julianday(substr(owner_score_deadline, 1, 10)) - julianday(close_date) <= 10),   -- 下一交易日：最长覆盖国庆长假
+           AND julianday(substr(owner_score_deadline, 1, 10)) - julianday(close_date) <= 14),   -- 下一交易日：春节 / 国庆休市连周末最长约 11 天，留余量
+    CHECK ((trigger_type = '事件驱动') = (evidence_status <> '未检索')),   -- v1.1-a：机械卡 = 未检索；事件卡由起草人检索后填 已检索*
     CHECK ((trigger_type = '事件驱动' AND thesis_inval_source_id IS NOT NULL AND thesis_inval_deadline IS NOT NULL
             AND length(trim(coalesce(thesis_inval_statement, ''))) > 0)
         OR (trigger_type <> '事件驱动' AND thesis_inval_source_id IS NULL AND thesis_inval_deadline IS NULL
@@ -197,8 +207,15 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS cards_seal_needs_agent BEFORE UPDATE OF sealed ON cards WHEN OLD.sealed = 0 AND NEW.sealed = 1
 BEGIN
+    -- 封存与创建同一事务（_tx 内数据库时钟冻结为同一时刻）：不能先插一批未封存的卡、看完行情只封存赢家
+    SELECT RAISE(ABORT, '封存必须与创建在同一事务内') WHERE ledger_now() IS NOT NEW.recorded_at;
+    SELECT RAISE(ABORT, '已过下一次开盘：不能再封存') WHERE ledger_now() >= NEW.owner_score_deadline;
+    -- v1.1-a：未检索的卡（机械触发）不写 agent 分即可封存；检索过的两种封存前必须有 agent 分
     SELECT RAISE(ABORT, '封存前必须有 agent 的 evidence_strength 评分')
-     WHERE NOT EXISTS (SELECT 1 FROM strength_scores WHERE card_id = NEW.id AND rater = 'agent');
+     WHERE NEW.evidence_status <> '未检索'
+       AND NOT EXISTS (SELECT 1 FROM strength_scores WHERE card_id = NEW.id AND rater = 'agent');
+    SELECT RAISE(ABORT, 'evidence_status = 有证据 的卡至少要有一条证据')
+     WHERE NEW.evidence_status = '有证据' AND NOT EXISTS (SELECT 1 FROM evidence WHERE card_id = NEW.id);
 END;
 
 CREATE TRIGGER IF NOT EXISTS evidence_insert BEFORE INSERT ON evidence
@@ -206,6 +223,8 @@ BEGIN
     SELECT RAISE(ABORT, '证据行已存在（REPLACE 也不行）') WHERE EXISTS (SELECT 1 FROM evidence WHERE card_id = NEW.card_id AND seq = NEW.seq);
     SELECT RAISE(ABORT, '不允许事后添加证据（卡片已封存）')
      WHERE (SELECT sealed FROM cards WHERE id = NEW.card_id) IS NOT 0;
+    SELECT RAISE(ABORT, '只有 evidence_status = 有证据 的卡能写证据（未检索 / 已检索无证据 的证据必须为空）')
+     WHERE (SELECT evidence_status FROM cards WHERE id = NEW.card_id) IS NOT '有证据';
     SELECT RAISE(ABORT, 'source_id 必须在固定源清单中且等级为 A 或 B')
      WHERE NOT EXISTS (SELECT 1 FROM current_sources s WHERE s.source_id = NEW.source_id AND s.grade = NEW.source_grade);
     SELECT RAISE(ABORT, '证据的 available_at 晚于卡片 created_at')
@@ -221,6 +240,8 @@ BEGIN
     SELECT RAISE(ABORT, 'recorded_at 必须是数据库时钟') WHERE NEW.recorded_at IS NOT ledger_now();
     SELECT RAISE(ABORT, 'agent 评分只能随卡片创建写入')
      WHERE NEW.rater = 'agent' AND (SELECT sealed FROM cards WHERE id = NEW.card_id) IS NOT 0;
+    SELECT RAISE(ABORT, '未检索的卡不写 agent 评分（v1.1-a：为空，不是 0）')
+     WHERE NEW.rater = 'agent' AND (SELECT evidence_status FROM cards WHERE id = NEW.card_id) IS '未检索';
     SELECT RAISE(ABORT, 'owner 评分只能在卡片封存后写入')
      WHERE NEW.rater = 'owner' AND (SELECT sealed FROM cards WHERE id = NEW.card_id) IS NOT 1;
     SELECT RAISE(ABORT, 'owner 评分超过截止时刻（次日开盘前），记为缺失')
@@ -272,7 +293,12 @@ BEGIN
          < (SELECT tracking_days FROM cards WHERE id = NEW.card_id);
     SELECT RAISE(ABORT, 'final_score 与锁定的评分规则（schema §3）机械结果不符')
      WHERE NEW.final_score IS NOT (
-        SELECT CASE WHEN x.exit_reason = '失效位' THEN '证伪'
+        SELECT CASE WHEN c.scoring_rule = 'schema-v1.1-R' THEN      -- 菜单第 2 项：按 realized_r（含成本）
+                         CASE WHEN x.realized_r <= -1 THEN '证伪'
+                              WHEN x.realized_r >= c.expectation_target_r THEN '达标'
+                              WHEN x.realized_r > 0 THEN '部分'
+                              ELSE '未达' END
+                    WHEN x.exit_reason = '失效位' THEN '证伪'       -- 菜单第 1 项（§3）
                     WHEN x.realized_excess_pct >= c.expectation_target_excess_pct THEN '达标'
                     WHEN x.realized_excess_pct > 0 THEN '部分'
                     ELSE '未达' END
@@ -304,7 +330,7 @@ END;
 
 -- ------------------------------------------------------------------ 状态与统计
 CREATE VIEW IF NOT EXISTS card_status AS
-SELECT c.id, c.container, c.trigger_type, c.created_at, c.supersedes,
+SELECT c.id, c.container, c.trigger_type, c.created_at, c.supersedes, c.evidence_status, c.scoring_rule,
        CASE WHEN v.card_id IS NOT NULL THEN '作废'
             WHEN f.card_id IS NOT NULL THEN '已结'
             WHEN x.card_id IS NOT NULL THEN '过去'

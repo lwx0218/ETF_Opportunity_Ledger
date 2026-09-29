@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.data import runner as data_runner, store               # noqa: E402
 from src.indicators import build as B                           # noqa: E402
+from src.indicators.calendar import load_trading_days, next_trading_day   # noqa: E402
 from src.indicators.metrics import atr20, month_end_flags, rs_1m, z_month   # noqa: E402
 from src.indicators.states import form_states                   # noqa: E402
 from src.research.prereg_v1 import run as prereg_run             # noqa: E402
@@ -110,6 +111,40 @@ class ZMonth(unittest.TestCase):
         dates = pd.Series(pd.to_datetime(["2026-10-29", "2026-10-30"]))
         self.assertEqual(month_end_flags(dates, date(2026, 10, 30)).tolist(), [False, True])
 
+    def test_calendar_recognises_holiday_month_end_on_the_day(self):
+        """v1.1-e：月底最后一个工作日是节假日时，有交易日历就能当天认出月末；日历没覆盖到则退回工作日规则。"""
+        dates = pd.Series(pd.to_datetime(["2026-06-26", "2026-06-29"]))
+        cal = pd.bdate_range("2026-06-01", "2026-07-31").difference(pd.to_datetime(["2026-06-30"]))   # 假设 06-30 休市
+        self.assertEqual(month_end_flags(dates, date(2026, 6, 29)).tolist(), [False, False])           # 无日历：要等下一行
+        self.assertEqual(month_end_flags(dates, date(2026, 6, 29), cal).tolist(), [False, True])
+        short = pd.bdate_range("2026-06-01", "2026-06-29")                                              # 日历只到 06-29
+        self.assertEqual(month_end_flags(dates, date(2026, 6, 29), short).tolist(), [False, False])
+        stale = pd.Series(pd.to_datetime(["2026-06-10", "2026-06-11"]))                                 # 停更序列仍不在月中冒出 z
+        self.assertEqual(month_end_flags(stale, date(2026, 6, 29), cal).tolist(), [False, False])
+        long = pd.Series(pd.bdate_range("2024-06-01", "2026-06-29").difference(pd.to_datetime(["2026-06-30"])))
+        close = pd.Series(np.linspace(100, 80, len(long)))
+        self.assertTrue(np.isnan(z_month(close, long, date(2026, 6, 29)).iloc[-1]))
+        self.assertTrue(np.isfinite(z_month(close, long, date(2026, 6, 29), trading_days=cal).iloc[-1]))
+
+    def test_calendar_file(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / "a.csv").write_text("﻿trade_date\n2026-09-29\n20260930\n2026-10-08\n\n2026-09-29\n", encoding="utf-8")
+        days = load_trading_days(tmp / "a.csv")
+        self.assertEqual([d.date().isoformat() for d in days], ["2026-09-29", "2026-09-30", "2026-10-08"])
+        self.assertEqual(next_trading_day(date(2026, 9, 30), days), date(2026, 10, 8))
+        self.assertIsNone(next_trading_day(date(2026, 10, 8), days))
+        self.assertIsNone(load_trading_days(tmp / "missing.csv"))                               # 没有文件：退回工作日规则
+        bad = {"empty": "date\n",
+               "two_columns": "date,jybz\n2026-10-30,1\n2026-10-31,0\n",                        # 原样导出的开市标志
+               "weekend": "2026-10-30\n2026-10-31\n",
+               "gap": "2026-10-14\n2026-10-15\n2026-12-01\n",                                   # 中间缺一段：月中会误判月末
+               "junk": "date\n2026-10-14\nxx\n"}
+        for k, text in bad.items():
+            (tmp / f"{k}.csv").write_text(text, encoding="utf-8")
+            with self.subTest(k), self.assertRaises(ValueError):                              # 文件在但不对：报错，不静默退回
+                load_trading_days(tmp / f"{k}.csv")
+
     def test_rs_1m_uses_past_bench_only(self):
         dates = pd.Series(pd.to_datetime(["2026-01-02", "2026-01-05", "2026-01-06"]))
         close = pd.Series([1.0, 1.1, 1.21])
@@ -127,7 +162,7 @@ class EndToEnd(unittest.TestCase):
         clock.start()
         self.addCleanup(clock.stop)
 
-    def make_package(self, with_bench=True):
+    def make_package(self, with_bench=True, calendar=None):
         raw, out = self.tmp / "raw", self.tmp / "out"
         series = {"H00300.csv": (ohlcv(seed=1, start="2005-01-04", n=5600), "csi"),
                   "H30184CNY010.csv": (ohlcv(seed=2, start="2005-01-04", n=5600), "csi"),
@@ -150,7 +185,7 @@ class EndToEnd(unittest.TestCase):
                dict(theme_id="T34", container="现金", status="execution_only")]
         data_runner.write_coverage(out / "coverage.csv", cov, [c["theme_id"] for c in cov])
         return data_runner.package(date(2026, 9, 30), uni_path=ROOT / "data" / "universe.csv", raw_dir=raw, out_dir=out,
-                                   pkg_root=self.tmp, log=lambda *_: None)
+                                   pkg_root=self.tmp, calendar=calendar, log=lambda *_: None)
 
     def test_package_to_panel_to_check(self):
         pkg = self.make_package()
@@ -170,6 +205,27 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(rep["containers"]["原油"]["volume_source"], "none")
         self.assertEqual(prereg_run.main(["check", "--panel", str(out / "panel.csv"), "--bench", str(out / "bench.csv"),
                                           "--out", str(self.tmp / "v1")]), 0)
+        raw_bench = pd.read_csv(pkg / "raw" / "H00300.csv", parse_dates=["date"]).set_index("date")
+        self.assertTrue(np.allclose(bench.set_index("date")["hs300_open"], raw_bench.loc[bench["date"], "open"]))   # 基准原始开盘
+        self.assertIsNone(rep["calendar_file"])
+
+    def test_calendar_file_travels_with_package(self):
+        cal = self.tmp / "sse-trading-days.csv"
+        cal.write_text("date\n" + "\n".join(d.date().isoformat() for d in pd.bdate_range("2005-01-01", "2027-12-31")) + "\n",
+                       encoding="utf-8")
+        pkg = self.make_package(calendar=cal)
+        self.assertTrue((pkg / "calendar" / "sse-trading-days.csv").exists())
+        self.assertIn("calendar/sse-trading-days.csv", (pkg / "MANIFEST.sha256").read_text(encoding="utf-8"))
+        self.assertTrue(__import__("json").loads((pkg / "MANIFEST.json").read_text(encoding="utf-8"))["calendar_file"])
+        self.assertEqual(data_runner.verify(pkg), [])
+        out = B.build(pkg, self.tmp / "panel", log=lambda *_: None)
+        rep = __import__("json").loads((out / "build-report.json").read_text(encoding="utf-8"))
+        self.assertEqual(rep["calendar_file"], __import__("hashlib").sha256(cal.read_bytes()).hexdigest())
+        shutil.rmtree(pkg)                                                                      # 日历坏了：build 拒绝，不退回工作日规则
+        cal.write_text("date\n2026-10-30\n2026-10-31\n", encoding="utf-8")
+        pkg = self.make_package(calendar=cal)
+        with self.assertRaisesRegex(B.BuildError, "交易日历"):
+            B.build(pkg, self.tmp / "panel2", log=lambda *_: None)
 
     def test_missing_total_return_bench_fails(self):
         pkg = self.make_package(with_bench=False)
