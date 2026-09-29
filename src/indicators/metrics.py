@@ -1,8 +1,7 @@
 """ATR20、rs_1m、z_month。口径见 operations/planning/2026-09-27-prereg-v1-implementation-notes.md（I-02、B 节）。"""
 from __future__ import annotations
 
-import calendar
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -23,18 +22,23 @@ def rs_1m(close: pd.Series, dates: pd.Series, bench: pd.Series, n: int = 21) -> 
     return close.pct_change(n, fill_method=None) - b.pct_change(n, fill_method=None)
 
 
-def _month_last_day(d: date) -> date:
-    return date(d.year, d.month, calendar.monthrange(d.year, d.month)[1])
+def _next_weekday(d: date) -> date:
+    x = d + timedelta(days=1)
+    while x.weekday() >= 5:
+        x += timedelta(days=1)
+    return x
 
 
 def month_end_flags(dates: pd.Series, end: date) -> pd.Series:
-    """每月最后一个交易日为 True。最后一行只有在数据覆盖到该月最后一个日历日（end ≥ 月末）时才算月末，
-    否则那个月还没结束——不能用「后面没有数据」冒充「后面没有交易日」。"""
+    """每月最后一个交易日为 True。下一行在新月份即为月末；最后一行只有在其后的下一个工作日已进入新月份时才算月末
+    （月末落在周末、或月底最后一个工作日就是它），不把「后面没数据」当成「后面没交易日」——停更的序列不会在月中冒出 z。
+    没有交易日历：月底最后一个工作日恰逢节假日的少数月份，最后一行要等下一行出现后才被认作月末。"""
     d = pd.to_datetime(dates).reset_index(drop=True)
     per = d.dt.to_period("M")
     flag = per.ne(per.shift(-1))
     if len(d):
-        flag.iloc[-1] = end >= _month_last_day(d.iloc[-1].date())
+        last = d.iloc[-1].date()
+        flag.iloc[-1] = last <= end and _next_weekday(last).month != last.month
     return pd.Series(flag.to_numpy(), index=dates.index)
 
 

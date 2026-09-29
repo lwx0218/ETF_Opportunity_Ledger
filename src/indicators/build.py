@@ -32,14 +32,20 @@ class BuildError(RuntimeError):
 def load_series(path: Path) -> tuple[pd.DataFrame, dict]:
     """读 raw 序列并做最小修整，修了什么都计数进报告：
     - 开 / 高 / 低缺失或非正时用收盘补（EIA 布伦特只有收盘；ATR 因此退化为收盘到收盘的波幅）；
-    - 高 / 低不包住开收时收紧到开收范围（build_hfq.py 对腾讯两位小数高低价的同一处理）。"""
+    - 高 / 低没有包住开收时，把高低价扩到包住开收（build_hfq.py 对腾讯两位小数高低价的同一处理）；
+    - 收盘缺失的行丢弃；收盘非正直接报错。"""
     df = pd.read_csv(path, dtype={"date": str})
     df["date"] = pd.to_datetime(df["date"])
     for c in ("open", "high", "low", "close", "volume"):
         df[c] = pd.to_numeric(df.get(c), errors="coerce")
-    n0 = len(df)
-    df = df[df["close"] > 0].sort_values("date").drop_duplicates("date", keep="last").reset_index(drop=True)
-    rep = {"rows": len(df), "dropped_no_close_or_duplicate": n0 - len(df)}
+    bad = df["close"].notna() & ~(df["close"] > 0)
+    if bad.any():          # P1 从不请求减法前复权：出现非正收盘就是数据坏了，不静默丢掉（也让下游的负价防线有意义）
+        raise BuildError(f"{path.name}: {int(bad.sum())} 行收盘非正（首个 {df.loc[bad, 'date'].iloc[0].date()}）")
+    n_missing = int(df["close"].isna().sum())
+    df = df[df["close"].notna()].sort_values("date")
+    n_dup = int(df["date"].duplicated(keep="last").sum())
+    df = df.drop_duplicates("date", keep="last").reset_index(drop=True)
+    rep = {"rows": len(df), "dropped_missing_close": n_missing, "dropped_duplicate_dates": n_dup}
     rep["ohl_filled_from_close"] = int((~(df[["open", "high", "low"]] > 0).all(axis=1)).sum())
     for c in ("open", "high", "low"):
         bad = ~(df[c] > 0)
@@ -101,8 +107,11 @@ def build(package: Path, out: Path | None = None, *, log=print) -> Path:
                    z_month_values=int(p["z_month"].notna().sum()),
                    dates_not_in_bench_calendar=int((~p["date"].isin(a_dates)).sum()))
         report["containers"][name] = rep
+        flags = {"补开高低": rep["ohl_filled_from_close"], "扩高低": rep["hl_clamped"], "无成交量": rep["volume_missing_or_zero"],
+                 "缺收盘丢弃": rep["dropped_missing_close"], "重复日期": rep["dropped_duplicate_dates"],
+                 "不在基准日历": rep["dates_not_in_bench_calendar"]}
         log(f"  ok  {name}: {rep['rows']} 行 {rep['first']}→{rep['last']}"
-            + (f"；无成交量 {rep['volume_missing_or_zero']} 行" if rep["volume_missing_or_zero"] else ""))
+            + "".join(f"；{k} {v} 行" for k, v in flags.items() if v))
     if not frames:
         raise BuildError("没有任何容器有研究序列")
     panel = pd.concat(frames, ignore_index=True).sort_values(["date", "container"]).reset_index(drop=True)

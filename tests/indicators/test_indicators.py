@@ -101,7 +101,14 @@ class ZMonth(unittest.TestCase):
     def test_partial_last_month_is_not_month_end(self):
         dates = pd.Series(pd.to_datetime(["2026-08-28", "2026-08-31", "2026-09-01", "2026-09-25"]))
         self.assertEqual(month_end_flags(dates, date(2026, 9, 25)).tolist(), [False, True, False, False])
-        self.assertEqual(month_end_flags(dates, date(2026, 9, 30)).tolist(), [False, True, False, True])
+        self.assertEqual(month_end_flags(dates, date(2026, 9, 30)).tolist(), [False, True, False, False])   # 停更的序列不在月中冒出 z
+        done = pd.Series(pd.to_datetime(["2026-09-29", "2026-09-30"]))
+        self.assertEqual(month_end_flags(done, date(2026, 9, 30)).tolist(), [False, True])
+
+    def test_weekend_month_end_is_recognised_on_the_day(self):
+        # 2026-10-30 是周五、10-31 是周六：当天就要认作月末，否则每日任务会漏掉这次恐慌信号
+        dates = pd.Series(pd.to_datetime(["2026-10-29", "2026-10-30"]))
+        self.assertEqual(month_end_flags(dates, date(2026, 10, 30)).tolist(), [False, True])
 
     def test_rs_1m_uses_past_bench_only(self):
         dates = pd.Series(pd.to_datetime(["2026-01-02", "2026-01-05", "2026-01-06"]))
@@ -164,6 +171,16 @@ class EndToEnd(unittest.TestCase):
         pkg = self.make_package(with_bench=False)
         with self.assertRaisesRegex(B.BuildError, "H00300"):
             B.build(pkg, self.tmp / "panel", log=lambda *_: None)
+
+    def test_non_positive_close_fails(self):
+        pkg = self.make_package()
+        raw = self.tmp / "raw2"
+        shutil.copytree(pkg / "raw", raw)
+        rows = store.read(raw / "BRENT.csv")
+        rows[100]["close"] = "-1"
+        store.write(raw / "BRENT.csv", rows)
+        with self.assertRaisesRegex(B.BuildError, "收盘非正"):
+            B.load_series(raw / "BRENT.csv")
 
     def test_tampered_package_fails(self):
         pkg = self.make_package()
