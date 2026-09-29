@@ -22,15 +22,15 @@ python -m src.jobs replay --panel outputs/panel-2026-09-30/panel.csv --bench out
 `daily` = P1 `update` → 用 P2 的函数从 `data/raw` 现算面板 → 运行前检查 → 本包的台账流程。
 
 - **默认日期**：A 股已收盘的最近日期。面板按 I-20 对齐 A 股日历，海外容器在 D 日用本地 D−1 的 K 线（北京 D 日凌晨已收盘），不必等到次晨。
-- **规则配置** `config/ledger-rules.json`（入 Git）：值已按 schema v1.1-c 写好——恐慌下轨用评分菜单第 2 项 `{scoring_rule: schema-v1.1-R, horizon_days: null, target_excess_pct: null, target_r: 2, benchmark: 等权组合}`；事件驱动用菜单第 1 项，预期由起草人逐卡写在草稿里。规则只有在 `confirmed_terms` 等于 `src/jobs/rules.py` 的 `TERMS_VERSION`（`jobs-daily-v1`，表示 Cowork 已复核本文件「记账口径」）**且**该规则 `enabled` 为 `true` 时才启用。恐慌规则的值不是菜单第 2 项时也不启用。仓库里的配置 `confirmed_terms: null`、两条规则 `enabled: false`（A7：V1 结论前全部关闭）；一条规则都没启用时命令直接退出（退出码 2）。
-- **交易日历** `data/calendar/sse-trading-days.csv`（v1.1-e；astra 生成，不入 Git）：有就用于月末判定与 owner 评分截止；没有时退回工作日规则，`daily` 报告里会写明。
+- **规则配置** `config/ledger-rules.json`（入 Git）：值已按 schema v1.1-c 写好——恐慌下轨用评分菜单第 2 项 `{scoring_rule: schema-v1.1-R, horizon_days: null, target_excess_pct: null, target_r: 2, benchmark: 等权组合}`；事件驱动用菜单第 1 项，预期由起草人逐卡写在草稿里。规则只有在 `confirmed_terms` 等于 `src/jobs/rules.py` 的 `TERMS_VERSION`（`jobs-daily-v1`，表示 Cowork 已复核本文件「记账口径」）**且**该规则 `enabled` 为 `true` 时才启用。恐慌规则的值不是菜单第 2 项时也不启用。规则请求启用（`enabled: true`）却被拒时，原因打到 stderr 并写进当天报告，不静默关掉。仓库里的配置 `confirmed_terms: null`、两条规则 `enabled: false`（A7：V1 结论前全部关闭）；一条规则都没启用时命令直接退出（退出码 2）。
+- **交易日历** `data/calendar/sse-trading-days.csv`（v1.1-e；astra 生成，不入 Git）：有就用于月末判定与 owner 评分截止；没有时退回工作日规则，`daily` 报告里会写明。文件在但不像交易日历（一行多列、含周末、中间缺一段超过 14 天、没有日期）时报错退出（退出码 1，台账未动），不静默退回。
 - **等权日收益** `data/ledger/ew_daily.csv`（v1.1-e；不入 Git）：正式台账专用。其他 `--db`（含回放库）各用库旁边的 `<库名>.ew_daily.csv`，互不污染。
 
 **运行前检查**（`src/jobs/guard.py`；任一项不过就不动台账，退出码 3）：
 - D 必须是基准 H00300 的交易日，且基准已更新到 D；
 - A 股路由的研究序列在 D 必须有行。指数不会停牌，缺行就是数据没到。海外序列经 I-20 对齐后 D 日总有一行（没有新 K 线就是平盘），停更不再表现为缺行：`live_panel` 把 D 日末尾连续平盘的容器写进报告（沿用哪天的 K 线、连续几行；超过 3 行提示可能停更），只提示不阻断；
 - 已处理过的交易日（`data/jobs/processed-days.txt`）必须包含 D 的前一个基准交易日。缺了就是漏跑，先按顺序补跑。补跑只处理进出场与每日行，超过立卡时限的那天不补立卡（存储层也会拒绝）；
-- 台账里有卡片、但等权日收益文件不存在或起点晚于最早的卡片：台账一行不动，退出码 3，不记为已处理（否则等权基准会凭空按 0 计）。
+- 等权日收益文件必须与台账是一对（否则基准收益静默偏移，而出场记录写入后改不了）。以下任一情况台账一行不动，退出码 3，不记为已处理：台账有卡片但文件不存在；某张卡 `close_date` 在文件里没有点位或点位不等于卡片冻结的 `cf_ew_level`（文件换成了别的面板算的）；文件最后一条早于 D 的上一交易日（末尾少了行）；库是新建的但文件已存在（删了库、留着旧文件）。
 
 ## 一个交易日 D 的顺序
 
@@ -44,7 +44,7 @@ python -m src.jobs replay --panel outputs/panel-2026-09-30/panel.csv --bench out
    - owner 截止 = 下一交易日 09:30：有交易日历按日历；没有或日历没覆盖到时取下一个工作日（遇节假日偏早、更严）；
    - **恐慌卡**（v1.1-a / v1.1-c）：`evidence_status = 未检索`，`evidence = []`，**不写 agent 分**（为空，不是 0）；预期取配置里的菜单第 2 项；
    - **事件卡**：草稿必须带 `evidence_status`（`已检索无证据` 且无证据，或 `有证据` 且至少一条证据）、agent 分与理由（A1）、逐卡预期 `expectation {horizon_days, target_excess_pct, benchmark ∈ 等权组合 / 沪深300}`（菜单第 1 项）、论点失效条件（A3）；
-   - 事件草稿逐条校验：以上任一项不合格、论点为空或超过 80 字、当日没有该容器的行，都整条退回并写进报告，不截断，也不影响其余草稿。同日同一容器的多条草稿各自立卡（`scan_key` 带草稿序号）；
+   - 事件草稿逐条校验：以上任一项不合格（`horizon_days` 须为正整数、`target_excess_pct` 须为数：字符串、小数天数、布尔一律退回，不替起草人取整）、论点为空或超过 80 字、当日没有该容器的行、草稿不是对象，都整条退回并写进报告，不截断，也不影响其余草稿；文件不是合法 JSON 列表时当天不立事件卡并报告。同日同一容器的多条草稿各自立卡（`scan_key` 带草稿序号）；
    - `cf_ew_level` 锁定等权文件里 D 的累计点位，`cf_hs300_level` 锁定 H00300 收盘。
 6. **提醒**：事件卡到了论点失效判定日，报告里提醒按指定来源人工核对；成立就按「论点作废」出场。骨架不自动判定。
 

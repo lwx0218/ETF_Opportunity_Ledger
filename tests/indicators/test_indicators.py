@@ -134,9 +134,16 @@ class ZMonth(unittest.TestCase):
         self.assertEqual([d.date().isoformat() for d in days], ["2026-09-29", "2026-09-30", "2026-10-08"])
         self.assertEqual(next_trading_day(date(2026, 9, 30), days), date(2026, 10, 8))
         self.assertIsNone(next_trading_day(date(2026, 10, 8), days))
-        self.assertIsNone(load_trading_days(tmp / "missing.csv"))
-        (tmp / "empty.csv").write_text("date\n", encoding="utf-8")
-        self.assertIsNone(load_trading_days(tmp / "empty.csv"))
+        self.assertIsNone(load_trading_days(tmp / "missing.csv"))                               # 没有文件：退回工作日规则
+        bad = {"empty": "date\n",
+               "two_columns": "date,jybz\n2026-10-30,1\n2026-10-31,0\n",                        # 原样导出的开市标志
+               "weekend": "2026-10-30\n2026-10-31\n",
+               "gap": "2026-10-14\n2026-10-15\n2026-12-01\n",                                   # 中间缺一段：月中会误判月末
+               "junk": "date\n2026-10-14\nxx\n"}
+        for k, text in bad.items():
+            (tmp / f"{k}.csv").write_text(text, encoding="utf-8")
+            with self.subTest(k), self.assertRaises(ValueError):                              # 文件在但不对：报错，不静默退回
+                load_trading_days(tmp / f"{k}.csv")
 
     def test_rs_1m_uses_past_bench_only(self):
         dates = pd.Series(pd.to_datetime(["2026-01-02", "2026-01-05", "2026-01-06"]))
@@ -214,6 +221,11 @@ class EndToEnd(unittest.TestCase):
         out = B.build(pkg, self.tmp / "panel", log=lambda *_: None)
         rep = __import__("json").loads((out / "build-report.json").read_text(encoding="utf-8"))
         self.assertEqual(rep["calendar_file"], __import__("hashlib").sha256(cal.read_bytes()).hexdigest())
+        shutil.rmtree(pkg)                                                                      # 日历坏了：build 拒绝，不退回工作日规则
+        cal.write_text("date\n2026-10-30\n2026-10-31\n", encoding="utf-8")
+        pkg = self.make_package(calendar=cal)
+        with self.assertRaisesRegex(B.BuildError, "交易日历"):
+            B.build(pkg, self.tmp / "panel2", log=lambda *_: None)
 
     def test_missing_total_return_bench_fails(self):
         pkg = self.make_package(with_bench=False)

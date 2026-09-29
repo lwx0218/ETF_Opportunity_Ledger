@@ -172,7 +172,10 @@ def build(package: Path, out: Path | None = None, *, log=print) -> Path:
     bench = bdf.set_index("date")["close"]
     cal = bench.index[bench.index <= pd.Timestamp(end)]
     cal_file = package / "calendar" / CALENDAR.name
-    trading_days = load_trading_days(cal_file)
+    try:
+        trading_days = load_trading_days(cal_file)
+    except ValueError as e:
+        raise BuildError(f"数据包里的交易日历不可用：{e}") from e
 
     frames, report = [], {"package": str(package), "end": end.isoformat(), "manifest_sha256": _sha256(package / "MANIFEST.sha256"),
                           "bench": {"code": BENCH_CODE, "first": str(bench.index.min().date()), "last": str(bench.index.max().date())},

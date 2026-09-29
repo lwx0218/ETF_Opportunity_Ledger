@@ -119,11 +119,8 @@ class DailyJob:
         if today.empty:
             rep.skipped.append("当日无任何容器的数据（非交易日或数据未更新）")
             return rep
-        oldest = self.L.conn.execute("SELECT min(close_date) FROM cards").fetchone()[0]
-        first = self.ew_store.first()
-        if oldest and (first is None or first > oldest):       # 等权文件丢了或被截短：基准收益会凭空变 0，不动台账
-            rep.blocked = (f"等权日收益文件{'不存在' if first is None else f'从 {first} 才开始'}，早于它的卡片（最早 {oldest}）"
-                           f"算不出等权基准；台账未动，先恢复该文件")
+        rep.blocked = self._ew_problem(D)
+        if rep.blocked:
             return rep
         if self.ew_store.ensure(self.panel[self.panel["date"] <= D], D) is None:
             rep.skipped.append(f"等权日收益文件已记到更晚的日期，{day} 不能补记（只追加）；本日反事实等权点位取最近一条")
@@ -134,6 +131,25 @@ class DailyJob:
         self._triggers(D, today, rep)
         self._reminders(D, rep)
         return rep
+
+    def _ew_problem(self, D) -> str:
+        """等权文件与台账必须是一对（v1.1-e）：文件丢了、末尾少了几行、或换成了别的面板算的文件，基准收益都会静默偏移，
+        而出场记录一旦写入就改不了——发现就不动台账。"""
+        rows = self.ew_store.rows
+        cards = self.L.conn.execute("SELECT id, close_date, cf_ew_level FROM cards ORDER BY close_date, id").fetchall()
+        if cards and not rows:
+            return f"等权日收益文件不存在，台账已有卡片（最早 {cards[0]['close_date']}）；台账未动，先恢复该文件"
+        for c in cards:
+            got = rows.get(c["close_date"])
+            if got is None or abs(got[1] - c["cf_ew_level"]) > 1e-12 * max(1.0, abs(c["cf_ew_level"])):
+                return (f"等权日收益文件与 {c['id']} 冻结的 cf_ew_level 对不上（{c['close_date']}：文件 "
+                        f"{'无此日' if got is None else got[1]}，卡片 {c['cf_ew_level']}）；台账未动，先恢复与台账配对的文件")
+        key = D.date().isoformat()
+        earlier = self.panel.loc[self.panel["date"] < D, "date"]
+        if rows and key not in rows and len(earlier) and max(rows) < earlier.max().date().isoformat():
+            return (f"等权日收益文件最后一条是 {max(rows)}，早于上一交易日 {earlier.max().date()}：文件末尾少了行或漏跑；"
+                    f"台账未动，先恢复该文件或按顺序补跑")
+        return ""
 
     def _reminders(self, D, rep):
         """A3 的论点失效条件到期：骨架不自动判定（需按指定来源人工核对），只提醒。"""
@@ -326,7 +342,7 @@ class DailyJob:
                 if score is not None:
                     score = {**score, "scored_at": score.get("scored_at") or self.L.now()}
                 cid = self.L.create_card(card, c.evidence, score)
-            except (LedgerError, ValueError, KeyError) as e:          # 一张卡被拒不挡住其余候选；原因进报告
+            except (LedgerError, ValueError, KeyError, TypeError, AttributeError) as e:   # 一张卡被拒不挡住其余候选；原因进报告
                 rep.skipped.append(f"{c.container} {c.trigger_type}：立卡被拒（{str(e)[:120]}）")
                 continue
             rep.created.append(cid)

@@ -8,6 +8,7 @@ evidence_status = 未检索、不写 agent 分（v1.1-a）；事件卡用菜单�
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -36,23 +37,37 @@ class Candidate:
     expectation: dict | None = None        # 事件卡的逐卡预期 {horizon_days, target_excess_pct, benchmark}
 
 
-def load_rule_config(path: Path) -> dict:
+def load_rule_config(path: Path, problems: list[str] | None = None) -> dict:
     """返回启用的规则 → 卡片预期：
     {"confirmed_terms": "jobs-daily-v1",
      "恐慌下轨": {"enabled": true, "scoring_rule": "schema-v1.1-R", "horizon_days": null, "target_r": 2, "benchmark": "等权组合"},
      "事件驱动": {"enabled": true}}                                  # 事件卡的预期由草稿逐卡给
-    confirmed_terms 不等于当前口径版本、或 enabled 不为真的规则不启用；恐慌规则的预期必须是菜单第 2 项（v1.1-c）。"""
+    confirmed_terms 不等于当前口径版本、或 enabled 不为真的规则不启用；恐慌规则的预期必须是菜单第 2 项（v1.1-c）。
+    请求启用（enabled 为 true）却被拒的原因追加进 problems，由调用方报告，不静默关掉。"""
     cfg = json.loads(Path(path).read_text(encoding="utf-8"))
+    problems = problems if problems is not None else []
     out = {}
+    wanted = [k for k in ACTIVE_BEFORE_V1 if (cfg.get(k) or {}).get("enabled") is True]
     if cfg.get("confirmed_terms") != TERMS_VERSION:
+        if wanted:
+            problems.append(f"{'、'.join(wanted)} 请求启用，但 confirmed_terms 不是 {TERMS_VERSION}：全部不启用")
         return out
     panic = cfg.get("恐慌下轨") or {}
-    if panic.get("enabled") is True and all(panic.get(k) == v for k, v in RULE_R.items() if k not in ("horizon_days", "target_excess_pct")) \
-            and panic.get("horizon_days") is None and panic.get("target_excess_pct") is None:
-        out["恐慌下轨"] = dict(RULE_R)
+    if panic.get("enabled") is True:
+        if all(panic.get(k) == v for k, v in RULE_R.items()):
+            out["恐慌下轨"] = dict(RULE_R)
+        else:
+            problems.append(f"恐慌下轨请求启用，但预期不是评分菜单第 2 项 {RULE_R}：不启用")
     if (cfg.get("事件驱动") or {}).get("enabled") is True:
         out["事件驱动"] = {}
     return out
+
+
+def _number(x, integer: bool) -> bool:
+    """起草人写的数：不接受字符串、布尔、非有限值；整数项不接受小数（不替起草人取整）。"""
+    if isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x):
+        return False
+    return isinstance(x, int) or not integer
 
 
 def panic_candidates(day_rows: pd.DataFrame, z_threshold: float) -> list[Candidate]:
@@ -75,20 +90,31 @@ def event_candidates(day_rows: pd.DataFrame, events_dir: Path | None, day: str) 
         return [], []
     by = {r.container: r for r in day_rows.itertuples(index=False)}
     out, problems = [], []
-    for i, e in enumerate(json.loads(f.read_text(encoding="utf-8"))):
+    try:
+        drafts = json.loads(f.read_text(encoding="utf-8"))
+    except ValueError as err:
+        return [], [f"事件草稿文件 {f.name} 不是合法 JSON（{err}），当天不立事件卡"]
+    if not isinstance(drafts, list):
+        return [], [f"事件草稿文件 {f.name} 应是草稿列表，当天不立事件卡"]
+    for i, e in enumerate(drafts):
+        if not isinstance(e, dict):
+            problems.append(f"事件草稿 {i}：不是对象，未立卡")
+            continue
         tag = f"事件草稿 {i}（{e.get('container')}）"
         r = by.get(e.get("container"))
-        thesis = (e.get("thesis") or "").strip()
-        ti, score = e.get("thesis_invalidation") or {}, e.get("agent_score") or {}
-        exp, status, evidence = e.get("expectation") or {}, e.get("evidence_status"), e.get("evidence") or []
+        thesis = e.get("thesis").strip() if isinstance(e.get("thesis"), str) else ""
+        ti, score, exp = (x if isinstance(x, dict) else {} for x in (e.get("thesis_invalidation"), e.get("agent_score"), e.get("expectation")))
+        status, evidence = e.get("evidence_status"), e.get("evidence") or []
         why = ("当日无该容器的收盘或 ATR20" if r is None or not (r.atr20 > 0)
                else "论点为空或超过 80 字（不截断，退回重写）" if not thesis or len(thesis) > 80
                else "缺论点失效条件（A3：source_id / deadline / statement）" if not all(ti.get(k) for k in ("source_id", "deadline", "statement"))
                else "缺 agent 评分与理由（A1）" if score.get("score") is None or not score.get("reason")
+               else "evidence 须为列表" if not isinstance(evidence, list)
                else "evidence_status 须为「已检索无证据」或「有证据」，且与证据条数一致（v1.1-a）"
                if not ((status == "已检索无证据" and not evidence) or (status == "有证据" and evidence))
-               else "缺逐卡预期（horizon_days / target_excess_pct / benchmark，菜单第 1 项）"
-               if exp.get("horizon_days") is None or exp.get("target_excess_pct") is None or exp.get("benchmark") not in ("等权组合", "沪深300")
+               else "缺逐卡预期或格式不对（horizon_days 为正整数、target_excess_pct 为数、benchmark ∈ 等权组合 / 沪深300，菜单第 1 项）"
+               if not (_number(exp.get("horizon_days"), True) and exp["horizon_days"] > 0 and _number(exp.get("target_excess_pct"), False)
+                       and exp.get("benchmark") in ("等权组合", "沪深300"))
                else None)
         if why:
             problems.append(f"{tag}：{why}，未立卡")
@@ -96,7 +122,7 @@ def event_candidates(day_rows: pd.DataFrame, events_dir: Path | None, day: str) 
         out.append(Candidate(container=r.container, trigger_type="事件驱动", state=r.state, close=float(r.close),
                              atr20=float(r.atr20), thesis=thesis, priority=1e6 + i, evidence=evidence,
                              agent_score=score, thesis_invalidation=ti, key_suffix=f"|{i}", evidence_status=status,
-                             expectation={"scoring_rule": "schema-v1-§3", "horizon_days": int(exp["horizon_days"]),
-                                          "target_excess_pct": float(exp["target_excess_pct"]), "target_r": None,
+                             expectation={"scoring_rule": "schema-v1-§3", "horizon_days": exp["horizon_days"],
+                                          "target_excess_pct": exp["target_excess_pct"], "target_r": None,
                                           "benchmark": exp["benchmark"]}))
     return out, problems

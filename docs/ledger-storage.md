@@ -32,9 +32,9 @@ python -m src.ledger summary   [--db …]                     # 分母、分档�
 | `container` / `instrument` | `cards.container`；`instrument_code`、`instrument_name`、`research_index_code` | 非空（研究指数可空，如现金） |
 | `trigger_type` / `state_at_entry` | `cards.trigger_type` / `cards.state_at_entry` | 枚举：三类触发；状态码 POP … NEUTRAL |
 | `thesis` | `cards.thesis` | 1–80 字 |
-| `evidence_status`（v1.1-a） | `cards.evidence_status` ∈ {未检索, 已检索无证据, 有证据} | 创建时锁死；`有证据` 封存前至少一条证据，其余两种不能写证据；`未检索` 不能写 agent 分 |
+| `evidence_status`（v1.1-a） | `cards.evidence_status` ∈ {未检索, 已检索无证据, 有证据} | 创建时锁死；与触发类型成对（CHECK）：形态突破 / 恐慌下轨 = `未检索`，事件驱动 = `已检索*`；`有证据` 封存前至少一条证据，其余两种不能写证据；`未检索` 不能写 agent 分 |
 | `evidence[]` | `evidence` 表：schema 四字段 + `first_seen_at`、`available_at`、`snapshot_path`、`snapshot_sha256` + `source_grade`（写入时等级快照） | 只能与卡片同一事务写入；`source_id` 须在当前版本固定源清单且为 A / B 级（Python 层再对照一次 CSV）；`available_at`、`first_seen_at` ≤ `created_at`；`available_at ≥ published_at`；只有 `evidence_status = 有证据` 的卡能写 |
-| `evidence_strength` | `strength_scores(card_id, rater ∈ {agent, owner}, score 0–5, reason, scored_at, recorded_at)` | A1 / v1.1-b：两栏各自锁定；agent 随卡片创建，`已检索*` 的卡封存前必须存在，`未检索`（机械卡）的卡没有 agent 行（为空，不是 0）；owner 只能在封存后写一次，截止按**数据库时钟**对 `cards.owner_score_deadline`（下一交易日 09:30，距信号日 ≤ 10 天）判断，调用方给的时间不算数；缺失即无行 |
+| `evidence_strength` | `strength_scores(card_id, rater ∈ {agent, owner}, score 0–5, reason, scored_at, recorded_at)` | A1 / v1.1-b：两栏各自锁定；agent 随卡片创建，`已检索*` 的卡封存前必须存在，`未检索`（机械卡）的卡没有 agent 行（为空，不是 0）；owner 只能在封存后写一次，截止按**数据库时钟**对 `cards.owner_score_deadline`（下一交易日 09:30，距信号日 ≤ 14 天：春节 / 国庆休市连周末最长约 11 天）判断，调用方给的时间不算数；缺失即无行 |
 | `expectation` | `expectation_horizon_days`、`expectation_target_excess_pct`、`expectation_target_r`（v1.1-c）、`expectation_benchmark` | 基准 ∈ {等权组合, 沪深300}；与 `scoring_rule` 成对：菜单第 1 项必须有 horizon 与 target_excess、target_r 为空；菜单第 2 项只限形态突破 / 恐慌下轨，horizon 与 target_excess 为空、target_r = 2、基准 = 等权组合 |
 | `invalidation` | `invalidation_price`、`invalidation_atr_value`、`invalidation_atr_multiple` | 均 > 0 |
 | `r_unit` | `r_unit_per_share`、`r_unit_pct_of_nav` | > 0 |
@@ -51,7 +51,7 @@ python -m src.ledger summary   [--db …]                     # 分母、分档�
 | §2.4 跟踪期满 | `finals` 表 | 出场后的每日行满 `tracking_days` 行才能写；`final_score` 必须等于锁定菜单的机械结果（触发器重算）：第 1 项按 `exit_reason = 失效位` → 证伪，否则按 `realized_excess_pct` 对 `target_excess_pct`；第 2 项按 `realized_r`（含成本）：≤ −1 证伪、≥ 2 达标、> 0 部分、其余未达 |
 | 作废 | `voids` 表 | 只有未进场的候选能作废；已进场的卡按「论点作废 / 手动」出场 |
 
-生命周期由视图 `card_status` 推出：作废 / 已结 / 过去 / 当下 / 候选。所有表拒绝 DELETE；除 `cards.sealed` 在创建事务内 0→1 外，所有表拒绝 UPDATE；每张表的插入触发器在同键行已存在时拒绝，`INSERT OR REPLACE` / `REPLACE INTO` 的隐式删除因此也改不了任何行；表都是 `WITHOUT ROWID`，显式写 rowid 的 REPLACE 直接报错；`Ledger` 连接另开 `recursive_triggers` 作第二道防线。数值列校验类型并拒绝无穷大（`typeof` + `abs(x) < 1e15`），日期与时刻做往返校验（`2026-02-31`、空格分隔一律拒绝）。
+生命周期由视图 `card_status` 推出：作废 / 已结 / 过去 / 当下 / 候选。所有表拒绝 DELETE；除 `cards.sealed` 在创建事务内 0→1 外（封存触发器核对数据库时钟等于卡片的 `recorded_at` 且未过 `owner_score_deadline`：不能先插一批未封存的卡、看完行情只封存赢家；未封存的卡不进分母），所有表拒绝 UPDATE；每张表的插入触发器在同键行已存在时拒绝，`INSERT OR REPLACE` / `REPLACE INTO` 的隐式删除因此也改不了任何行；表都是 `WITHOUT ROWID`，显式写 rowid 的 REPLACE 直接报错；`Ledger` 连接另开 `recursive_triggers` 作第二道防线。数值列校验类型并拒绝无穷大（`typeof` + `abs(x) < 1e15`），日期与时刻做往返校验（`2026-02-31`、空格分隔一律拒绝）。
 
 固定源清单按版本只追加：`source_loads` 记每次载入的 CSV sha256 与递增序号（写入须用数据库时钟），`current_sources` 视图取最后一个版本；清单变了（如 S2 把 C 升 B）就追加新版本，已写入证据的等级快照不变。
 

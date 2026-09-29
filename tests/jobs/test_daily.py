@@ -95,10 +95,11 @@ class Replay(unittest.TestCase):
                                              ew_path=self.ew, **kw)
         for d in days:
             self.now = f"{d}T16:00"
-            if truncate:                     # 每天只给当天及以前的数据
+            if truncate:                     # 每天只给当天及以前的数据（沪深300 开盘价也截断）
                 cut = pd.Timestamp(d)
+                kw_cut = {**kw, **({"bench_open": kw["bench_open"][kw["bench_open"].index <= cut]} if "bench_open" in kw else {})}
                 job = DailyJob(self.L, panel[panel["date"] <= cut], bench[bench.index <= cut], rules=RULES, instruments=INST, p=p,
-                               events_dir=events_dir, ew_path=self.ew, **kw)
+                               events_dir=events_dir, ew_path=self.ew, **kw_cut)
             reps.append(job.run(d))
         return reps
 
@@ -260,15 +261,20 @@ class Replay(unittest.TestCase):
                 "thesis_invalidation": {"source_id": "ENE-EIA-WPSR", "deadline": "2026-04-10", "statement": "到期未兑现即失效"}}
         drafts = [good, {**good, "thesis": "论点二"}, {**good, "thesis": "长" * 81}, {**good, "agent_score": None}, {**good, "container": "不存在"},
                   {**good, "evidence_status": "未检索"}, {**good, "evidence_status": "有证据"},        # 事件卡必须检索过；有证据须带证据
-                  {**good, "expectation": {**EVENT_EXP, "horizon_days": None}}, {**good, "expectation": {**EVENT_EXP, "benchmark": "自身"}}]
+                  {**good, "expectation": {**EVENT_EXP, "horizon_days": None}}, {**good, "expectation": {**EVENT_EXP, "benchmark": "自身"}},
+                  # 不替起草人改参数：字符串、小数天数、布尔一律整条退回，也不让整份草稿崩掉
+                  {**good, "expectation": {**EVENT_EXP, "horizon_days": "二十"}}, {**good, "expectation": {**EVENT_EXP, "target_excess_pct": "5%"}},
+                  {**good, "expectation": {**EVENT_EXP, "horizon_days": 20.7}}, {**good, "expectation": {**EVENT_EXP, "horizon_days": True}},
+                  "不是对象", {**good, "thesis": 123}]
         (d / "2026-03-10.json").write_text(json.dumps(drafts, ensure_ascii=False), encoding="utf-8")
         panel, bench = make_panel()
         rep = self.replay(panel, bench, days=["2026-03-10"], events_dir=d)[0]
         self.assertEqual(len(rep.created), 2)                               # 同日同容器两条都立卡
-        self.assertEqual(len(rep.skipped), 7)
+        self.assertEqual(len(rep.skipped), 13)
         self.assertTrue(any("超过 80 字" in x for x in rep.skipped))
         self.assertEqual(sum("evidence_status" in x for x in rep.skipped), 2)
-        self.assertEqual(sum("逐卡预期" in x for x in rep.skipped), 2)
+        self.assertEqual(sum("逐卡预期" in x for x in rep.skipped), 6)
+        self.assertEqual({c: self.L.card(c)["expectation_horizon_days"] for c in rep.created}.popitem()[1], 20)
         self.assertEqual({self.L.card(c)["thesis"] for c in rep.created}, {"论点一", "论点二"})
         self.assertEqual({self.L.card(c)["evidence_status"] for c in rep.created}, {"已检索无证据"})
 
@@ -292,6 +298,12 @@ class Replay(unittest.TestCase):
             x = dict(self.L.conn.execute("SELECT * FROM exits WHERE card_id = ?", (cid,)).fetchone())
             held = x["exit_price"] * (1 - 0.0005) / (e["entry_price"] * (1 + 0.0005)) - 1
             results[label] = (held, e, x)
+            if label == "open":                                                                      # 开盘价路径也无未来
+                full, ew_full = dump(self.L), self.ew.read_text()
+                self.new_ledger()
+                self.replay(panel, bench, days=DAYS[: DAYS.index(SIGNAL) + 20], events_dir=d, truncate=True, **kw)
+                self.assertEqual(dump(self.L), full)
+                self.assertEqual(self.ew.read_text(), ew_full)
         held, e, x = results["open"]
         b = bench_open[pd.Timestamp(x["exit_date"])] / bench_open[pd.Timestamp(e["entry_date"])] - 1
         self.assertAlmostEqual(x["realized_excess_pct"], (held - b) * 100, places=5)
@@ -310,13 +322,36 @@ class Replay(unittest.TestCase):
         self.assertEqual(dump(self.L), before)
         self.assertFalse(self.ew.exists())
 
+    def test_truncated_or_foreign_ew_file_blocks_the_day(self):
+        panel, bench = make_panel()
+        self.replay(panel, bench, days=DAYS[: DAYS.index(SIGNAL) + 5])
+        before, text = dump(self.L), self.ew.read_text()
+        lines = text.splitlines(keepends=True)
+        self.ew.write_text("".join(lines[:-3]))                           # 从旧备份恢复：末尾少了 3 天
+        rep = self.replay(panel, bench, days=[DAYS[DAYS.index(SIGNAL) + 5]])[0]
+        self.assertIn("早于上一交易日", rep.blocked)
+        foreign = [x if not x.startswith(SIGNAL) else ",".join(x.split(",")[:2] + ["1.5"] + x.split(",")[3:]) for x in lines]
+        self.ew.write_text("".join(foreign))                              # 别的面板算的：信号日点位与卡片冻结值不同
+        rep = self.replay(panel, bench, days=[DAYS[DAYS.index(SIGNAL) + 5]])[0]
+        self.assertIn("对不上", rep.blocked)
+        self.assertEqual(dump(self.L), before)
+
 
 class Pieces(unittest.TestCase):
     def load(self, cfg: dict) -> dict:
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False)
         self.addCleanup(Path(f.name).unlink)
-        return R.load_rule_config(Path(f.name))
+        self.problems = []
+        return R.load_rule_config(Path(f.name), self.problems)
+
+    def test_rule_config_reports_requested_but_refused(self):
+        self.load({**CONFIG, "confirmed_terms": None})
+        self.assertTrue(self.problems and "confirmed_terms" in self.problems[0])
+        self.assertEqual(set(self.load({**CONFIG, "恐慌下轨": {**CONFIG["恐慌下轨"], "target_r": 3}})), {"事件驱动"})
+        self.assertTrue(self.problems and "菜单第 2 项" in self.problems[0])                   # 恐慌被拒不静默
+        self.load(json.loads((ROOT / "config" / "ledger-rules.json").read_text(encoding="utf-8")))
+        self.assertEqual(self.problems, [])                                                    # 全关：没有请求，不算问题
 
     def test_rule_config_requires_confirmed_terms_and_enabled(self):
         self.assertEqual(R.TERMS_VERSION, "jobs-daily-v1")
@@ -446,6 +481,10 @@ class Pieces(unittest.TestCase):
         L.close()
         ew = pd.read_csv(tmp / "replay.ew_daily.csv")                                           # 回放的等权文件跟着回放库
         self.assertEqual((ew["date"].iloc[0], ew["date"].iloc[-1], ew["ew_level"].iloc[0]), ("2026-01-02", "2026-03-31", 1.0))
+        (tmp / "replay.sqlite").unlink()                                                        # 删了库、留着旧等权文件：拒绝
+        with mock.patch("builtins.print"):
+            self.assertEqual(jobs_main(args), 3)
+        self.assertFalse((tmp / "replay.sqlite").exists())
         # 规则全关（仓库里的配置）：直接退出，不建库
         with mock.patch("builtins.print"):
             self.assertEqual(jobs_main([*args[:9], "--rules", str(ROOT / "config" / "ledger-rules.json"), "--db", str(tmp / "b.sqlite")]), 2)

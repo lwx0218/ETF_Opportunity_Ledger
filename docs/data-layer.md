@@ -39,7 +39,7 @@ python -m src.data compare  data/kline_510300.csv data/raw/510300.csv --out outp
 - 请求记录与错误信息里的 `api_key` / `token` 一律脱敏为 `***`（coverage 与请求记录会进研究数据包）。
 - 符号映射：中证 `93xxxx` / `Hxxxxx` 指数不猜东财或腾讯代码；海外 `NDX→^NDX`、`SPX→^GSPC`、`N225→^N225`、`HSTECH→HSTECH.HK`、`NDXTMC→^NDXTMC`、`BRENT→BZ=F`，stooq `^ndx / ^spx / ^nkx`。均未实网验证。
 - 除 replan 列出的域名外，EIA 走 `api.eia.gov`，白名单需另加。
-- **交易日历**（schema v1.1-e，新增取数方式）：`data/calendar/sse-trading-days.csv`，一行一个 A 股交易日（`YYYY-MM-DD` 或 `YYYYMMDD`，可有表头）。由 astra 用 09-27 已验证的深交所日历接口（`monthList`）生成，覆盖 2005 年至次年，每年补一次（replan §8 astra S1）；本仓库代码只读不抓。`package` 发现该文件就复制到数据包 `calendar/` 并进 `MANIFEST.sha256`，`MANIFEST.json` 的 `calendar_file` 标明有无。用途：月末判定（P2）、owner 评分截止（P5）；没有文件时两处退回工作日规则。
+- **交易日历**（schema v1.1-e，新增取数方式）：`data/calendar/sse-trading-days.csv`，一行一个 A 股交易日（`YYYY-MM-DD` 或 `YYYYMMDD`，可有表头）。由 astra 用 09-27 已验证的深交所日历接口（`monthList`）生成，覆盖 2005 年至次年，每年补一次（replan §8 astra S1）；本仓库代码只读不抓。`package` 发现该文件就复制到数据包 `calendar/` 并进 `MANIFEST.sha256`，`MANIFEST.json` 的 `calendar_file` 标明有无。用途：月末判定（P2）、owner 评分截止（P5）；没有文件时两处退回工作日规则。文件在但格式不对（一行多列——例如原样导出带开市标志的 monthList、第一行以外有非日期行、含周末、相邻两天间隔超过 14 天、没有日期）时 `build` 与 `daily` 都报错，不静默退回。
 
 ## 研究序列的选择（probe 与 backfill 相同）
 

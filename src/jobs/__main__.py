@@ -39,6 +39,21 @@ def ew_path_for(db: Path) -> Path:
     return Path(db).with_name(Path(db).stem + ".ew_daily.csv")
 
 
+def unpaired(db: Path) -> str:
+    """新库配旧等权文件 = 冻结的 cf_ew_level 来自别的面板（v1.1-e 要求两者是一对）。"""
+    ew = ew_path_for(db)
+    if not Path(db).exists() and ew.exists():
+        return f"{db} 是新库，但等权日收益文件 {ew} 已存在（来自之前的库或面板）：确认后删掉或移走它再跑"
+    return ""
+
+
+def calendar_or_exit(path: Path):
+    try:
+        return load_trading_days(path)
+    except ValueError as e:
+        raise SystemExit(f"交易日历文件不可用，台账未动：{e}")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m src.jobs", description="台账每日任务")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -56,7 +71,10 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--db", type=Path, default=DEFAULT_DB if p is d else None, required=p is r)
         p.add_argument("--events-dir", type=Path, default=None)
     a = ap.parse_args(argv)
-    rules = R.load_rule_config(a.rules)
+    rule_problems: list[str] = []
+    rules = R.load_rule_config(a.rules, rule_problems)
+    for x in rule_problems:
+        print(f"规则配置：{x}", file=sys.stderr)
     if not rules:
         print(f"规则配置里没有启用的规则：confirmed_terms 须为 {R.TERMS_VERSION}、规则 enabled 为 true（V1 结论前全部关闭，A7）",
               file=sys.stderr)
@@ -69,11 +87,14 @@ def main(argv: list[str] | None = None) -> int:
             for r in failed:
                 print(f"update 失败：{r.get('theme_id')} {r.get('file')}：{r.get('error', '')[:120]}", file=sys.stderr)
         cov = data_runner.OUT_DIR / "coverage.csv"
-        trading_days = load_trading_days(CALENDAR)
+        trading_days = calendar_or_exit(CALENDAR)
         panel, bench, bench_open, problems = live_panel(data_runner.RAW_DIR, cov, day, trading_days)
         blocking, notes = preflight(panel, bench, day.isoformat(), cov, processed_days())
         if blocking:
             print("\n".join(["运行前检查未通过，台账未动："] + blocking), file=sys.stderr)
+            return 3
+        if unpaired(a.db):
+            print(f"台账未动：{unpaired(a.db)}", file=sys.stderr)
             return 3
         L = Ledger(a.db)
         job = DailyJob(L, panel, bench, rules=rules, instruments=instruments(coverage_csv=data_runner.OUT_DIR / "coverage.csv"),
@@ -83,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
         if rep.blocked:
             print(f"台账未动：{rep.blocked}", file=sys.stderr)
             return 3
-        rep.skipped += problems + notes + ([] if trading_days is not None else [f"没有交易日历文件 {CALENDAR}：月末与评分截止按工作日规则"])
+        rep.skipped += rule_problems + problems + notes + ([] if trading_days is not None else [f"没有交易日历文件 {CALENDAR}：月末与评分截止按工作日规则"])
         print(json.dumps(asdict(rep), ensure_ascii=False, indent=1))
         mark_processed(day.isoformat())
         return 0
@@ -92,10 +113,13 @@ def main(argv: list[str] | None = None) -> int:
     b = pd.read_csv(a.bench, parse_dates=["date"]).set_index("date")
     bench = b["hs300"]
     bench_open = b["hs300_open"] if "hs300_open" in b else None
+    if unpaired(a.db):
+        print(f"台账未动：{unpaired(a.db)}", file=sys.stderr)
+        return 3
     state = {"now": ""}
     L = Ledger(a.db, clock=lambda: state["now"], replay=True)        # 正式台账库会被拒绝；回放库记为 replay 模式
     job = DailyJob(L, panel, bench, rules=rules, instruments=instruments(), events_dir=a.events_dir, ew_path=ew_path_for(a.db),
-                   bench_open=bench_open, trading_days=load_trading_days(a.calendar))
+                   bench_open=bench_open, trading_days=calendar_or_exit(a.calendar))
     days = sorted(d for d in panel["date"].dt.date.unique() if a.start <= d <= a.end)
     for day in days:
         state["now"] = f"{day.isoformat()}T16:00"

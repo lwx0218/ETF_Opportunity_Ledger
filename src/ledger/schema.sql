@@ -88,7 +88,8 @@ CREATE TABLE IF NOT EXISTS cards (
                                           ELSE '+1 days' END) || 'T09:30'),   -- 不晚于其后第一个工作日开盘：不能看了后面的行情再补卡
     CHECK (owner_score_deadline > created_at),                       -- 创建必须在下一次开盘之前
     CHECK (substr(owner_score_deadline, 1, 10) > close_date
-           AND julianday(substr(owner_score_deadline, 1, 10)) - julianday(close_date) <= 10),   -- 下一交易日：最长覆盖国庆长假
+           AND julianday(substr(owner_score_deadline, 1, 10)) - julianday(close_date) <= 14),   -- 下一交易日：春节 / 国庆休市连周末最长约 11 天，留余量
+    CHECK ((trigger_type = '事件驱动') = (evidence_status <> '未检索')),   -- v1.1-a：机械卡 = 未检索；事件卡由起草人检索后填 已检索*
     CHECK ((trigger_type = '事件驱动' AND thesis_inval_source_id IS NOT NULL AND thesis_inval_deadline IS NOT NULL
             AND length(trim(coalesce(thesis_inval_statement, ''))) > 0)
         OR (trigger_type <> '事件驱动' AND thesis_inval_source_id IS NULL AND thesis_inval_deadline IS NULL
@@ -206,6 +207,9 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS cards_seal_needs_agent BEFORE UPDATE OF sealed ON cards WHEN OLD.sealed = 0 AND NEW.sealed = 1
 BEGIN
+    -- 封存与创建同一事务（_tx 内数据库时钟冻结为同一时刻）：不能先插一批未封存的卡、看完行情只封存赢家
+    SELECT RAISE(ABORT, '封存必须与创建在同一事务内') WHERE ledger_now() IS NOT NEW.recorded_at;
+    SELECT RAISE(ABORT, '已过下一次开盘：不能再封存') WHERE ledger_now() >= NEW.owner_score_deadline;
     -- v1.1-a：未检索的卡（机械触发）不写 agent 分即可封存；检索过的两种封存前必须有 agent 分
     SELECT RAISE(ABORT, '封存前必须有 agent 的 evidence_strength 评分')
      WHERE NEW.evidence_status <> '未检索'
