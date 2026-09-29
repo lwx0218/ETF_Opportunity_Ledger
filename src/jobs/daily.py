@@ -3,7 +3,7 @@
   1. 开盘离场：在场卡若在上一行收盘跌破当时生效的止损，按 D 开盘离场（prereg-v1 §4，与 V1 引擎同一时序）
   2. 开盘进场：上一交易日立的候选卡按 D 开盘成交；开盘不高于失效位、持仓已满、已持有该容器、错过次日开盘 → 作废（A4：留在分母）
   3. 收盘每日行：在场卡与跟踪期内的卡各追加一行（收盘、状态、z、排名、R、MFE / MAE、止损）；止损按 §4 只上不下
-  4. 跟踪期满：出场后满 tracking_days 行 → 写期满记录，final_score 由存储层按 §3 机械核对
+  4. 跟踪期满：出场后满 tracking_days 行 → 写期满记录，final_score 由存储层按 v1.1-f 机械核对（先判证伪，再按菜单分档）
   5. 触发候选：只接「恐慌下轨」与「事件驱动」（A7），立卡即锁死
 
 幂等：每一步都先查台账已有的记录，同一天重跑不产生任何新行。所有价格都在卡片的研究序列上（后复权 / 全收益点位）。
@@ -184,7 +184,8 @@ class DailyJob:
             held = self.panel[(self.panel["container"] == card["container"]) & (self.panel["date"] >= pd.Timestamp(entry["entry_date"]))
                               & (self.panel["date"] < D)]
             self.L.exit(cid, exit_date=D.date().isoformat(), exit_price=px, exit_reason="移动止盈" if activated else "失效位",
-                        realized_r=round(realized_r, 6), realized_excess_pct=round(excess, 6), holding_days=int(len(held)))
+                        realized_r=round(realized_r, 6), realized_excess_pct=round(excess, 6), holding_days=int(len(held)),
+                        exit_signal_close=last["close"])                  # v1.1-f：触发出场的那根收盘，期满时判证伪
             rep.exits.append(cid)
 
     def _entry(self, cid):
@@ -287,8 +288,8 @@ class DailyJob:
             bench_ret = self._bench_return(card, entry["entry_date"], x["exit_date"])
             self.L.finalize(cid, post_exit_return_pct=round((last["close"] / x["exit_price"] - 1) * 100, 6),
                             post_exit_r=round((last["close"] - entry["entry_price"]) / r_unit, 6),
-                            final_score=mechanical_score(x["exit_reason"], x["realized_excess_pct"], card["expectation_target_excess_pct"],
-                                                         card["scoring_rule"], x["realized_r"], card["expectation_target_r"]),
+                            final_score=mechanical_score(card, x),
+
                             missed_r=round(max(0.0, max_r_after - x["realized_r"]), 6),
                             stop_quality=int(max_r_after - x["realized_r"] >= 1),
                             trail_quality=int(x["realized_r"] >= 0.7 * mfe_at_exit) if x["exit_reason"] == "移动止盈" else None,

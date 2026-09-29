@@ -1,5 +1,5 @@
 {
-  "_note": "每日任务的规则开关与卡片量化预期（schema v1.1-c）。confirmed_terms 须等于 src/jobs/rules.py 的 TERMS_VERSION（jobs-daily-v1，表示 Cowork 已复核 docs/jobs-daily.md 的记账口径），否则一条规则都不启用；enabled 不为 true 的规则也不启用。V1 结论出来之前全部关闭（A7）。形态突破要等 V1 五条验收通过后再接。",
+  "_note": "每日任务的规则开关与卡片量化预期（schema v1.1-c）。confirmed_terms 须等于 src/jobs/rules.py 的 TERMS_VERSION（jobs-daily-v2，表示 Cowork 已复核 docs/jobs-daily.md 的记账口径，含 v1.1-f 证伪判定），否则一条规则都不启用；enabled 不为 true 的规则也不启用。V1 结论出来之前全部关闭（A7）。形态突破要等 V1 五条验收通过后再接。",
   "confirmed_terms": null,
   "恐慌下轨": {"enabled": false, "scoring_rule": "schema-v1.1-R", "horizon_days": null, "target_excess_pct": null, "target_r": 2, "benchmark": "等权组合"},
   "事件驱动": {"enabled": false, "_note": "菜单第 1 项：horizon_days / target_excess_pct / benchmark 由起草人逐卡写在事件草稿里"}

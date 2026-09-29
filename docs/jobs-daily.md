@@ -4,10 +4,10 @@
 
 - Project: ETF_Opportunity-Ledger
 - Document type: reference
-- Status: active（骨架：只验流程；记账口径 `jobs-daily-v1` = schema v1.1-e；规则按 A7 全部关闭，形态突破待 V1 通过）
+- Status: active（骨架：只验流程；记账口径 `jobs-daily-v2` = schema v1.1-e + v1.1-f；规则按 A7 全部关闭，形态突破待 V1 通过）
 - Owner: Faye
 - Last updated: 2026-09-29
-- Source of truth: replan §3 P5、§8 P6b；A4、A5、A7；prereg-v1 §3.2、§4、§5；`docs/etf-card-schema-v1.md`（含 v1.1 补充）；`docs/ledger-storage.md`
+- Source of truth: replan §3 P5、§8 P6b、§9 P6c-2；A4、A5、A7；prereg-v1 §3.2、§4、§5；`docs/etf-card-schema-v1.md`（含 v1.1 补充）；`docs/ledger-storage.md`
 
 ## 用法
 
@@ -22,7 +22,7 @@ python -m src.jobs replay --panel outputs/panel-2026-09-30/panel.csv --bench out
 `daily` = P1 `update` → 用 P2 的函数从 `data/raw` 现算面板 → 运行前检查 → 本包的台账流程。
 
 - **默认日期**：A 股已收盘的最近日期。面板按 I-20 对齐 A 股日历，海外容器在 D 日用本地 D−1 的 K 线（北京 D 日凌晨已收盘），不必等到次晨。
-- **规则配置** `config/ledger-rules.json`（入 Git）：值已按 schema v1.1-c 写好——恐慌下轨用评分菜单第 2 项 `{scoring_rule: schema-v1.1-R, horizon_days: null, target_excess_pct: null, target_r: 2, benchmark: 等权组合}`；事件驱动用菜单第 1 项，预期由起草人逐卡写在草稿里。规则只有在 `confirmed_terms` 等于 `src/jobs/rules.py` 的 `TERMS_VERSION`（`jobs-daily-v1`，表示 Cowork 已复核本文件「记账口径」）**且**该规则 `enabled` 为 `true` 时才启用。恐慌规则的值不是菜单第 2 项时也不启用。规则请求启用（`enabled: true`）却被拒时，原因打到 stderr 并写进当天报告，不静默关掉。仓库里的配置 `confirmed_terms: null`、两条规则 `enabled: false`（A7：V1 结论前全部关闭）；一条规则都没启用时命令直接退出（退出码 2）。
+- **规则配置** `config/ledger-rules.json`（入 Git）：值已按 schema v1.1-c 写好——恐慌下轨用评分菜单第 2 项 `{scoring_rule: schema-v1.1-R, horizon_days: null, target_excess_pct: null, target_r: 2, benchmark: 等权组合}`；事件驱动用菜单第 1 项，预期由起草人逐卡写在草稿里。规则只有在 `confirmed_terms` 等于 `src/jobs/rules.py` 的 `TERMS_VERSION`（`jobs-daily-v2`，表示 Cowork 已复核本文件「记账口径」，含 v1.1-f 证伪判定；之前填的 `jobs-daily-v1` 不再算数）**且**该规则 `enabled` 为 `true` 时才启用。恐慌规则的值不是菜单第 2 项时也不启用。规则请求启用（`enabled: true`）却被拒时，原因打到 stderr 并写进当天报告，不静默关掉。仓库里的配置 `confirmed_terms: null`、两条规则 `enabled: false`（A7：V1 结论前全部关闭）；一条规则都没启用时命令直接退出（退出码 2）。
 - **交易日历** `data/calendar/sse-trading-days.csv`（v1.1-e；astra 生成，不入 Git）：有就用于月末判定与 owner 评分截止；没有时退回工作日规则，`daily` 报告里会写明。文件在但不像交易日历（一行多列、含周末、中间缺一段超过 14 天、没有日期）时报错退出（退出码 1，台账未动），不静默退回。
 - **等权日收益** `data/ledger/ew_daily.csv`（v1.1-e；不入 Git）：正式台账专用。其他 `--db`（含回放库）各用库旁边的 `<库名>.ew_daily.csv`，互不污染。
 
@@ -38,7 +38,7 @@ python -m src.jobs replay --panel outputs/panel-2026-09-30/panel.csv --bench out
 1. **开盘离场**：在场卡若在上一行收盘跌破当时生效的止损，按 D 开盘离场；启用过移动止盈记「移动止盈」，否则「失效位」。与 V1 引擎同一时序（prereg-v1 §4）。
 2. **开盘进场**：上一交易日立的候选卡按 D 开盘成交，仓位按 I-06 用实际开盘价重算，再受总风险 4%（§5）和「在场仓位合计不超过 100%」（I-08 的近似，台账不做净值记账）约束，缩到 1% 以下就放弃。以下情况作废，记入分母（A4），判定顺序与 V1 引擎一致：错过次一交易日开盘 → 已持有该容器（不加仓，I-09）→ 持仓已满（8 个）→ 次一交易日无开盘价 → 开盘不高于失效位 → 现金或风险额度不足。同日多张候选按 I-07 排序：恐慌按 z 从低到高；事件排在恐慌之后（I-07 的扩展，v1.1-e 已接受）。
 3. **收盘每日行**：在场卡和跟踪期内的卡各追加一行，内容为收盘、状态、z、rs_1m 横截面排名、R、MFE / MAE、止损、沪深300 点位。止损规则：满 +1R 后启用移动止盈，止损 = max(原止损, 最高收盘 − 3 × ATR20)，只上不下。跌破当天止损不再更新。
-4. **跟踪期满**：出场后满 20 行，写期满记录；`final_score` 由存储层按卡片锁定的评分菜单机械核对（菜单第 1 项按超额与 horizon，第 2 项按 `realized_r`：≥ 2 达标、(0, 2) 部分、(−1, 0] 未达、≤ −1 证伪）。
+4. **跟踪期满**：出场后满 20 行，写期满记录；`final_score` 由存储层机械核对（v1.1-f）：先判证伪——触发出场的那根收盘（出场记录的 `exit_signal_close`）低于锁定失效位，或论点作废；未证伪的卡按锁定菜单分档：第 1 项按超额对 target，第 2 项按 `realized_r`：≥ 2 达标、(0, 2) 部分、≤ 0 未达。
 5. **触发候选**：只接「恐慌下轨」（月末 z ≤ −2）与「事件驱动」（`<events-dir>/<D>.json`，人确认后的草稿）（A7）。立卡即锁死：
    - 失效位 = 收盘 − 2 × ATR20；1R = 收盘 − 失效位；计划仓位按 I-06，1R = 0.5% 净值，上限 25%；
    - owner 截止 = 下一交易日 09:30：有交易日历按日历；没有或日历没覆盖到时取下一个工作日（遇节假日偏早、更严）；
@@ -50,10 +50,12 @@ python -m src.jobs replay --panel outputs/panel-2026-09-30/panel.csv --bench out
 
 **幂等**：每一步都先查台账已有的记录（立卡靠 `scan_key = 日期|容器|触发类型`），同一天重跑不产生新行，等权文件也不追加。所有价格都在卡片的研究序列上。
 
-## 记账口径 `jobs-daily-v1`（= schema v1.1-e）
+## 记账口径 `jobs-daily-v2`（= schema v1.1-e + v1.1-f）
 
 | 字段 | 口径 |
 |---|---|
+| `exit_signal_close` | 触发出场的那根收盘：在场卡上一行每日记录的收盘（它跌破了当时生效的止损），次日开盘按它离场 |
+| `final_score` | v1.1-f：`exit_signal_close` < 锁定失效位或论点作废 → 证伪；否则按菜单分档（第 2 项未达 = `realized_r ≤ 0`） |
 | `realized_r` | (出场价 × (1 − 0.05%) − 进场价 × (1 + 0.05%)) ÷ (进场价 − 失效位)，与 V1 引擎一致 |
 | `realized_excess_pct` | 卡片持有收益（含成本：出场价 × (1 − 0.05%) ÷ (进场价 × (1 + 0.05%)) − 1）− 基准同窗口收益（不含成本）。基准为卡片锁定的等权组合或沪深300。**窗口取进场日开盘到出场日开盘**（沪深300 用 H00300 原始开盘价）；没有开盘价时退回进场前一日收盘到出场前一日收盘——等权组合只有收盘点位，总是走退回口径 |
 | `holding_days` | 进场日（含）到出场日（不含）之间的交易日数 |
