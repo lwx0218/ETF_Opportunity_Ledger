@@ -126,3 +126,30 @@ P1 → P2 是关键路径；P3、P4 可并行；P5 在 P2、P3 之后。
 | M3 | V1 结论写入 prereg §13 | Cowork | 五条验收逐条通过 / 不通过 |
 | M4 | 台账每日任务上线（按 A7） | CC 代码 + astra 运行 | 连续 5 个交易日无人值守 |
 | M5 | 首页方向稿 → 实现 | Cowork 稿、CC 实现 | design-rules v3；无「如何使用」页 |
+
+## 8. 追加（2026-09-29 晚）· P1–P5 合并后的裁定与下一包
+
+P1–P5 已合并（PR #1–#5，main `36b660f`，145 个测试通过）。CC 提出的问题裁定如下，细节见 `prereg-v1-implementation-notes.md` E 节（I-20 ~ I-23）与 `docs/etf-card-schema-v1.md` v1.1 补充：
+
+| 问题 | 裁定 |
+|---|---|
+| 混合交易日历 | 对齐到 A 股日历；海外容器取本地日期 ≤ D−1 的最后一根 K 线，无新 K 线写平盘 K 线（I-20） |
+| 全收益指数无成交量 | 借同一指数价格版本的成交量；都没有则四态不可达，报告注明（I-21） |
+| NDXTMC 拉不到 | 不替代，T36 不进面板（I-22）；CC 的实现正确 |
+| 固定源 B 级可用时点 | 取 min，文档与 CSV 已更正（I-23） |
+| 恐慌卡「未检索证据」 | 新增 `evidence_status`，机械卡 = 未检索且**不写 agent 分**（不是 0）（v1.1-a） |
+| 规则卡的量化预期 | 评分菜单第 2 项「R 倍数」，`expectation = {horizon_days: null, target_r: 2, benchmark: 等权组合}`（v1.1-c） |
+| 骨架口径 | 全部确认，两处修改：基准窗口改为开盘到开盘；月末判定优先用交易日历文件（v1.1-e） |
+| AGENTS.md「设计资产已导入」 | 接受，属实 |
+| P5 开关 | 维持全部关闭直到 V1 结论（A7）；配置值先按 v1.1 写好但 `enabled: false` |
+| P2 研究逻辑复核（Cowork） | **通过**：`form_states` 与 `etf_probe.kell_states` 逐条规则机械比对无差异（只有返回值的组装方式不同）；`rs_1m`、`z_month`、ATR20 与 prereg_v1 / characterize.py 同口径；截断测试覆盖无未来函数 |
+
+### P6 · CC 下一包（P6a 阻塞 V1，先做；P6b 不阻塞）
+
+- **P6a `src/indicators/build.py`**：实现 I-20（A 股日历对齐 + D−1 + 平盘 K 线 + `stale_days`）与 I-21（成交量借价格版本 + `volume_source` + 各状态计数）。测试：构造一个海外容器 + 一个 A 股容器，验证对齐后等权累计收益不再丢跨假期收益；截断测试照旧。
+- **P6b `src/ledger/` + `src/jobs/`**：`evidence_status` 字段与封存规则（v1.1-a）；机械卡不写 agent 分；规则配置改为支持菜单第 2 项（`target_r`，`horizon_days` 可为 null）并加 `enabled` 开关；基准窗口开盘到开盘；交易日历文件读取（无文件时退回现规则）；等权日收益持久化。改完把 `TERMS_VERSION` 升到 `jobs-daily-v1`，Cowork 在配置里填 `confirmed_terms: jobs-daily-v1`。
+- 每包仍是一页工作日志 + 包末一次复核。
+
+### astra S1 补充
+
+CC 的执行顺序与注意事项照办：`probe --record` → `backfill --end 2026-09-30` → `package` → `verify`，打包等北京时间 10-01 05:00 美股收盘后；限流时只动 `--exec-start`，不动 `--start`。另外两项：① 生成 `data/calendar/sse-trading-days.csv`（用 09-27 已验证的深交所 `monthList` 接口，覆盖 2005 至次年，一行一个交易日）并随数据包交付；② NDXTMC 若 probe 失败，试 Nasdaq 官方历史数据页一次，不成就跳过。

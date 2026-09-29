@@ -175,3 +175,57 @@
 2. 跟踪期默认 20 个交易日够不够，还是分 trigger_type 给不同值。
 3. 事件驱动型卡片要不要单独的失效位定义（事件类的失效往往是"事件本身被证伪"，不是价格）。
 4. 面板上"未来卡片"（潜在机会）要不要也进台账。倾向要——它们是"看到了但没进"的样本，正是最容易被遗忘的那部分分母。
+
+---
+
+## v1.1 补充 · 2026-09-29（只追加，不改上文；由 Claude 决定，理由附）
+
+上文是 2026-09-19 的原文。实现（`src/ledger/`、`src/jobs/`）时发现四处原文没有覆盖，补在这里。第 0 层「宪法」（评分四档、1R 定义、锁字段、作废计入分母）不变。
+
+### v1.1-a `evidence_status`：区分「没找」和「找了没有」
+
+原文 §2.1 说 `evidence[]` 为空表示「当时固定源上没有证据」。但每日任务机械触发的卡片（恐慌下轨、以后的形态突破）在创建时**没有去检索**固定源，空数组会把「没检索」冒充成「检索过、没有」，污染 prereg §11 的有 / 无催化标签和 §6.1 的校准分桶。
+
+新增创建时锁死字段 `evidence_status` ∈ {`未检索`, `已检索无证据`, `有证据`}：
+
+- 机械卡创建时 = `未检索`，`evidence[] = []`，**不写 agent 评分**（`evidence_strength` 为空，不是 0）；
+- 事件卡由起草人检索后填 `已检索无证据` 或 `有证据`，并给 agent 评分；
+- 校准（§6.1）只用 `已检索*` 的卡分桶；`未检索` 的卡单独成一桶，仍计入分母；
+- prereg §11 的物理催化标签只对 `已检索*` 的卡有意义。
+
+存储层：`evidence_status = 未检索` 的卡允许在没有 agent 评分的情况下封存；其余两种封存前必须有 agent 评分（原规则）。
+
+### v1.1-b `evidence_strength` 两栏（A1 双盲）
+
+`evidence_strength` 拆为 `agent` 与 `owner` 两栏，各自写入即锁定；owner 看不到 agent 分；owner 在下一交易日 09:30 前未填记缺失，卡片照常入账。两条校准曲线分别画。
+
+### v1.1-c 评分菜单第 2 项：R 倍数（规则触发的卡）
+
+原文 §3 只有一项菜单（按 `target_excess_pct` 与 `horizon_days`）。prereg-v1 的规则卡**没有时间上限**，也不以百分比设目标，用第 1 项打分会逼我们凭空定一个 horizon。为规则卡（`trigger_type` ∈ {形态突破, 恐慌下轨}）增加菜单第 2 项，创建时选定后同样锁死：
+
+| 档 | 条件（`realized_r` 含成本） |
+|---|---|
+| 达标 | `realized_r ≥ +2` |
+| 部分 | `0 < realized_r < 2` |
+| 未达 | `−1 < realized_r ≤ 0` |
+| 证伪 | `realized_r ≤ −1`（触发失效位） |
+
+`expectation` 相应写成 `{horizon_days: null, target_r: 2, benchmark: 等权组合}`。2R 不是新的交易参数：它不改变任何进出场或仓位，只是评分标签的分界；取 2 是因为 prereg §6 已经把「> +2R 的比例」定为分布形状指标，沿用同一刻度。事件驱动卡继续用第 1 项，由起草人逐卡填 `horizon_days / target_excess_pct / benchmark`。
+
+`stop_quality`、`trail_quality`、`benchmark_beat` 三个独立标记对两项菜单相同。
+
+### v1.1-d 证据的时点字段
+
+每条 `evidence[]` 除 `{source_id, published_at, summary, url}` 外增加 `first_seen_at`、`available_at`、`snapshot_path`、`snapshot_sha256`；`available_at` 按 `docs/etf-fixed-sources-v1.md` §3 计算（B 级取 min），存储层拒绝 `available_at > created_at` 与 `source_id` 不在清单 A / B 级的证据。
+
+### v1.1-e 每日任务的记账口径（对 `docs/jobs-daily.md`「骨架口径」的确认）
+
+- `realized_r`：与 V1 引擎一致（每边 0.05% 成本）。
+- `realized_excess_pct`：卡片持有收益（含成本）− 基准同窗口收益（不含成本）；**基准窗口取进场日开盘到出场日开盘**（与卡片成交时点相同；H00300 有开盘价），没有开盘价时退回前一日收盘到前一日收盘。
+- `holding_days`：进场日（含）到出场日（不含）的交易日数。
+- `post_exit_return_pct` / `post_exit_r` / `missed_r` / `stop_quality`（≥ +1R 记 1）/ `trail_quality`（移动止盈出场且 `realized_r ≥ 0.7 × MFE` 记 1）/ `benchmark_beat`（同期基准上涨记 1）：照骨架。
+- 同日候选顺序：恐慌按 z 从低到高，事件排在恐慌之后（I-07 的扩展，接受）。
+- 现金约束用在场仓位合计 ≤ 100% 近似（台账不做净值记账，接受）。
+- 月末判定：优先用交易日历文件 `data/calendar/sse-trading-days.csv`（由 astra 从深交所日历接口生成，每年补一次；新增取数方式，记入 data-layer.md），没有文件时退回「下一个工作日进入新月」规则。
+- 反事实等权点位：每日把等权日收益持久化到 `data/ledger/ew_daily.csv`，卡片锁定创建当日的累计点位；容器集合变化时旧点位不重算。
+- 海外容器的卡片：暂用研究序列（与 V1 一致）；QDII 卡片出现后再决定是否改用执行 ETF 成交价，届时另记版本。
