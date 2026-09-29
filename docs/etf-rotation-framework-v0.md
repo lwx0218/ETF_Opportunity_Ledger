@@ -6,8 +6,8 @@
 - Document type: other（研究框架）
 - Status: active（其中 Kell 状态机已改名为「形态状态」，见 §12）
 - Owner: Faye
-- Last updated: 2026-09-15
-- Source of truth: claude.ai Project「QTradeResearch」`claude/etf-rotation-framework-v0.md`；2026-09-25 导入，除本 Metadata 外正文原样未改
+- Last updated: 2026-09-29（§8 加指向固定信息源清单 v1 的一行，其余正文未改）
+- Source of truth: 仓库 `docs/`（A6）；原件 claude.ai Project「QTradeResearch」`claude/etf-rotation-framework-v0.md`，2026-09-25 导入
 
 > 分工：Faye 出想法；Claude 负责把内容和框架固定下来、给可靠信息源、给可量化的路径、并用数据核验印象。
 > 本文档里每条事实标 **[已核]**（有来源、附链接）或 **[待核]**（需要本地拉数据）。没有标记的是设计决定，不是事实。
@@ -168,6 +168,8 @@ checkpoints: [EIA 周三库存, OPEC 月报]
 论点回放必须 as-of：只能用 evidence 里日期 ≤ 决策日的证据；Teardown 事件流的时间戳就是依据。
 
 ## 8. 固定信息源（替代 APP 推送）
+
+> 2026-09-29：本节是 v0 粗表，已由 `docs/etf-fixed-sources-v1.md`（机器可读版 `docs/etf-fixed-sources-v1.csv`）取代；卡片证据的 `source_id`、等级与可用时点以该清单为准。
 
 | 领域 | 来源 | 节奏 | 进入哪一层 |
 |---|---|---|---|
