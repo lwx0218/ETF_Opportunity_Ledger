@@ -1,0 +1,6 @@
+{
+  "_note": "每日任务的卡片量化预期与骨架口径确认。prereg-v1 没有写死 horizon / target / benchmark，由 Cowork 决定后填入并另存为 config/ledger-rules.json；confirmed_terms 须等于 src/jobs/rules.py 的 TERMS_VERSION（表示已复核 docs/jobs-daily.md 的骨架口径），否则一条规则都不启用；任一项为 null 的规则也不启用。形态突破要等 V1 五条验收通过（A7）。",
+  "confirmed_terms": null,
+  "恐慌下轨": {"horizon_days": null, "target_excess_pct": null, "benchmark": null},
+  "事件驱动": {"horizon_days": null, "target_excess_pct": null, "benchmark": null}
+}
