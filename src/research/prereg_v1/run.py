@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """prereg-v1 执行入口。步骤必须按顺序，后一步检查前一步的产物：
 
-    python -m src.research.prereg_v1.run check        --panel P --bench B   # 只校验形状与覆盖，不算收益
-    python -m src.research.prereg_v1.run characterize --panel P --bench B   # §10-2 设计期刻画；分不开就写 STOP
-    python -m src.research.prereg_v1.run design       --panel P --bench B   # §10-3 设计期 ±20% 扰动
-    python -m src.research.prereg_v1.run oos          --panel P --bench B   # §10-4 冻结样本外，只允许一次
-    python -m src.research.prereg_v1.run rolling      --panel P --bench B   # §10-5 逐年表（须已有 OOS 锁）
+    python -m src.research.prereg_v1.run check        --panel P   # 只校验形状与覆盖，不算收益
+    python -m src.research.prereg_v1.run characterize --panel P   # §10-2 设计期刻画；分不开就写 STOP
+    python -m src.research.prereg_v1.run design       --panel P   # §10-3 设计期 ±20% 扰动
+    python -m src.research.prereg_v1.run oos          --panel P   # §10-4 冻结样本外，只允许一次
+    python -m src.research.prereg_v1.run rolling      --panel P   # §10-5 逐年表（须已有 OOS 锁）
+
+P = 指标层 build 产出的面板库 outputs/panel-D.sqlite（panel、bench 两表）；--bench 默认同一个库。
 
 产物写到 outputs/prereg_v1/（不入 Git）；结论由人追加进 docs/etf-rotation-prereg-v1.md §13。
 """
@@ -24,14 +26,9 @@ from .characterize import characterize
 from .config import DESIGN_END, OOS_END, OOS_START, PERTURB_FACTORS, PERTURB_PARAMS, Params
 from .engine import random_entry_null, simulate
 from .metrics import acceptance, avg_pairwise_corr, is_fragile, portfolio_stats, r_by, r_stats
-from .panel import hole_runs, validate_bench, validate_panel
+from .panel import content_sha256, hole_runs, read_table, validate_bench, validate_panel
 
 ROOT = Path(__file__).resolve().parents[3]
-
-
-def load(path):
-    path = Path(path)
-    return pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
 
 
 def sha256(path):
@@ -57,14 +54,15 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("step", choices=["check", "characterize", "design", "oos", "rolling"])
     ap.add_argument("--panel", required=True)
-    ap.add_argument("--bench", required=True)
+    ap.add_argument("--bench", default=None, help="默认与 --panel 同一个库")
     ap.add_argument("--out", default=str(ROOT / "outputs" / "prereg_v1"))
     a = ap.parse_args(argv)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     p = Params()
-    panel = validate_panel(load(a.panel))
-    hs300 = validate_bench(load(a.bench))
+    a.bench = a.bench or a.panel
+    panel = validate_panel(read_table(a.panel, "panel"))
+    hs300 = validate_bench(read_table(a.bench, "bench"))
     panel = panel[panel["date"] <= pd.Timestamp(OOS_END)]            # 冻结样本外之后的数据一律不进 V1
     design = panel[panel["date"] <= pd.Timestamp(DESIGN_END)]
     stop_file, char_file, design_file = out / "STOP", out / "characterize.json", out / "design.json"
@@ -80,7 +78,7 @@ def main(argv=None):
             print("数据断档（I-25，data_hole = 1）：无")
         else:
             print(f"\n数据断档（I-25，data_hole = 1，这些行不产生入场信号；V1 报告须列出）：{len(holes)} 段 {int(holes['rows'].sum())} 行")
-            print("（起点是连续平盘的第 5 行；整段平盘的起止见 build-report.json 各容器的 stale_runs）")
+            print("（起点是连续平盘的第 5 行；整段平盘的起止见 panel-D.build-report.json 各容器的 stale_runs）")
             print(holes.to_string(index=False))
         return 0
 
@@ -131,7 +129,7 @@ def main(argv=None):
                         v1_percentile=float((nr < rs.get("mean_R", np.nan)).mean()))
         lock.write_text(json.dumps(dict(
             ran_at_utc=datetime.now(timezone.utc).isoformat(), git_head=git_head(),
-            panel_sha256=sha256(a.panel), bench_sha256=sha256(a.bench), params=repr(p),
+            panel_sha256=sha256(a.panel), bench_sha256=sha256(a.bench), panel_content_sha256=content_sha256(a.panel), params=repr(p),
             r_stats=fmt(rs), portfolio=fmt(port), acceptance=acc, random_entry_null=null), ensure_ascii=False, indent=1, default=float))
         res.trades.to_csv(out / "oos_trades.csv", index=False)
         res.skipped.to_csv(out / "oos_skipped.csv", index=False)

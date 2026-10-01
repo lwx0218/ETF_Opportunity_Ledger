@@ -17,9 +17,6 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
-# Bulk data and generated output; explicitly allow reviewed small samples later
-/data/*
-!/data/universe.csv
 # Reference import: keep market/signal data, macOS metadata and machine-local settings out of Git
 /ref/auto_filter_stock/data/
 /ref/**/.claude/settings.local.json
@@ -31,9 +28,20 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
+*.db-journal
 *.sqlite-wal
 *.sqlite-shm
+*.sqlite-journal
 *.sqlite3-wal
 *.sqlite3-shm
 *.log
 .DS_Store
+
+# data/ goes into Git by whitelist (replan §11, Owner decision 2026-10-01): the two databases, the universe seed and
+# confirmed event drafts. Anything else under data/ (legacy CSV layout from before P7: raw/, calendar/, ledger/, jobs/,
+# the 09-25 kline snapshot; replay databases; temp files) stays out. Kept last so it overrides *.sqlite above.
+/data/*
+!/data/universe.csv
+!/data/market.sqlite
+!/data/ledger.sqlite
+!/data/events/

@@ -2,8 +2,12 @@
 
 运行：python -m unittest discover -s tests -t .
 """
+import contextlib
 import importlib.util
+import io
+import json
 import shutil
+import sqlite3
 import sys
 import tempfile
 import types
@@ -17,14 +21,16 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+import tests  # noqa: E402,F401 — 置位 ETF_LEDGER_TESTING：直接当脚本跑时也只许连临时库
 
-from src.data import runner as data_runner, store               # noqa: E402
+from src.data import db as DB, runner as data_runner             # noqa: E402
 from src.indicators import build as B                           # noqa: E402
-from src.indicators.calendar import load_trading_days, next_trading_day   # noqa: E402
+from src.indicators.calendar import load_trading_days, next_trading_day, read_calendar_file   # noqa: E402
 from src.indicators.metrics import atr20, month_end_flags, rs_1m, z_month   # noqa: E402
 from src.indicators.states import form_states                   # noqa: E402
 from src.research.prereg_v1 import run as prereg_run             # noqa: E402
-from src.research.prereg_v1.panel import ew_daily_returns, reference_atr   # noqa: E402
+from src.research.prereg_v1.panel import ew_daily_returns, read_table, reference_atr   # noqa: E402
+from tests.marketdb import open_db, put, put_coverage           # noqa: E402
 
 
 def legacy_probe():
@@ -131,11 +137,21 @@ class ZMonth(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
         (tmp / "a.csv").write_text("﻿trade_date\n2026-09-29\n20260930\n2026-10-08\n\n2026-09-29\n", encoding="utf-8")
-        days = load_trading_days(tmp / "a.csv")
+        days = read_calendar_file(tmp / "a.csv")
         self.assertEqual([d.date().isoformat() for d in days], ["2026-09-29", "2026-09-30", "2026-10-08"])
         self.assertEqual(next_trading_day(date(2026, 9, 30), days), date(2026, 10, 8))
         self.assertIsNone(next_trading_day(date(2026, 10, 8), days))
-        self.assertIsNone(load_trading_days(tmp / "missing.csv"))                               # 没有文件：退回工作日规则
+        self.assertIsNone(load_trading_days(tmp / "missing.sqlite"))                            # 没有库：退回工作日规则
+        con = open_db(tmp / "m.sqlite")
+        self.assertIsNone(load_trading_days(con))                                               # 库在、日历表空：同样退回
+        with con:
+            con.executemany("INSERT INTO calendar VALUES (?)", [(d.date().isoformat(),) for d in days])
+        self.assertTrue(load_trading_days(con).equals(days))
+        with con:
+            con.execute("INSERT INTO calendar VALUES ('2026-12-01')")                         # 表里缺一段：报错，不静默退回
+        with self.assertRaises(ValueError):
+            load_trading_days(tmp / "m.sqlite")
+        con.close()
         bad = {"empty": "date\n",
                "two_columns": "date,jybz\n2026-10-30,1\n2026-10-31,0\n",                        # 原样导出的开市标志
                "weekend": "2026-10-30\n2026-10-31\n",
@@ -143,8 +159,8 @@ class ZMonth(unittest.TestCase):
                "junk": "date\n2026-10-14\nxx\n"}
         for k, text in bad.items():
             (tmp / f"{k}.csv").write_text(text, encoding="utf-8")
-            with self.subTest(k), self.assertRaises(ValueError):                              # 文件在但不对：报错，不静默退回
-                load_trading_days(tmp / f"{k}.csv")
+            with self.subTest(k), self.assertRaises(ValueError):                              # 文件不对：报错，不静默跳过
+                read_calendar_file(tmp / f"{k}.csv")
 
     def test_rs_1m_uses_past_bench_only(self):
         dates = pd.Series(pd.to_datetime(["2026-01-02", "2026-01-05", "2026-01-06"]))
@@ -164,111 +180,175 @@ class EndToEnd(unittest.TestCase):
         self.addCleanup(clock.stop)
 
     def make_package(self, with_bench=True, calendar=None, brent_gap=None):
-        raw, out = self.tmp / "raw", self.tmp / "out"
-        series = {"H00300.csv": (ohlcv(seed=1, start="2005-01-04", n=5600), "csi"),
-                  "H30184CNY010.csv": (ohlcv(seed=2, start="2005-01-04", n=5600), "csi"),
-                  "518880.hfq.csv": (ohlcv(seed=3, start="2013-07-29", n=3400), "eastmoney_etf_hfq"),
-                  "BRENT.csv": (ohlcv(seed=4, start="2005-01-04", n=5600, volume=False), "eia")}
+        """半导体的全收益序列没有成交量、价格版本 H30184 有（I-21 借量要经过「价格序列进包」这一步）。"""
+        self.db = self.tmp / "market.sqlite"
+        con = open_db(self.db)
+        series = {("H00300", "csi"): ohlcv(seed=1, start="2005-01-04", n=5600),
+                  ("H30184CNY010", "csi"): ohlcv(seed=2, start="2005-01-04", n=5600, volume=False),
+                  ("H30184", "csi"): ohlcv(seed=2, start="2005-01-04", n=5600),
+                  ("518880", "eastmoney_etf_hfq"): ohlcv(seed=3, start="2013-07-29", n=3400),
+                  ("BRENT", "eia"): ohlcv(seed=4, start="2005-01-04", n=5600, volume=False)}
         if not with_bench:
-            series.pop("H00300.csv")
-        for name, (df, route) in series.items():
+            series.pop(("H00300", "csi"))
+        for (code, route), df in series.items():
             d = df.copy()
-            if name == "BRENT.csv" and brent_gap:                       # 构造原油的数据断档（I-25）
+            if code == "BRENT" and brent_gap:                           # 构造原油的数据断档（I-25）
                 d = d[~d["date"].between(*map(pd.Timestamp, brent_gap))]
             if route == "eia":
                 d[["open", "high", "low"]] = np.nan
-            d["date"] = d["date"].dt.strftime("%Y-%m-%d")
-            d["source"] = route
-            store.write(raw / name, d.to_dict("records"))
-        cov = [dict(theme_id="T01", container="沪深300", status="retained", series_file="H00300.csv", route_used="csi", price_only="False"),
-               dict(theme_id="T06", container="半导体", status="retained", series_file="H30184CNY010.csv", route_used="csi", price_only="False"),
-               dict(theme_id="T15", container="原油", status="flagged", series_file="BRENT.csv", route_used="eia", price_only="False"),
-               dict(theme_id="T16", container="黄金", status="flagged", series_file="518880.hfq.csv", route_used="eastmoney_etf_hfq", price_only="False"),
+            put(con, code, d, route)
+        cov = [dict(theme_id="T01", container="沪深300", status="retained", code="000300", series_code="H00300", series_adj="raw", route_used="csi",
+                    price_only="False"),
+               dict(theme_id="T06", container="半导体", status="retained", code="H30184", series_code="H30184CNY010", series_adj="raw",
+                    route_used="csi", price_only="False"),
+               dict(theme_id="T15", container="原油", status="flagged", series_code="BRENT", series_adj="raw", route_used="eia", price_only="False"),
+               dict(theme_id="T16", container="黄金", status="flagged", series_code="518880", series_adj="hfq", route_used="eastmoney_etf_hfq", price_only="False"),
                dict(theme_id="T36", container="纳指科技", status="flagged", error="yahoo: 404"),
                dict(theme_id="T34", container="现金", status="execution_only")]
-        data_runner.write_coverage(out / "coverage.csv", cov, [c["theme_id"] for c in cov])
-        return data_runner.package(date(2026, 9, 30), uni_path=ROOT / "data" / "universe.csv", raw_dir=raw, out_dir=out,
-                                   pkg_root=self.tmp, calendar=calendar, log=lambda *_: None)
+        put_coverage(con, cov)
+        con.close()
+        if calendar is not None:
+            data_runner.load_calendar(calendar, db=self.db, log=lambda *_: None)
+        return data_runner.package(date(2026, 9, 30), db=self.db, pkg_root=self.tmp, force=True, log=lambda *_: None)
 
     def test_package_to_panel_to_check(self):
         pkg = self.make_package()
-        out = B.build(pkg, self.tmp / "panel", log=lambda *_: None)
-        panel = pd.read_csv(out / "panel.csv")
+        out = B.build(pkg, self.tmp / "panel.sqlite", log=lambda *_: None)
+        self.assertEqual(out, self.tmp / "panel.sqlite")
+        panel = read_table(out, "panel")
         self.assertEqual(list(panel.columns), B.PANEL_COLUMNS)
         self.assertEqual(set(panel["container"].unique()), {"原油", "半导体", "沪深300", "黄金"})
-        rep = __import__("json").loads((out / "build-report.json").read_text(encoding="utf-8"))
+        rep = json.loads(B.report_path(out).read_text(encoding="utf-8"))
+        self.assertEqual(rep["panel_db_sha256"], DB.sha256_file(out))
+        self.assertEqual(rep["package_sha256"], DB.sha256_file(pkg))
         self.assertIn("纳指科技", rep["skipped"])
         self.assertGreater(rep["containers"]["原油"]["ohl_filled_from_close"], 5000)
         self.assertEqual(rep["containers"]["原油"]["volume_missing_or_zero"], rep["containers"]["原油"]["rows"])
         hs = panel[panel["container"] == "沪深300"]
         self.assertTrue(np.allclose(hs["rs_1m"].dropna(), 0))       # 基准自己对自己
-        bench = pd.read_csv(out / "bench.csv", parse_dates=["date"])
+        bench = read_table(out, "bench").assign(date=lambda x: pd.to_datetime(x["date"]))
         self.assertTrue(pd.to_datetime(panel["date"]).isin(bench["date"]).all())      # I-20：全部在 A 股日历上
         self.assertEqual(rep["containers"]["原油"]["calendar"], "overseas_d_minus_1")
         self.assertEqual(rep["containers"]["原油"]["volume_source"], "none")
-        self.assertEqual(prereg_run.main(["check", "--panel", str(out / "panel.csv"), "--bench", str(out / "bench.csv"),
-                                          "--out", str(self.tmp / "v1")]), 0)
-        raw_bench = pd.read_csv(pkg / "raw" / "H00300.csv", parse_dates=["date"]).set_index("date")
+        self.assertEqual(rep["containers"]["半导体"]["volume_source"], "price_version")    # 价格版本随包走，借量照旧
+        self.assertEqual(rep["panel_content_sha256"], __import__("src.research.prereg_v1.panel", fromlist=["x"]).content_sha256(out))
+        self.assertEqual(rep["package_content_sha256"], json.loads(data_runner.manifest_path(pkg).read_text(encoding="utf-8"))["content_sha256"])
+        again = B.build(pkg, self.tmp / "panel-again.sqlite", log=lambda *_: None)
+        self.assertEqual(DB.sha256_file(again), DB.sha256_file(out))                  # 面板库逐字节只由数据包决定
+        with mock.patch("builtins.print"):
+            self.assertEqual(prereg_run.main(["check", "--panel", str(out), "--out", str(self.tmp / "v1")]), 0)
+        con = DB.connect(pkg, readonly=True)
+        raw_bench = B.read_bars(con, "H00300", "raw").set_index("date")
+        con.close()
         self.assertTrue(np.allclose(bench.set_index("date")["hs300_open"], raw_bench.loc[bench["date"], "open"]))   # 基准原始开盘
-        self.assertIsNone(rep["calendar_file"])
+        self.assertIsNone(rep["calendar"])
 
-    def test_calendar_file_travels_with_package(self):
+    def test_calendar_travels_with_package(self):
         cal = self.tmp / "sse-trading-days.csv"
-        cal.write_text("date\n" + "\n".join(d.date().isoformat() for d in pd.bdate_range("2005-01-01", "2027-12-31")) + "\n",
-                       encoding="utf-8")
+        days = pd.bdate_range("2005-01-01", "2027-12-31")
+        cal.write_text("date\n" + "\n".join(d.date().isoformat() for d in days) + "\n", encoding="utf-8")
         pkg = self.make_package(calendar=cal)
-        self.assertTrue((pkg / "calendar" / "sse-trading-days.csv").exists())
-        self.assertIn("calendar/sse-trading-days.csv", (pkg / "MANIFEST.sha256").read_text(encoding="utf-8"))
-        self.assertTrue(__import__("json").loads((pkg / "MANIFEST.json").read_text(encoding="utf-8"))["calendar_file"])
+        con = DB.connect(pkg, readonly=True)
+        self.assertEqual(con.execute("SELECT count(*) FROM calendar").fetchone()[0], len(days))
+        con.close()
+        self.assertEqual(json.loads(data_runner.manifest_path(pkg).read_text(encoding="utf-8"))["calendar_days"], len(days))
         self.assertEqual(data_runner.verify(pkg), [])
-        out = B.build(pkg, self.tmp / "panel", log=lambda *_: None)
-        rep = __import__("json").loads((out / "build-report.json").read_text(encoding="utf-8"))
-        self.assertEqual(rep["calendar_file"], __import__("hashlib").sha256(cal.read_bytes()).hexdigest())
-        shutil.rmtree(pkg)                                                                      # 日历坏了：build 拒绝，不退回工作日规则
-        cal.write_text("date\n2026-10-30\n2026-10-31\n", encoding="utf-8")
-        pkg = self.make_package(calendar=cal)
+        out = B.build(pkg, self.tmp / "panel.sqlite", log=lambda *_: None)
+        rep = json.loads(B.report_path(out).read_text(encoding="utf-8"))
+        self.assertEqual(rep["calendar"], {"days": len(days), "first": "2005-01-03", "last": "2027-12-31"})
+        pkg.chmod(0o644)                                                                        # 包里的日历缺一段：build 拒绝，不退回工作日规则
+        con = sqlite3.connect(pkg)
+        con.execute("DELETE FROM calendar WHERE date BETWEEN '2020-03-01' AND '2020-04-30'")
+        con.commit()
+        con.close()
+        man = data_runner.manifest_path(pkg)
+        self.assertEqual(data_runner.verify(pkg), [f"哈希不符 {pkg.name}", f"内容哈希不符 {pkg.name}"])
+        con = DB.connect(pkg, readonly=True)
+        content = DB.content_sha256(con, data_runner.PACKAGE_CONTENT)
+        con.close()
+        man.write_text(json.dumps({**json.loads(man.read_text(encoding="utf-8")), "sha256": DB.sha256_file(pkg), "content_sha256": content}),
+                       encoding="utf-8")
+        self.assertEqual(data_runner.verify(pkg), [])                                          # 清单一起改写：只剩 build 的日历检查
         with self.assertRaisesRegex(B.BuildError, "交易日历"):
-            B.build(pkg, self.tmp / "panel2", log=lambda *_: None)
+            B.build(pkg, self.tmp / "panel2.sqlite", log=lambda *_: None)
 
     def test_data_hole_build_report_and_check(self):
         """I-25 端到端：原油断档进面板 data_hole、报告 stale_runs，可达状态表只数非平盘行，check 打印断档段。"""
         pkg = self.make_package(brent_gap=("2020-03-02", "2020-04-10"))
-        out = B.build(pkg, self.tmp / "panel", log=lambda *_: None)
-        rep = __import__("json").loads((out / "build-report.json").read_text(encoding="utf-8"))["containers"]["原油"]
+        out = B.build(pkg, self.tmp / "panel.sqlite", log=lambda *_: None)
+        rep = json.loads(B.report_path(out).read_text(encoding="utf-8"))["containers"]["原油"]
         self.assertEqual(len(rep["stale_runs"]), 1)
         self.assertEqual(rep["stale_runs"][0]["rows"], rep["max_stale_run"])
         self.assertEqual(sum(rep["states"].values()), rep["aligned_rows"] - rep["stale_days"])     # 可达状态表只数非平盘行
-        panel = pd.read_csv(out / "panel.csv")
+        panel = read_table(out, "panel")
         self.assertEqual(int(panel.loc[panel["container"] == "原油", "data_hole"].sum()), rep["data_hole_rows"])
         self.assertEqual(int(panel.loc[panel["container"] != "原油", "data_hole"].sum()), 0)
-        buf = __import__("io").StringIO()
-        with __import__("contextlib").redirect_stdout(buf):
-            self.assertEqual(prereg_run.main(["check", "--panel", str(out / "panel.csv"), "--bench", str(out / "bench.csv"),
-                                              "--out", str(self.tmp / "v1")]), 0)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(prereg_run.main(["check", "--panel", str(out), "--out", str(self.tmp / "v1")]), 0)
         self.assertIn("数据断档", buf.getvalue())
         self.assertIn("原油", buf.getvalue().split("数据断档")[1])
+
+    def test_panel_db_reads_like_the_old_csv(self):
+        """replan §11 迁移对照：同一份构造的面板写进库（write_panel_db）与按旧口径写 CSV，经 panel.py 两种读法逐行相等；
+        读库与内存里的 DataFrame 逐位相等（CSV 的浮点文本往返只到 1e-12）。迁移期间保留，合并后随 CSV 读法一起删。"""
+        from src.research.prereg_v1.panel import read_table_csv, validate_bench, validate_panel
+        pkg = self.make_package(brent_gap=("2020-03-02", "2020-04-10"))
+        con = DB.connect(pkg, readonly=True)
+        try:
+            bench = B.load_series(con, "H00300", "raw")[0].set_index("date")["close"]
+            cal, frames = bench.index, []
+            for c in DB.read_coverage(con):
+                if c.get("series_adj"):
+                    df, _ = B.research_frame(con, c, cal)
+                    frames.append(B.container_panel(df, bench, date(2026, 9, 30)).assign(container=c["container"]))
+            bench_df = pd.DataFrame({"date": bench.index, "hs300": bench.to_numpy(), "hs300_open": B.bench_open(con).reindex(bench.index).to_numpy()})
+        finally:
+            con.close()
+        panel = pd.concat(frames, ignore_index=True)[B.PANEL_COLUMNS].sort_values(["date", "container"]).reset_index(drop=True)
+        self.assertTrue(panel["z_month"].isna().any() and panel["z_month"].notna().any() and panel["data_hole"].any())
+        B.write_panel_db(self.tmp / "p.sqlite", panel, bench_df, {"end": "2026-09-30"})
+        panel.to_csv(self.tmp / "panel.csv", index=False, date_format="%Y-%m-%d")              # P6 及以前 build 的写法
+        bench_df.to_csv(self.tmp / "bench.csv", index=False, date_format="%Y-%m-%d")
+        from_db, from_csv = validate_panel(read_table(self.tmp / "p.sqlite", "panel")), validate_panel(read_table_csv(self.tmp / "panel.csv"))
+        self.assertEqual(len(from_db), len(panel))
+        pd.testing.assert_frame_equal(from_db, from_csv, check_exact=False, rtol=1e-12)
+        pd.testing.assert_frame_equal(from_db, validate_panel(panel), check_exact=True)
+        pd.testing.assert_series_equal(validate_bench(read_table(self.tmp / "p.sqlite", "bench")),
+                                       validate_bench(read_table_csv(self.tmp / "bench.csv")), check_exact=False, rtol=1e-12)
+        # 整列为空（z_month 全 NULL、rs_1m 全 NULL）：读库与读 CSV 一样是 float 的 NaN，不是 object 的 None
+        blank = panel.assign(z_month=np.nan, rs_1m=np.nan)
+        B.write_panel_db(self.tmp / "b.sqlite", blank, bench_df, {})
+        blank.to_csv(self.tmp / "blank.csv", index=False, date_format="%Y-%m-%d")
+        got = read_table(self.tmp / "b.sqlite", "panel")
+        self.assertEqual((got["z_month"].dtype, got["rs_1m"].dtype), (np.dtype(float), np.dtype(float)))
+        pd.testing.assert_frame_equal(validate_panel(got), validate_panel(read_table_csv(self.tmp / "blank.csv")), check_exact=False, rtol=1e-12)
 
     def test_missing_total_return_bench_fails(self):
         pkg = self.make_package(with_bench=False)
         with self.assertRaisesRegex(B.BuildError, "H00300"):
-            B.build(pkg, self.tmp / "panel", log=lambda *_: None)
+            B.build(pkg, self.tmp / "panel.sqlite", log=lambda *_: None)
 
     def test_non_positive_close_fails(self):
-        pkg = self.make_package()
-        raw = self.tmp / "raw2"
-        shutil.copytree(pkg / "raw", raw)
-        rows = store.read(raw / "BRENT.csv")
-        rows[100]["close"] = "-1"
-        store.write(raw / "BRENT.csv", rows)
+        con = open_db(self.tmp / "m.sqlite")
+        d = ohlcv(seed=4, n=300)
+        d.loc[100, "close"] = -1.0
+        put(con, "BRENT", d, "eia")
         with self.assertRaisesRegex(B.BuildError, "收盘非正"):
-            B.load_series(raw / "BRENT.csv")
+            B.load_series(con, "BRENT", "raw")
+        con.close()
 
     def test_tampered_package_fails(self):
         pkg = self.make_package()
-        with open(pkg / "raw" / "BRENT.csv", "a", encoding="utf-8") as f:
-            f.write("2026-10-01,1,1,1,1,,,eia\n")
-        with self.assertRaisesRegex(B.BuildError, "MANIFEST"):
-            B.build(pkg, self.tmp / "panel", log=lambda *_: None)
+        pkg.chmod(0o644)
+        con = sqlite3.connect(pkg)
+        n = con.execute("DELETE FROM bars WHERE code = 'BRENT' AND date = '2015-06-01'").rowcount
+        con.commit()
+        self.assertEqual(n, 1)
+        con.close()
+        with self.assertRaisesRegex(B.BuildError, "哈希不符"):
+            B.build(pkg, self.tmp / "panel.sqlite", log=lambda *_: None)
+        self.assertFalse((self.tmp / "panel.sqlite").exists())
 
 
 def _bars(dates, start=100.0, step=0.5, volume=1000.0):
@@ -351,25 +431,22 @@ class CalendarAlignment(unittest.TestCase):
     def test_truncation_with_alignment(self):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
+        con = open_db(tmp / "m.sqlite")
+        self.addCleanup(con.close)
         raw = _bars(US_DAYS)
         bench = _bars(CAL).set_index("date")["close"]
-        cov = {"series_file": "NDX.csv", "route_used": "yahoo", "code": "NDX", "series_code": "NDX"}
-        store.write(tmp / "NDX.csv", [{**r, "date": r["date"].date().isoformat(), "source": "yahoo"} for r in raw.to_dict("records")])
-        full_df, _ = B.research_frame(tmp, cov, CAL)
+        cov = {"series_code": "NDX", "series_adj": "raw", "route_used": "yahoo", "code": "NDX"}
+        put(con, "NDX", raw, "yahoo")
+        full_df, _ = B.research_frame(con, cov, CAL)
         full = B.container_panel(full_df, bench, CAL[-1].date())
         for cut in (CAL[20], CAL[45], CAL[-5]):
-            store.write(tmp / "cut.csv", [{**r, "date": r["date"].date().isoformat(), "source": "yahoo"}
-                                          for r in raw[raw["date"] <= cut].to_dict("records")])
-            part_df, _ = B.research_frame(tmp, {**cov, "series_file": "cut.csv"}, CAL[CAL <= cut])
+            put(con, "CUT", raw[raw["date"] <= cut], "yahoo")
+            part_df, _ = B.research_frame(con, {**cov, "series_code": "CUT"}, CAL[CAL <= cut])
             part = B.container_panel(part_df, bench[bench.index <= cut], cut.date())
             a = full[full["date"] <= cut].reset_index(drop=True)
             if not month_end_flags(part["date"], cut.date()).iloc[-1] and month_end_flags(full["date"], CAL[-1].date())[full["date"] == cut].any():
                 a.loc[len(a) - 1, "z_month"] = np.nan
             pd.testing.assert_frame_equal(a, part.reset_index(drop=True), check_dtype=False, obj=f"cut={cut.date()}")
-
-
-def _write(path: Path, df: pd.DataFrame, route: str) -> None:
-    store.write(path, [{**r, "date": r["date"].date().isoformat(), "source": route} for r in df.to_dict("records")])
 
 
 US_LONG = pd.bdate_range("2025-09-01", "2026-03-31").difference(US_HOLIDAYS)    # 够 50 根热身
@@ -381,11 +458,13 @@ class NativeIndicators(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
+        self.con = open_db(self.tmp / "m.sqlite")
+        self.addCleanup(self.con.close)
         self.bench = _bars(CAL).set_index("date")["close"]
 
     def frame(self, raw: pd.DataFrame, route="yahoo", cal=CAL):
-        _write(self.tmp / "S.csv", raw, route)
-        df, rep = B.research_frame(self.tmp, {"series_file": "S.csv", "route_used": route, "code": "S", "series_code": "S"}, cal)
+        put(self.con, "S", raw, route)
+        df, rep = B.research_frame(self.con, {"series_code": "S", "series_adj": "raw", "route_used": route, "code": "S"}, cal)
         return df, rep
 
     def us_random(self, seed=5):
@@ -403,7 +482,7 @@ class NativeIndicators(unittest.TestCase):
 
     def test_b_each_row_equals_its_native_bar(self):
         raw = self.us_random()
-        native = B.bar_indicators(B.load_series(self._raw_path(raw))[0]).set_index("date")
+        native = B.bar_indicators(self._native(raw)).set_index("date")
         df, _ = self.frame(raw)
         for d, st, a in zip(df["date"], df["state"], df["atr20"]):                  # 每一行 = 本地日期 < D 的最后一根原生 K 线的指标
             src = native[native.index < d].iloc[-1]
@@ -414,9 +493,9 @@ class NativeIndicators(unittest.TestCase):
         old = B.bar_indicators(df[B.BAR_COLUMNS]).set_index("date")                 # P6a 的做法：在对齐后的序列上算（平盘进窗口）
         self.assertNotEqual(old.loc[pd.Timestamp("2026-01-21"), "atr20"], after["atr20"])
 
-    def _raw_path(self, raw):
-        _write(self.tmp / "N.csv", raw, "yahoo")
-        return self.tmp / "N.csv"
+    def _native(self, raw):
+        put(self.con, "N", raw, "yahoo")
+        return B.load_series(self.con, "N", "raw")[0]
 
     def test_c_holiday_high_enters_hi20(self):
         """A 股春节（02-16~02-20）期间美股 02-18 出现一个只在假期中段的高点。对齐后 02-23 用 02-20 的 K 线，
@@ -464,7 +543,7 @@ class NativeIndicators(unittest.TestCase):
         self.assertGreater(rep["stale_days"], 0)
         self.assertEqual(list(df.columns), B.BAR_COLUMNS + B.INDICATOR_COLUMNS + B.MARK_COLUMNS)   # amount / source 不带
         p = B.container_panel(df, self.bench, CAL[-1].date())
-        native = B.bar_indicators(B.load_series(self._raw_path(raw))[0]).set_index("date")
+        native = B.bar_indicators(self._native(raw)).set_index("date")
         for d, st, a in zip(p["date"], p["state"], p["atr20"]):
             src = native[native.index < d].iloc[-1]
             self.assertEqual(st, src["state"], d)
@@ -481,7 +560,7 @@ class NativeIndicators(unittest.TestCase):
         cal = pd.bdate_range("2025-06-02", "2026-03-31").difference(SPRING)
         new, rep = self.frame(raw, route="csi", cal=cal)
         new_p = B.container_panel(new, self.bench, cal[-1].date())
-        aligned, _ = B.align_to_calendar(B.load_series(self._raw_path(raw))[0], cal, False)   # P6a：先对齐，再在对齐后的序列上算
+        aligned, _ = B.align_to_calendar(self._native(raw), cal, False)                      # P6a：先对齐，再在对齐后的序列上算
         old_p = B.container_panel(aligned, self.bench, cal[-1].date(), compute_indicators=True)
         pd.testing.assert_frame_equal(new_p, old_p)
         self.assertEqual((rep["dropped_off_calendar"], rep["missing_on_calendar"]), (len(SPRING), 1))
@@ -497,6 +576,8 @@ class DataHoles(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
+        self.con = open_db(self.tmp / "m.sqlite")
+        self.addCleanup(self.con.close)
 
     def raw(self, stop=None, seed=7):
         days = US_LONG.difference(GAP_US).difference(HOLIDAY_US)
@@ -505,8 +586,8 @@ class DataHoles(unittest.TestCase):
         return ohlcv(n=len(days), seed=seed).assign(date=days)
 
     def frame(self, raw, route="yahoo", cal=CAL):
-        _write(self.tmp / "S.csv", raw, route)
-        return B.research_frame(self.tmp, {"series_file": "S.csv", "route_used": route, "code": "S", "series_code": "S"}, cal)
+        put(self.con, "S", raw, route)
+        return B.research_frame(self.con, {"series_code": "S", "series_adj": "raw", "route_used": route, "code": "S"}, cal)
 
     @staticmethod
     def run_of(df, first, last):
@@ -594,22 +675,24 @@ class VolumeSource(unittest.TestCase):
         days = pd.bdate_range("2026-01-05", periods=60)
         tr = _bars(days, volume=np.nan)
         px = _bars(days, volume=np.arange(60) * 10.0 + 5)
-        for name, df, route in (("H00300.csv", tr, "csi"), ("000300.csv", px, "csi")):
-            store.write(self.tmp / name, [{**r, "date": r["date"].date().isoformat(), "source": route} for r in df.to_dict("records")])
+        self.con = open_db(self.tmp / "m.sqlite")
+        self.addCleanup(self.con.close)
+        for code, df in (("H00300", tr), ("000300", px)):
+            put(self.con, code, df, "csi")
         self.px = px
 
     def test_borrowed_from_price_version(self):
-        df, rep = B.research_frame(self.tmp, {"series_file": "H00300.csv", "route_used": "csi", "code": "000300",
-                                              "series_code": "H00300"}, pd.DatetimeIndex(self.px["date"]))
+        df, rep = B.research_frame(self.con, {"series_code": "H00300", "series_adj": "raw", "route_used": "csi", "code": "000300"},
+                                   pd.DatetimeIndex(self.px["date"]))
         self.assertEqual(rep["volume_source"], "price_version")
         np.testing.assert_allclose(df["volume"].to_numpy(), self.px["volume"].to_numpy())
 
     def test_self_and_none(self):
         cal = pd.DatetimeIndex(self.px["date"])
-        _, rep = B.research_frame(self.tmp, {"series_file": "000300.csv", "route_used": "csi", "code": "000300", "series_code": "000300"}, cal)
+        _, rep = B.research_frame(self.con, {"series_code": "000300", "series_adj": "raw", "route_used": "csi", "code": "000300"}, cal)
         self.assertEqual(rep["volume_source"], "self")
-        _, rep = B.research_frame(self.tmp, {"series_file": "H00300.csv", "route_used": "csi", "code": "999999", "series_code": "H00300"}, cal)
-        self.assertEqual(rep["volume_source"], "none")                      # 价格版本文件不存在
+        _, rep = B.research_frame(self.con, {"series_code": "H00300", "series_adj": "raw", "route_used": "csi", "code": "999999"}, cal)
+        self.assertEqual(rep["volume_source"], "none")                      # 价格版本不在库里
 
 
 class LegacyCheck(unittest.TestCase):

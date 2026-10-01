@@ -202,6 +202,22 @@ CREATE TABLE IF NOT EXISTS voids (
     recorded_at  TEXT NOT NULL
 ) WITHOUT ROWID;
 
+-- v1.1-e 的等权组合日收益（replan §11：「库旁文件」改为库内表，台账与它天然成对）。只追加，日期严格递增；
+-- 第一条点位 1、收益 0，之后点位 = 上一条点位 ×（1 + 当日收益）。卡片的 cf_ew_level 取创建当日这一行的点位
+CREATE TABLE IF NOT EXISTS ew_daily (
+    date          TEXT PRIMARY KEY CHECK (date(date) IS date),
+    ew_return     REAL NOT NULL CHECK (typeof(ew_return) IN ('integer', 'real') AND abs(ew_return) < 1e15),
+    ew_level      REAL NOT NULL CHECK (typeof(ew_level) IN ('integer', 'real') AND abs(ew_level) < 1e15 AND ew_level > 0),
+    n_containers  INTEGER NOT NULL CHECK (typeof(n_containers) = 'integer' AND n_containers >= 0),
+    recorded_at   TEXT NOT NULL
+) WITHOUT ROWID;
+
+-- 每日任务已处理的交易日（取代 data/jobs/processed-days.txt）：漏跑检查用，只追加
+CREATE TABLE IF NOT EXISTS job_days (
+    day          TEXT PRIMARY KEY CHECK (date(day) IS day),
+    recorded_at  TEXT NOT NULL
+) WITHOUT ROWID;
+
 -- ------------------------------------------------------------------ 触发器：写入条件
 CREATE TRIGGER IF NOT EXISTS cards_insert BEFORE INSERT ON cards
 BEGIN
@@ -375,6 +391,25 @@ END;
 CREATE TRIGGER IF NOT EXISTS fixed_sources_insert BEFORE INSERT ON fixed_sources
 BEGIN
     SELECT RAISE(ABORT, '固定源版本行已存在') WHERE EXISTS (SELECT 1 FROM fixed_sources WHERE source_id = NEW.source_id AND csv_sha256 = NEW.csv_sha256);
+END;
+
+CREATE TRIGGER IF NOT EXISTS ew_daily_insert BEFORE INSERT ON ew_daily
+BEGIN
+    SELECT RAISE(ABORT, 'recorded_at 必须是数据库时钟') WHERE NEW.recorded_at IS NOT ledger_now();
+    SELECT RAISE(ABORT, '等权日收益只能按日期向后追加（REPLACE 也不行）')
+     WHERE NEW.date <= coalesce((SELECT max(date) FROM ew_daily), '');
+    SELECT RAISE(ABORT, '等权日收益日期晚于当前日期') WHERE NEW.date > substr(ledger_now(), 1, 10);
+    SELECT RAISE(ABORT, '第一条等权点位必须是 1、当日收益 0')
+     WHERE NOT EXISTS (SELECT 1 FROM ew_daily) AND (NEW.ew_level <> 1 OR NEW.ew_return <> 0);
+    SELECT RAISE(ABORT, '等权点位必须等于上一条点位 ×（1 + 当日收益）')
+     WHERE abs(NEW.ew_level - (SELECT ew_level FROM ew_daily ORDER BY date DESC LIMIT 1) * (1 + NEW.ew_return)) > 1e-12 * NEW.ew_level;
+END;
+
+CREATE TRIGGER IF NOT EXISTS job_days_insert BEFORE INSERT ON job_days
+BEGIN
+    SELECT RAISE(ABORT, '该交易日已记为处理过（REPLACE 也不行）') WHERE EXISTS (SELECT 1 FROM job_days WHERE day = NEW.day);
+    SELECT RAISE(ABORT, 'recorded_at 必须是数据库时钟') WHERE NEW.recorded_at IS NOT ledger_now();
+    SELECT RAISE(ABORT, '处理日晚于当前日期') WHERE NEW.day > substr(ledger_now(), 1, 10);
 END;
 
 -- ------------------------------------------------------------------ 状态与统计

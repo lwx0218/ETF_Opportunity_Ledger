@@ -1,26 +1,27 @@
 """研究数据包 → V1 长表（implementation-notes §B）。
 
-    python -m src.indicators build --package outputs/research-package-2026-09-30/ [--out outputs/panel-2026-09-30/]
+    python -m src.indicators build --package outputs/research-package-2026-09-30.sqlite [--out outputs/panel-2026-09-30.sqlite]
 
-输出 panel.csv（date, container, open, high, low, close, state, rs_1m, atr20, z_month, data_hole）、bench.csv（date, hs300 = H00300 收盘,
-hs300_open = 原始开盘，缺则空；每日任务的基准窗口用）
-和 build-report.json（每个容器的数据处理与缺陷计数）。全收益指数借价格版本的成交量（I-21），K 线级指标（state、atr20）在容器
+输出一个库 panel-D.sqlite：panel 表（date, container, open, high, low, close, state, rs_1m, atr20, z_month, data_hole）、
+bench 表（date, hs300 = H00300 收盘, hs300_open = 原始开盘，缺则空；每日任务的基准窗口用）、meta 表；
+旁边 panel-D.build-report.json（每个容器的数据处理与缺陷计数）。全收益指数借价格版本的成交量（I-21），K 线级指标（state、atr20）在容器
 原生序列上算（I-24），再对齐到 A 股日历（I-20）；rs_1m、z_month 在对齐后的收盘上算。之后跑
-    python -m src.research.prereg_v1.run check --panel <out>/panel.csv --bench <out>/bench.csv
+    python -m src.research.prereg_v1.run check --panel outputs/panel-2026-09-30.sqlite
 """
 from __future__ import annotations
 
-import hashlib
 import json
+import math
+import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from src.data import db as DB
 from src.data import runner as data_runner
-from src.data import store
-from .calendar import CALENDAR, load_trading_days
+from .calendar import load_trading_days
 from .metrics import atr20, rs_1m, z_month
 from .states import form_states
 
@@ -33,24 +34,49 @@ INDICATOR_COLUMNS = ["state", "atr20"]            # I-24：在原生 K 线上算
 MARK_COLUMNS = ["stale", "data_hole"]              # 对齐时打的标记：平盘行（I-20）、数据断档（I-25）
 HOLE_MIN = 5                                       # I-25：连续平盘到第 5 行即为数据断档（真实休市最长 4 个交易日）
 ROOT = Path(__file__).resolve().parents[2]
+PANEL_SCHEMA_VERSION = "panel-v1"
+PANEL_SCHEMA = """
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
+CREATE TABLE panel (
+    date      TEXT NOT NULL CHECK (date(date) IS date),
+    container TEXT NOT NULL,
+    open REAL, high REAL, low REAL, close REAL,
+    state     TEXT,
+    rs_1m REAL, atr20 REAL, z_month REAL,
+    data_hole INTEGER NOT NULL CHECK (data_hole IN (0, 1)),
+    PRIMARY KEY (date, container)
+) WITHOUT ROWID;
+CREATE TABLE bench (
+    date       TEXT PRIMARY KEY CHECK (date(date) IS date),
+    hs300      REAL NOT NULL,
+    hs300_open REAL
+) WITHOUT ROWID;
+"""
 
 
 class BuildError(RuntimeError):
     pass
 
 
-def load_series(path: Path) -> tuple[pd.DataFrame, dict]:
-    """读 raw 序列并做最小修整，修了什么都计数进报告：
+def read_bars(con, code: str, adj: str) -> pd.DataFrame:
+    """bars 表里的一条序列（date 为 datetime64，数值缺失为 NaN），按日期升序。"""
+    df = pd.DataFrame(con.execute("SELECT date, open, high, low, close, volume FROM bars WHERE code = ? AND adj = ? ORDER BY date",
+                                  (code, adj)).fetchall(), columns=BAR_COLUMNS)
+    df["date"] = pd.to_datetime(df["date"])
+    for c in BAR_COLUMNS[1:]:
+        df[c] = pd.to_numeric(df[c], errors="coerce").astype(float)
+    return df
+
+
+def load_series(con, code: str, adj: str) -> tuple[pd.DataFrame, dict]:
+    """读库里的序列并做最小修整，修了什么都计数进报告：
     - 开 / 高 / 低缺失或非正时用收盘补（EIA 布伦特只有收盘；ATR 因此退化为收盘到收盘的波幅）；
     - 高 / 低没有包住开收时，把高低价扩到包住开收（build_hfq.py 对腾讯两位小数高低价的同一处理）；
     - 收盘缺失的行丢弃；收盘非正直接报错。"""
-    df = pd.read_csv(path, dtype={"date": str})
-    df["date"] = pd.to_datetime(df["date"])
-    for c in ("open", "high", "low", "close", "volume"):
-        df[c] = pd.to_numeric(df.get(c), errors="coerce")
+    df = read_bars(con, code, adj)
     bad = df["close"].notna() & ~(df["close"] > 0)
     if bad.any():          # P1 从不请求减法前复权：出现非正收盘就是数据坏了，不静默丢掉（也让下游的负价防线有意义）
-        raise BuildError(f"{path.name}: {int(bad.sum())} 行收盘非正（首个 {df.loc[bad, 'date'].iloc[0].date()}）")
+        raise BuildError(f"{code}/{adj}: {int(bad.sum())} 行收盘非正（首个 {df.loc[bad, 'date'].iloc[0].date()}）")
     n_missing = int(df["close"].isna().sum())
     df = df[df["close"].notna()].sort_values("date")
     n_dup = int(df["date"].duplicated(keep="last").sum())
@@ -67,8 +93,8 @@ def load_series(path: Path) -> tuple[pd.DataFrame, dict]:
     return df, rep
 
 
-def borrow_volume(df: pd.DataFrame, raw_dir: Path, cov: dict) -> tuple[pd.DataFrame, str]:
-    """I-21：研究序列缺成交量的行超过一半时，按日期换成同一指数价格版本（coverage.code 的原始文件）的成交量。
+def borrow_volume(df: pd.DataFrame, con, cov: dict) -> tuple[pd.DataFrame, str]:
+    """I-21：研究序列缺成交量的行超过一半时，按日期换成同一指数价格版本（coverage.code 在库里的 raw 序列）的成交量。
     价格版本成份与交易日相同，成交量本是同一个数；放量条件是比值，单位无关。价格版本也没有成交量则保持原样。
     返回 (df, volume_source ∈ self / price_version / none)。"""
     if df.empty or (~(df["volume"] > 0)).mean() <= VOLUME_BORROW_SHARE:
@@ -76,12 +102,10 @@ def borrow_volume(df: pd.DataFrame, raw_dir: Path, cov: dict) -> tuple[pd.DataFr
     code = cov.get("code") or ""
     if not code or cov.get("series_code") == code:           # 研究序列就是价格版本本身（或研究 = 执行的后复权 ETF）
         return df, "none"
-    pf = Path(raw_dir) / store.file_name(code, "csi")          # 价格版本不走后复权路由，文件名即 <code>.csv
-    if not pf.exists():
+    pv = read_bars(con, code, "raw")                          # 价格版本不走后复权路由
+    if pv.empty:
         return df, "none"
-    pv = pd.read_csv(pf, dtype={"date": str})
-    vol = pd.Series(pd.to_numeric(pv.get("volume"), errors="coerce").to_numpy(), index=pd.to_datetime(pv["date"]))
-    vol = vol[~vol.index.duplicated(keep="last")]
+    vol = pd.Series(pv["volume"].to_numpy(), index=pv["date"])
     got = df["date"].map(vol)
     if not (got > 0).any():
         return df, "none"
@@ -152,12 +176,12 @@ def bar_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df.assign(state=form_states(df)["state"].to_numpy(), atr20=atr20(df).to_numpy())
 
 
-def research_frame(raw_dir: Path, cov: dict, cal: pd.DatetimeIndex) -> tuple[pd.DataFrame, dict]:
+def research_frame(con, cov: dict, cal: pd.DatetimeIndex) -> tuple[pd.DataFrame, dict]:
     """一个容器的研究序列：读取 → 借成交量（I-21）→ K 线级指标（I-24）→ 对齐 A 股日历（I-20）。数据包与每日任务共用，口径一致。
     海外容器的指标在其本地交易日的原生 K 线上算，长假内的高低点因此进入 hi20 / lo20 / ATR，平盘行不进指标（沿用上一根）；
     A 股容器先丢弃非日历行（那些行不是交易日）再算。"""
-    df, rep = load_series(Path(raw_dir) / cov["series_file"])
-    df, vsrc = borrow_volume(df, raw_dir, cov)
+    df, rep = load_series(con, cov["series_code"], cov["series_adj"])
+    df, vsrc = borrow_volume(df, con, cov)
     rep["volume_source"] = vsrc
     overseas = cov.get("route_used") in OVERSEAS_ROUTES
     if overseas:
@@ -170,11 +194,10 @@ def research_frame(raw_dir: Path, cov: dict, cal: pd.DatetimeIndex) -> tuple[pd.
     return df, rep
 
 
-def bench_open(path: Path) -> pd.Series:
+def bench_open(con, code: str | None = None) -> pd.Series:
     """基准的原始开盘价（v1.1-e 基准窗口开盘到开盘用）。不用 load_series 补过的值：缺开盘的行记 NaN，由使用方退回收盘口径。"""
-    raw = pd.read_csv(path, dtype={"date": str})
-    s = pd.Series(pd.to_numeric(raw.get("open"), errors="coerce").to_numpy(), index=pd.to_datetime(raw["date"]), dtype=float)
-    s = s[~s.index.duplicated(keep="last")].sort_index()
+    raw = read_bars(con, code or BENCH_CODE, "raw")
+    s = pd.Series(raw["open"].to_numpy(), index=raw["date"], dtype=float)
     return s.where(s > 0)
 
 
@@ -199,44 +222,83 @@ def container_panel(df: pd.DataFrame, bench: pd.Series, end: date, trading_days:
     })
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _cell(v):
+    if v is None or (isinstance(v, float) and not math.isfinite(v)):
+        return None
+    return v.item() if hasattr(v, "item") else v
+
+
+def write_panel_db(path: Path, panel: pd.DataFrame, bench: pd.DataFrame, meta: dict) -> None:
+    """长表与基准写进一个新库（已有同名文件即替换）。日期存 YYYY-MM-DD，NaN 存 NULL。"""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    if tmp.exists():
+        tmp.unlink()
+    con = sqlite3.connect(tmp)
+    try:
+        con.execute("PRAGMA journal_mode = DELETE")
+        con.executescript(PANEL_SCHEMA)
+        with con:
+            con.executemany("INSERT INTO meta (key, value) VALUES (?, ?)",
+                            [("schema", PANEL_SCHEMA_VERSION)] + [(k, v if isinstance(v, str) else json.dumps(v)) for k, v in meta.items()])
+            p = panel[PANEL_COLUMNS].assign(date=panel["date"].dt.strftime("%Y-%m-%d"), data_hole=panel["data_hole"].astype(int))
+            con.executemany(f"INSERT INTO panel ({', '.join(PANEL_COLUMNS)}) VALUES ({', '.join('?' * len(PANEL_COLUMNS))})",
+                            [tuple(_cell(v) for v in row) for row in p.itertuples(index=False, name=None)])
+            b = bench.assign(date=bench["date"].dt.strftime("%Y-%m-%d"))[["date", "hs300", "hs300_open"]]
+            con.executemany("INSERT INTO bench (date, hs300, hs300_open) VALUES (?, ?, ?)",
+                            [tuple(_cell(v) for v in row) for row in b.itertuples(index=False, name=None)])
+    finally:
+        con.close()
+    tmp.replace(path)
 
 
 def build(package: Path, out: Path | None = None, *, log=print) -> Path:
     package = Path(package)
     problems = data_runner.verify(package)
     if problems:
-        raise BuildError("研究数据包未通过 MANIFEST 复验：" + "; ".join(problems[:5]))
-    meta = json.loads((package / "MANIFEST.json").read_text(encoding="utf-8"))
-    end = date.fromisoformat(meta["end"])
-    out = Path(out) if out else ROOT / "outputs" / f"panel-{end.isoformat()}"
-    cov = pd.read_csv(package / "coverage.csv", dtype=str).fillna("")
+        raise BuildError("研究数据包未通过复验：" + "; ".join(problems[:5]))
+    con = DB.connect(package, readonly=True)
+    try:
+        return _build(con, package, out, log)
+    finally:
+        con.close()
 
-    bench_path = package / "raw" / f"{BENCH_CODE}.csv"
-    if not bench_path.exists():
+
+def _build(con, package: Path, out: Path | None, log) -> Path:
+    info = data_runner.package_info(con)
+    end = date.fromisoformat(info["end"])
+    out = Path(out) if out else ROOT / "outputs" / f"panel-{end.isoformat()}.sqlite"
+    covs = DB.read_coverage(con)
+
+    bdf, _ = load_series(con, BENCH_CODE, "raw")
+    if bdf.empty:
         raise BuildError(f"数据包里没有 {BENCH_CODE}（沪深300 全收益，I-18）；不以价格指数顶替")
-    bdf, _ = load_series(bench_path)
     bench = bdf.set_index("date")["close"]
     cal = bench.index[bench.index <= pd.Timestamp(end)]
-    cal_file = package / "calendar" / CALENDAR.name
     try:
-        trading_days = load_trading_days(cal_file)
+        trading_days = load_trading_days(con)
     except ValueError as e:
         raise BuildError(f"数据包里的交易日历不可用：{e}") from e
 
-    frames, report = [], {"package": str(package), "end": end.isoformat(), "manifest_sha256": _sha256(package / "MANIFEST.sha256"),
+    pkg_sha = DB.sha256_file(package)
+    frames, report = [], {"package": str(package), "package_sha256": pkg_sha, "package_content_sha256": info_content(package),
+                          "end": end.isoformat(),
+                          "source_db_sha256": info.get("source_db_sha256"), "git_commit_of_package": info.get("git_commit"),
                           "bench": {"code": BENCH_CODE, "first": str(bench.index.min().date()), "last": str(bench.index.max().date())},
-                          "calendar_file": _sha256(cal_file) if trading_days is not None else None,
+                          "calendar": ({"days": len(trading_days), "first": str(trading_days[0].date()), "last": str(trading_days[-1].date())}
+                                       if trading_days is not None else None),
                           "containers": {}, "skipped": {}}
-    panel_rows = cov[cov["status"].isin(["retained", "flagged"])]
-    for _, c in panel_rows.iterrows():
+    for c in covs:
+        if c.get("status") not in ("retained", "flagged"):
+            continue
         name = c["container"]
-        if not c["series_file"] or not (package / "raw" / c["series_file"]).exists():
-            report["skipped"][name] = c["error"] or "无研究序列"
+        if not c.get("series_adj") or not con.execute("SELECT 1 FROM bars WHERE code = ? AND adj = ? LIMIT 1",
+                                                      (c["series_code"], c["series_adj"])).fetchone():
+            report["skipped"][name] = c.get("error") or "无研究序列"
             log(f"  --  {name}: 跳过（{report['skipped'][name][:80]}）")
             continue
-        df, rep = research_frame(package / "raw", dict(c), cal)
+        df, rep = research_frame(con, c, cal)
         if df.empty:
             report["skipped"][name] = "对齐 A 股日历后没有行"
             log(f"  --  {name}: 跳过（对齐 A 股日历后没有行）")
@@ -244,7 +306,7 @@ def build(package: Path, out: Path | None = None, *, log=print) -> Path:
         p = container_panel(df, bench, end, trading_days)
         p.insert(1, "container", name)
         frames.append(p)
-        rep.update(series_file=c["series_file"], route=c["route_used"], price_only=c["price_only"],
+        rep.update(series_code=c["series_code"], series_adj=c["series_adj"], route=c["route_used"], price_only=c["price_only"],
                    first=str(df["date"].min().date()), last=str(df["date"].max().date()), aligned_rows=len(df),
                    states={k: int(v) for k, v in p.loc[df["stale"].to_numpy() == 0, "state"].value_counts().items()},   # 只数非平盘行
                    z_month_values=int(p["z_month"].notna().sum()))
@@ -261,16 +323,33 @@ def build(package: Path, out: Path | None = None, *, log=print) -> Path:
     if not frames:
         raise BuildError("没有任何容器有研究序列")
     panel = pd.concat(frames, ignore_index=True).sort_values(["date", "container"]).reset_index(drop=True)
-    out.mkdir(parents=True, exist_ok=True)
-    panel[PANEL_COLUMNS].to_csv(out / "panel.csv", index=False, date_format="%Y-%m-%d")
-    pd.DataFrame({"date": bench.index, "hs300": bench.to_numpy(),
-                  "hs300_open": bench_open(bench_path).reindex(bench.index).to_numpy()}).to_csv(out / "bench.csv", index=False,
-                                                                                                date_format="%Y-%m-%d")
-    report["created_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    report["panel_sha256"], report["bench_sha256"] = _sha256(out / "panel.csv"), _sha256(out / "bench.csv")
-    (out / "build-report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    bench_df = pd.DataFrame({"date": bench.index, "hs300": bench.to_numpy(),
+                             "hs300_open": bench_open(con).reindex(bench.index).to_numpy()})
+    created = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    write_panel_db(out, panel, bench_df, {"end": end.isoformat(), "package_content_sha256": info_content(package)})
+    report["created_at"] = created                                  # 时刻只进报告，面板库逐字节只由数据包决定
+    report["panel_db"], report["panel_db_sha256"] = out.name, DB.sha256_file(out)
+    report["panel_content_sha256"] = panel_content_sha256(out)
+    report_path(out).write_text(json.dumps(report, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     log(f"  面板 {len(panel)} 行、{len(frames)} 个容器 → {out}")
     return out
+
+
+def info_content(package: Path) -> str | None:
+    """数据包 MANIFEST.json 里的 content_sha256（verify 已核对过它与包内容一致）。"""
+    man = data_runner.manifest_path(package)
+    return json.loads(man.read_text(encoding="utf-8")).get("content_sha256") if man.exists() else None
+
+
+def panel_content_sha256(panel_db: Path) -> str:
+    """面板库内容的规范化哈希（与 SQLite 版本、文件布局无关）；build-report 与 V1 的 OOS 锁都记它。"""
+    from src.research.prereg_v1.panel import content_sha256
+    return content_sha256(panel_db)
+
+
+def report_path(panel_db: Path) -> Path:
+    """panel-D.sqlite → panel-D.build-report.json（run check 从这里读各容器的 stale_runs）。"""
+    return Path(panel_db).with_name(Path(panel_db).stem + ".build-report.json")
 
 
 # ------------------------------------------------------------------ 与历史产物对照

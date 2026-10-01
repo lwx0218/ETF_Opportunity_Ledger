@@ -7,34 +7,35 @@
 - Status: active（骨架：只验流程；记账口径 `jobs-daily-v3` = schema v1.1-e + v1.1-f + v1.1-g；规则按 A7 全部关闭，形态突破待 V1 通过）
 - Owner: Faye
 - Last updated: 2026-10-01
-- Source of truth: replan §3 P5、§8 P6b、§9 P6c-2、§10 P6d-2；A4、A5、A7；prereg-v1 §3.2、§4、§5；`docs/etf-card-schema-v1.md`（含 v1.1 补充）；`docs/ledger-storage.md`
+- Source of truth: replan §3 P5、§8 P6b、§9 P6c-2、§10 P6d-2、§11 P7；A4、A5、A7；prereg-v1 §3.2、§4、§5；`docs/etf-card-schema-v1.md`（含 v1.1 补充）；`docs/ledger-storage.md`
 
 ## 用法
 
 ```bash
 # 北京时间 15:30 之后运行（A 股 D 日已收盘；海外容器按 I-20 用 D−1 的 K 线；定时与无人值守交 astra，replan §4 S3）
-python -m src.jobs daily  --rules config/ledger-rules.json [--date D] [--events-dir data/events] [--no-update]
+python -m src.jobs daily  --rules config/ledger-rules.json [--date D] [--db data/ledger.sqlite] [--market data/market.sqlite] \
+       [--events-dir data/events] [--no-update]
 # 回放冒烟（只验流程；必须用单独的回放库，正式库会被拒绝）
-python -m src.jobs replay --panel outputs/panel-2026-09-30/panel.csv --bench outputs/panel-2026-09-30/bench.csv \
-       --from 2026-06-01 --to 2026-09-30 --rules config/ledger-rules.json --db outputs/replay.sqlite [--calendar 日历文件]
+python -m src.jobs replay --panel outputs/panel-2026-09-30.sqlite \
+       --from 2026-06-01 --to 2026-09-30 --rules config/ledger-rules.json --db outputs/replay.sqlite [--calendar 带日历的库]
 ```
 
-`daily` = P1 `update` → 用 P2 的函数从 `data/raw` 现算面板 → 运行前检查 → 本包的台账流程。
+`daily` = P1 `update`（写 `market.sqlite`）→ 用 P2 的函数从库现算面板（只读打开；`live_panel` 与研究数据包共用 `research_frame`）→ 运行前检查 → 本包的台账流程。`replay` 读 `build` 产出的面板库（`panel`、`bench` 两表）；`--calendar` 默认 `data/market.sqlite`，也可给研究数据包。
 
 - **默认日期**：A 股已收盘的最近日期。面板按 I-20 对齐 A 股日历，海外容器在 D 日用本地 D−1 的 K 线（北京 D 日凌晨已收盘），不必等到次晨。
 - **规则配置** `config/ledger-rules.json`（入 Git）：值已按 schema v1.1-c 写好——恐慌下轨用评分菜单第 2 项 `{scoring_rule: schema-v1.1-R, horizon_days: null, target_excess_pct: null, target_r: 2, benchmark: 等权组合}`；事件驱动用菜单第 1 项，预期由起草人逐卡写在草稿里。规则只有在 `confirmed_terms` 等于 `src/jobs/rules.py` 的 `TERMS_VERSION`（`jobs-daily-v3`，表示 Cowork 已复核本文件「记账口径」，含 v1.1-f 证伪判定与 v1.1-g 出场信号持久化；之前填的 `jobs-daily-v1` / `v2` 不再算数）**且**该规则 `enabled` 为 `true` 时才启用。恐慌规则的值不是菜单第 2 项时也不启用。规则请求启用（`enabled: true`）却被拒时，原因打到 stderr 并写进当天报告，不静默关掉。仓库里的配置 `confirmed_terms: null`、两条规则 `enabled: false`（A7：V1 结论前全部关闭）；一条规则都没启用时命令直接退出（退出码 2）。
-- **交易日历** `data/calendar/sse-trading-days.csv`（v1.1-e；astra 生成，不入 Git）：有就用于月末判定与 owner 评分截止；没有时退回工作日规则，`daily` 报告里会写明。文件在但不像交易日历（一行多列、含周末、中间缺一段超过 14 天、没有日期）时报错退出（退出码 1，台账未动），不静默退回。
-- **等权日收益** `data/ledger/ew_daily.csv`（v1.1-e；不入 Git）：正式台账专用。其他 `--db`（含回放库）各用库旁边的 `<库名>.ew_daily.csv`，互不污染。
+- **交易日历**：`market.sqlite` 的 `calendar` 表（v1.1-e；astra 生成清单后用 `python -m src.data calendar` 写入，见 `docs/data-layer.md`）：有就用于月末判定与 owner 评分截止；表空时退回工作日规则，`daily` 报告里会写明。表里中间缺一段（相邻两天间隔超过 14 天）时报错退出（退出码 1，台账未动），不静默退回。
+- **等权日收益**：台账库内的 `ew_daily` 表（v1.1-e；replan §11 起由「库旁文件」改为库内表）。每个台账库（正式库、回放库）各有自己的一张，天然成对。
 
-**运行前检查**（`src/jobs/guard.py`；任一项不过就不动台账，退出码 3）：
+**运行前检查**（`src/jobs/guard.py`；任一项不过就不动台账，退出码 3；在打开台账库之前做，被拦下时不会建出空台账库）：
 - D 必须是基准 H00300 的交易日，且基准已更新到 D；
 - A 股路由的研究序列在 D 必须有行。指数不会停牌，缺行就是数据没到。海外序列经 I-20 对齐后 D 日总有一行（没有新 K 线就是平盘），停更不再表现为缺行：`live_panel` 把 D 日末尾连续平盘的容器写进报告（沿用哪天的 K 线、连续几行；超过 3 行提示可能停更），只提示不阻断；
-- 已处理过的交易日（`data/jobs/processed-days.txt`）必须包含 D 的前一个基准交易日。缺了就是漏跑，先按顺序补跑。补跑只处理进出场与每日行，超过立卡时限的那天不补立卡（存储层也会拒绝）；
-- 等权日收益文件必须与台账是一对（否则基准收益静默偏移，而出场记录写入后改不了）。以下任一情况台账一行不动，退出码 3，不记为已处理：台账有卡片但文件不存在；某张卡 `close_date` 在文件里没有点位或点位不等于卡片冻结的 `cf_ew_level`（文件换成了别的面板算的）；文件最后一条早于 D 的上一交易日（末尾少了行）；库是新建的但文件已存在（删了库、留着旧文件）。
+- 已处理过的交易日（台账库的 `job_days` 表）必须包含 D 的前一个基准交易日。缺了就是漏跑，先按顺序补跑。补跑只处理进出场与每日行，超过立卡时限的那天不补立卡（存储层也会拒绝）；
+- 等权日收益表必须与卡片对得上（否则基准收益静默偏移，而出场记录写入后改不了）。表在台账库内、只追加，正常流程下总是一对；以下情况仍会拦下（台账一行不动，退出码 3，不记为已处理）：某张卡 `close_date` 在表里没有点位或点位不等于卡片冻结的 `cf_ew_level`（绕过每日任务写进来的卡，或绕过触发器改了表）；表的最后一条早于 D 的上一交易日（漏跑）。
 
 ## 一个交易日 D 的顺序
 
-0. **等权日收益**：先把 D 的等权收益与累计点位追加进等权文件（已记过就跳过；只能向后追加，不补记更早的日子）。
+0. **等权日收益**：先把 D 的等权收益与累计点位追加进 `ew_daily` 表（已记过就跳过；只能向后追加，不补记更早的日子）。
 1. **开盘离场**：有未成交出场信号（信号日 < D）的卡按 D 开盘成交，原因与触发收盘取自信号；D 没有开盘价就顺延到下一个有开盘价的交易日，**信号不撤销**——即使顺延期间收盘回到止损之上（v1.1-g 第 3 条，与 V1 引擎的 `exit_flag` 同一时序，prereg-v1 §4）。
 2. **开盘进场**：上一交易日立的候选卡按 D 开盘成交，仓位按 I-06 用实际开盘价重算，再受总风险 4%（§5）和「在场仓位合计不超过 100%」（I-08 的近似，台账不做净值记账）约束，缩到 1% 以下就放弃。以下情况作废，记入分母（A4），判定顺序与 V1 引擎一致：错过次一交易日开盘 → 已持有该容器（不加仓，I-09）→ 持仓已满（8 个）→ 次一交易日无开盘价 → 开盘不高于失效位 → 现金或风险额度不足。同日多张候选按 I-07 排序：恐慌按 z 从低到高；事件排在恐慌之后（I-07 的扩展，v1.1-e 已接受）。
 3. **收盘每日行**：在场卡和跟踪期内的卡各追加一行，内容为收盘、状态、z、rs_1m 横截面排名、R、MFE / MAE、止损、沪深300 点位。止损规则：满 +1R 后启用移动止盈，止损 = max(原止损, 最高收盘 − 3 × ATR20)，只上不下。收盘跌破当时生效的止损 → 当天收盘后写出场信号（启用过移动止盈记「移动止盈」，否则「失效位」；与当天的每日行同一事务写入，中途崩溃不会只留下一半），此后止损不再更新，直到成交；MFE / MAE 照常按收盘记。owner 声明的手动 / 论点作废出场同样是某日收盘后写信号（`Ledger.signal_exit`），次日开盘由本任务成交。
@@ -45,10 +46,10 @@ python -m src.jobs replay --panel outputs/panel-2026-09-30/panel.csv --bench out
    - **恐慌卡**（v1.1-a / v1.1-c）：`evidence_status = 未检索`，`evidence = []`，**不写 agent 分**（为空，不是 0）；预期取配置里的菜单第 2 项；
    - **事件卡**：草稿必须带 `evidence_status`（`已检索无证据` 且无证据，或 `有证据` 且至少一条证据）、agent 分与理由（A1）、逐卡预期 `expectation {horizon_days, target_excess_pct, benchmark ∈ 等权组合 / 沪深300}`（菜单第 1 项）、论点失效条件（A3）；
    - 事件草稿逐条校验：以上任一项不合格（`horizon_days` 须为正整数、`target_excess_pct` 须为数：字符串、小数天数、布尔一律退回，不替起草人取整）、论点为空或超过 80 字、当日没有该容器的行、草稿不是对象，都整条退回并写进报告，不截断，也不影响其余草稿；文件不是合法 JSON 列表时当天不立事件卡并报告。同日同一容器的多条草稿各自立卡（`scan_key` 带草稿序号）；
-   - `cf_ew_level` 锁定等权文件里 D 的累计点位，`cf_hs300_level` 锁定 H00300 收盘。
+   - `cf_ew_level` 锁定 `ew_daily` 表里 D 的累计点位，`cf_hs300_level` 锁定 H00300 收盘。
 6. **提醒**：事件卡到了论点失效判定日，报告里提醒按指定来源人工核对；成立就按「论点作废」出场。骨架不自动判定。
 
-**幂等**：每一步都先查台账已有的记录（立卡靠 `scan_key = 日期|容器|触发类型`），同一天重跑不产生新行，等权文件也不追加。所有价格都在卡片的研究序列上。
+**幂等**：每一步都先查台账已有的记录（立卡靠 `scan_key = 日期|容器|触发类型`），同一天重跑不产生新行，等权表也不追加。所有价格都在卡片的研究序列上。
 
 ## 记账口径 `jobs-daily-v3`（= schema v1.1-e + v1.1-f + v1.1-g）
 
@@ -69,10 +70,10 @@ python -m src.jobs replay --panel outputs/panel-2026-09-30/panel.csv --bench out
 
 ## 仍需注意
 
-1. **等权点位的起点**是等权文件的第一条记录（正式台账第一次运行的那天），不是面板起点。文件丢了不能从面板重算出同一组数（容器集合可能已变），所以台账会拒绝在缺文件的情况下运行；备份 `data/ledger.sqlite` 时一并备份 `data/ledger/ew_daily.csv`。
+1. **等权点位的起点**是 `ew_daily` 表的第一条记录（该台账库第一次运行的那天），不是面板起点。它不能从面板重算出同一组数（容器集合可能已变），所以和卡片放在同一个库里、随库入 Git。
 2. **事件卡的 `horizon_days` 只用于评分**：prereg 的离场没有时间上限，事件卡同样只按止损、移动止盈或「论点作废」离场。
 3. **海外容器的卡片**用研究序列（与 V1 一致）；QDII 卡片出现后再定是否改用执行 ETF 成交价（v1.1-e 最后一条）。
-4. **回放**的面板月末由建面板时的日历决定（数据包里有 `calendar/` 就用）；`--calendar` 只影响评分截止。
+4. **回放**的面板月末由建面板时的日历决定（数据包的 `calendar` 表有日历就用）；`--calendar` 只影响评分截止。
 
 ## 不做的事
 

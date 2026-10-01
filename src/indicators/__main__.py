@@ -1,4 +1,4 @@
-"""python -m src.indicators build --package <研究数据包目录> [--out DIR]
+"""python -m src.indicators build --package <研究数据包.sqlite> [--out panel-D.sqlite]
 python -m src.indicators legacy-check [--data data/]     与 09-25 快照的 data/panel_daily.csv 逐日比对"""
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from .build import ROOT, build, legacy_check
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="python -m src.indicators", description="指标层：研究数据包 → V1 长表")
+    ap = argparse.ArgumentParser(prog="python -m src.indicators", description="指标层：研究数据包 → V1 长表（库）")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("build")
     p.add_argument("--package", type=Path, required=True)
