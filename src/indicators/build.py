@@ -2,7 +2,7 @@
 
     python -m src.indicators build --package outputs/research-package-2026-09-30/ [--out outputs/panel-2026-09-30/]
 
-输出 panel.csv（date, container, open, high, low, close, state, rs_1m, atr20, z_month）、bench.csv（date, hs300 = H00300 收盘,
+输出 panel.csv（date, container, open, high, low, close, state, rs_1m, atr20, z_month, data_hole）、bench.csv（date, hs300 = H00300 收盘,
 hs300_open = 原始开盘，缺则空；每日任务的基准窗口用）
 和 build-report.json（每个容器的数据处理与缺陷计数）。全收益指数借价格版本的成交量（I-21），K 线级指标（state、atr20）在容器
 原生序列上算（I-24），再对齐到 A 股日历（I-20）；rs_1m、z_month 在对齐后的收盘上算。之后跑
@@ -253,7 +253,7 @@ def build(package: Path, out: Path | None = None, *, log=print) -> Path:
                  "缺收盘丢弃": rep["dropped_missing_close"], "重复日期": rep["dropped_duplicate_dates"],
                  "不在 A 股日历丢弃": rep.get("dropped_off_calendar", 0), "日历内缺日": rep.get("missing_on_calendar", 0),
                  "平盘": rep.get("stale_days", 0),
-                 "长假并入最后一根": rep.get("multi_bar_days", 0), "数据断档（不开新仓）": rep.get("data_hole_rows", 0)}
+                 "长假并入最后一根": rep.get("multi_bar_days", 0), "数据断档（不产生入场信号）": rep.get("data_hole_rows", 0)}
         log(f"  ok  {name}: {rep['aligned_rows']} 行 {rep['first']}→{rep['last']}；成交量 {rep['volume_source']}"
             + "".join(f"；{k} {v} 行" for k, v in flags.items() if v)
             + (f"；⚠ 末尾连续平盘 {rep['trailing_stale_days']} 行（序列可能停更）" if rep.get("trailing_stale_days", 0) > 3 else "")

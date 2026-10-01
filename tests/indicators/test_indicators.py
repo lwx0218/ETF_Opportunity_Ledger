@@ -529,6 +529,30 @@ class DataHoles(unittest.TestCase):
         self.assertEqual((hol["stale"].tolist(), hol["data_hole"].tolist()), ([1] * 4, [0] * 4))
         self.assertEqual(len(rep["stale_runs"]), 1)                         # 只有 30 行那段
 
+    def test_trailing_only_run_gives_zero_middle_max(self):
+        """序列在断档开始前就停更：只有一段末尾平盘（比任何中段都长），中段最长连续平盘应为 0。"""
+        df, rep = self.frame(self.raw(stop="2026-01-01"))
+        self.assertEqual(rep["max_stale_run"], 0)
+        self.assertEqual(len(rep["stale_runs"]), 1)
+        self.assertTrue(rep["stale_runs"][0]["trailing"])
+        self.assertEqual(rep["stale_runs"][0]["rows"], rep["trailing_stale_days"])
+
+    def test_signals_skip_marked_rows_end_to_end(self):
+        """build 产出的面板 → V1 信号：data_hole = 1 的行一个信号都没有（状态强制为可进态、rs 都在前列，只剩断档在挡）。"""
+        from src.research.prereg_v1.config import Params
+        from src.research.prereg_v1.panel import validate_panel
+        from src.research.prereg_v1.signals import all_signals
+        df, _ = self.frame(self.raw())
+        bench = _bars(CAL).set_index("date")["close"]
+        p = B.container_panel(df, bench, CAL[-1].date())
+        p = p.assign(container="X", state="BNB", rs_1m=1.0, atr20=p["atr20"].fillna(1.0))
+        p = validate_panel(p)
+        s = all_signals(p, Params(rs_top_pct=1.0, cooldown_days=0))
+        holes = set(p.loc[p["data_hole"] == 1, "date"])
+        self.assertTrue(holes)
+        self.assertFalse(holes & set(s["date"]))
+        self.assertEqual(set(s["date"]), set(p.loc[p["data_hole"] == 0, "date"]))   # 其余每一行都出信号（冷却设为 0）
+
     def test_trailing_run_marked_and_not_counted_as_middle(self):
         df, rep = self.frame(self.raw(stop="2026-03-13"))
         tail = self.run_of(df, "2026-03-17", "2026-03-31")

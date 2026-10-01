@@ -107,12 +107,14 @@ class SignalTests(unittest.TestCase):
 
 
 class DataHoleTests(unittest.TestCase):
-    """I-25：data_hole = 1 的行（数据断档上的平盘占位）不产生入场信号，也不占 20 日冷却；已持仓照引擎处理。"""
-    HOLE = set(range(100, 130))                                          # 30 行断档
+    """I-25：data_hole = 1 的行（数据断档上的平盘占位）不产生入场信号，也不占 20 日冷却；已持仓照引擎处理。
+    标记形状与 build 产出的一致：30 行平盘（100–129）里，连续平盘数到第 5 行起（104–129）才标 1。"""
+    FLAT = set(range(100, 130))                                          # 30 行平盘
+    HOLE = set(range(104, 130))                                          # build 只标第 5 行起
 
     def panel(self, holes=None, n=200):
         st = {i: "BNB" for i in range(n)}                                # 每天都是可进态：信号只由冷却与断档决定
-        z = {i: -2.5 for i in (110, 125, 150)}                           # 两个月末恐慌落在断档里，一个在断档后
+        z = {i: -2.5 for i in (101, 110, 125, 150)}                      # 101 在平盘前 4 行；110、125 在断档里；150 在断档后
         return make({"A": flat(n), "B": flat(n)}, states={"A": st}, rs={"A": {i: 1 for i in range(n)}}, z={"A": z},
                     holes={"A": holes} if holes else None)
 
@@ -121,7 +123,9 @@ class DataHoleTests(unittest.TestCase):
         idx = {d: i for i, d in enumerate(DATES)}
         inside = [idx[d] for d in s["date"] if idx[d] in self.HOLE]
         self.assertEqual(inside, [])                                      # 突破与恐慌两个分支都没有
-        self.assertIn(DATES[150], set(s.loc[s["branch"] == "恐慌", "date"]))
+        panic = set(s.loc[s["branch"] == "恐慌", "date"])
+        self.assertIn(DATES[150], panic)
+        self.assertIn(DATES[101], panic)                                  # 平盘前 4 行没标：当时与真实休市无法区分，照常出信号
 
     def test_signals_outside_the_hole_as_if_hole_rows_carried_nothing(self):
         """断档行等于「没有信号的行」：与把这些行的状态改成非可进态、z 清空的面板，信号完全相同（冷却从断档前最后一个真信号算）。"""

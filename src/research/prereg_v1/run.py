@@ -79,7 +79,8 @@ def main(argv=None):
         if holes.empty:
             print("数据断档（I-25，data_hole = 1）：无")
         else:
-            print(f"\n数据断档（I-25，data_hole = 1，这些行不开新仓；V1 报告须列出）：{len(holes)} 段 {int(holes['rows'].sum())} 行")
+            print(f"\n数据断档（I-25，data_hole = 1，这些行不产生入场信号；V1 报告须列出）：{len(holes)} 段 {int(holes['rows'].sum())} 行")
+            print("（起点是连续平盘的第 5 行；整段平盘的起止见 build-report.json 各容器的 stale_runs）")
             print(holes.to_string(index=False))
         return 0
 
