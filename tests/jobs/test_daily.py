@@ -27,6 +27,7 @@ from src.jobs.guard import preflight                             # noqa: E402
 from src.jobs.live import live_panel                             # noqa: E402
 from src.indicators.build import container_panel                 # noqa: E402
 from src.ledger.store import Ledger                              # noqa: E402
+from src.research.prereg_v1.engine import simulate              # noqa: E402
 from src.research.prereg_v1.config import Params                 # noqa: E402
 
 DAYS = [d.date().isoformat() for d in pd.bdate_range("2026-01-02", "2026-04-30")]
@@ -75,7 +76,7 @@ def make_panel(extra: dict | None = None, semis: list[float] | None = None, semi
 
 
 def dump(L: Ledger) -> dict:
-    tables = ("cards", "evidence", "strength_scores", "entries", "daily", "exits", "finals", "voids")
+    tables = ("cards", "evidence", "strength_scores", "entries", "daily", "exit_signals", "exits", "finals", "voids")
     return {t: [tuple(r) for r in L.conn.execute(f"SELECT * FROM {t} ORDER BY 1, 2")] for t in tables}
 
 
@@ -174,6 +175,132 @@ class Replay(unittest.TestCase):
         self.assertEqual(r["exit_reason"], "移动止盈")
         self.assertTrue(-1 < r["realized_r"] < 0)
         self.assertEqual(r["final_score"], "证伪")
+
+    def deferred_path(self, tail: list[float], after: list[float], opens: dict) -> tuple[pd.DataFrame, pd.Series]:
+        """信号日 100 → 次日开盘 100.5 进场 → tail（最后一根跌破止损）→ after 的收盘；opens {相对 tail 末根的天数: 开盘}，NaN = 没有开盘价。"""
+        i0 = DAYS.index(SIGNAL)
+        c = [100.0] * (i0 + 1) + tail
+        b = len(c) - 1
+        c += after + [after[-1]] * (len(DAYS) - len(c) - len(after))
+        return make_panel(semis=c, semis_open={DAYS[b + k]: v for k, v in opens.items()}), b
+
+    def engine_exit(self, panel) -> tuple:
+        """同一组构造数据交给 V1 引擎（prereg_v1.engine.simulate），只给 01-30 那一个信号。"""
+        sig = pd.DataFrame([dict(date=pd.Timestamp(SIGNAL), container="半导体", branch="恐慌", state="NEUTRAL", close=100.0, atr20=2.0,
+                                 rs_1m=0.0, z_month=-2.5, stop_level=96.0, priority=0.0)])
+        t = simulate(panel, Params(), DAYS[0], DAYS[-1], signals=sig).trades.iloc[0]
+        return t["exit_date"].date().isoformat(), float(t["exit_px"]), t["exit_reason"]
+
+    def test_deferred_exit_is_not_cancelled(self):
+        """v1.1-g 第 3 条：跌破失效位次日没有开盘价、当天收盘回到止损之上 → 信号不撤销，第三天开盘仍出场，触发收盘是跌破那一行。"""
+        (panel, bench), b = self.deferred_path([100.5, 101.0, 100.0, 95.5], [97.0, 97.5], {1: np.nan, 2: 97.2})
+        reps = {r.day: r for r in self.replay(panel, bench)}
+        cid = "T-2026-001"
+        sig = self.L.exit_signal(cid)
+        self.assertEqual((sig["signal_date"], sig["reason"], sig["signal_close"]), (DAYS[b], "失效位", 95.5))
+        self.assertEqual(reps[DAYS[b]].signals, [cid])
+        self.assertTrue(any("顺延" in x for x in reps[DAYS[b + 1]].skipped))
+        x = dict(self.L.conn.execute("SELECT * FROM exits WHERE card_id = ?", (cid,)).fetchone())
+        self.assertEqual((x["exit_date"], x["exit_price"], x["exit_reason"], x["exit_signal_close"]), (DAYS[b + 2], 97.2, "失效位", 95.5))
+        self.assertEqual(self.engine_exit(panel), (DAYS[b + 2], 97.2, "失效位"))              # 与 V1 引擎同一出场日与价格
+        f = dict(self.L.conn.execute("SELECT * FROM finals WHERE card_id = ?", (cid,)).fetchone())
+        self.assertEqual(f["final_score"], "证伪")                                             # 95.5 < 锁定失效位 96
+
+    def test_trailing_stop_frozen_while_exit_is_pending(self):
+        """激活后跌破移动止损 → 次日没有开盘价、收盘大涨：止损不跟着上移，第三天开盘照常出场。"""
+        tail = [100.5 + k for k in range(6)] + [99.0]                    # 105.5 激活，止损 105.5 − 3×2 = 99.5；99.0 跌破
+        (panel, bench), b = self.deferred_path(tail, [106.0, 106.5], {1: np.nan, 2: 105.0})
+        self.replay(panel, bench)
+        cid = "T-2026-001"
+        rows = {r["date"]: r for r in self.L.daily_rows(cid)}
+        self.assertAlmostEqual(rows[DAYS[b]]["stop_now"], 99.5)
+        self.assertAlmostEqual(rows[DAYS[b + 1]]["stop_now"], 99.5)                             # 106 收盘不再把止损抬到 100
+        x = dict(self.L.conn.execute("SELECT * FROM exits WHERE card_id = ?", (cid,)).fetchone())
+        self.assertEqual((x["exit_date"], x["exit_price"], x["exit_reason"], x["exit_signal_close"]), (DAYS[b + 2], 105.0, "移动止盈", 99.0))
+        self.assertEqual(self.engine_exit(panel), (DAYS[b + 2], 105.0, "移动止盈"))
+
+    def test_deferred_path_rerun_and_truncation(self):
+        """顺延路径上：同日重跑不变；逐日只给 ≤ D 的数据回放，与全量逐表相同（含出场信号表）。"""
+        (panel, bench), b = self.deferred_path([100.5, 101.0, 100.0, 95.5], [97.0, 97.5], {1: np.nan, 2: 97.2})
+        self.replay(panel, bench)
+        full, ew_full = dump(self.L), self.ew.read_text()
+        self.assertTrue(full["exit_signals"])
+        again = self.replay(panel, bench)
+        self.assertFalse(any(r.changed() for r in again))
+        self.assertEqual(dump(self.L), full)
+        self.new_ledger()
+        self.replay(panel, bench, truncate=True)
+        self.assertEqual(dump(self.L), full)
+        self.assertEqual(self.ew.read_text(), ew_full)
+
+    def test_crash_between_daily_row_and_signal_loses_nothing(self):
+        """每日行与出场信号同一事务：写信号时崩溃 → 两者都没写；同一天重跑补齐，次日照常出场（与引擎一致）。"""
+        (panel, bench), b = self.deferred_path([100.5, 101.0, 100.0, 95.5], [97.0, 97.5], {})
+        job = DailyJob(self.L, panel, bench, rules=RULES, instruments=INST, ew_path=self.ew)
+        orig = Ledger._insert
+
+        def boom(L, table, row, stamp=True):
+            if table == "exit_signals":
+                raise KeyboardInterrupt("模拟写信号时进程被杀")
+            return orig(L, table, row, stamp)
+        for d in DAYS[: b + 1]:
+            self.now = f"{d}T16:00"
+            if d == DAYS[b]:
+                with mock.patch.object(Ledger, "_insert", boom), self.assertRaises(KeyboardInterrupt):
+                    job.run(d)
+                self.assertNotIn(DAYS[b], [r["date"] for r in self.L.daily_rows("T-2026-001")])   # 当天行也没留下
+                self.assertIsNone(self.L.exit_signal("T-2026-001"))
+            rep = job.run(d)
+        self.assertEqual(rep.signals, ["T-2026-001"])                                          # 重跑：行与信号一起写
+        for d in DAYS[b + 1:]:
+            self.now = f"{d}T16:00"
+            job.run(d)
+        x = dict(self.L.conn.execute("SELECT * FROM exits WHERE card_id = 'T-2026-001'").fetchone())
+        self.assertEqual(self.engine_exit(panel), (x["exit_date"], x["exit_price"], x["exit_reason"]))
+
+    def test_missing_row_defers_and_pending_at_end_stays(self):
+        """跌破次日该容器整行缺失 → 顺延；数据到期末都没有开盘价 → 信号保留、不出场（引擎记「期末未平」）。"""
+        (panel, bench), b = self.deferred_path([100.5, 101.0, 100.0, 95.5], [97.0, 97.5], {})
+        gone = panel[~((panel["container"] == "半导体") & (panel["date"] == pd.Timestamp(DAYS[b + 1])))]
+        self.replay(gone, bench)
+        x = dict(self.L.conn.execute("SELECT * FROM exits WHERE card_id = 'T-2026-001'").fetchone())
+        self.assertEqual((x["exit_date"], x["exit_signal_close"]), (DAYS[b + 2], 95.5))
+        self.assertEqual(self.engine_exit(gone)[:2], (x["exit_date"], x["exit_price"]))
+        self.new_ledger()
+        late = panel.copy()
+        late.loc[(late["container"] == "半导体") & (late["date"] > pd.Timestamp(DAYS[b])), "open"] = np.nan
+        self.replay(late, bench)
+        self.assertEqual(self.L.status("T-2026-001"), "当下")
+        self.assertEqual(self.L.exit_signal("T-2026-001")["signal_date"], DAYS[b])
+        self.assertEqual(self.engine_exit(late)[2], "期末未平")
+
+    def test_lifecycle_matches_the_engine(self):
+        panel, bench = make_panel()
+        self.replay(panel, bench)
+        x = dict(self.L.conn.execute("SELECT * FROM exits WHERE card_id = 'T-2026-001'").fetchone())
+        self.assertEqual(self.engine_exit(panel), (x["exit_date"], x["exit_price"], x["exit_reason"]))
+
+    def test_manual_and_thesis_void_signals_take_the_same_path(self):
+        """owner 在某日收盘后声明手动 / 论点作废 → 写出场信号（该日为信号行）→ 每日任务在次日开盘成交；论点作废一律证伪。"""
+        for reason, manual, want in (("手动", "流动性不足", "部分"), ("论点作废", None, "证伪")):
+            with self.subTest(reason):
+                self.new_ledger()
+                panel, bench = make_panel()
+                job = DailyJob(self.L, panel, bench, rules=RULES, instruments=INST, ew_path=self.ew)
+                decide = DAYS[DAYS.index(SIGNAL) + 5]                                   # 进场后第 5 天收盘后决定
+                for d in DAYS:
+                    self.now = f"{d}T16:00"
+                    job.run(d)
+                    if d == decide:
+                        self.now = f"{d}T20:00"
+                        close = self.L.daily_rows("T-2026-001")[-1]["close"]
+                        self.L.signal_exit("T-2026-001", d, reason, close, manual)
+                x = dict(self.L.conn.execute("SELECT * FROM exits WHERE card_id = 'T-2026-001'").fetchone())
+                nxt = DAYS[DAYS.index(decide) + 1]
+                self.assertEqual((x["exit_date"], x["exit_reason"], x["manual_reason"], x["exit_price"]),
+                                 (nxt, reason, manual, float(panel[(panel["container"] == "半导体") & (panel["date"] == nxt)]["open"].iloc[0])))
+                f = dict(self.L.conn.execute("SELECT * FROM finals WHERE card_id = 'T-2026-001'").fetchone())
+                self.assertEqual(f["final_score"], want)
 
     def test_rerun_is_idempotent(self):
         panel, bench = make_panel()
@@ -388,10 +515,11 @@ class Pieces(unittest.TestCase):
         self.assertEqual(self.problems, [])                                                    # 全关：没有请求，不算问题
 
     def test_rule_config_requires_confirmed_terms_and_enabled(self):
-        self.assertEqual(R.TERMS_VERSION, "jobs-daily-v2")
+        self.assertEqual(R.TERMS_VERSION, "jobs-daily-v3")
         self.assertEqual(self.load(CONFIG), RULES)
         self.assertEqual(self.load({**CONFIG, "confirmed_terms": None}), {})                  # 没确认记账口径：不启用
-        self.assertEqual(self.load({**CONFIG, "confirmed_terms": "jobs-daily-v1"}), {})       # 旧口径（v1.1-f 之前）的确认不算数
+        for old in ("jobs-daily-v1", "jobs-daily-v2"):                                       # 旧口径（v1.1-g 之前）的确认不算数
+            self.assertEqual(self.load({**CONFIG, "confirmed_terms": old}), {})
         self.assertEqual(set(self.load({**CONFIG, "事件驱动": {"enabled": False}})), {"恐慌下轨"})
         self.assertEqual(set(self.load({**CONFIG, "恐慌下轨": {**CONFIG["恐慌下轨"], "enabled": "true"}})), {"事件驱动"})
 
@@ -510,7 +638,7 @@ class Pieces(unittest.TestCase):
             self.assertEqual(jobs_main(args), 0)
         L = sqlite3.connect(tmp / "replay.sqlite")
         self.assertEqual(L.execute("SELECT value FROM ledger_meta WHERE key = 'clock'").fetchone()[0], "replay")
-        self.assertEqual(L.execute("SELECT value FROM ledger_meta WHERE key = 'schema'").fetchone()[0], "v1.1-f")
+        self.assertEqual(L.execute("SELECT value FROM ledger_meta WHERE key = 'schema'").fetchone()[0], "v1.1-g")
         self.assertEqual(L.execute("SELECT count(*) FROM cards").fetchone()[0], 1)
         L.close()
         ew = pd.read_csv(tmp / "replay.ew_daily.csv")                                           # 回放的等权文件跟着回放库

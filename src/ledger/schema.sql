@@ -152,6 +152,18 @@ CREATE TABLE IF NOT EXISTS daily (
     PRIMARY KEY (card_id, date)
 ) WITHOUT ROWID;
 
+-- v1.1-g 第 3 条：出场信号（write-once）。收盘跌破止损、或 owner 收盘后声明手动 / 论点作废的那一天写一条；
+-- 此后在第一个有开盘价的交易日按开盘成交（exits），中间不撤销、不更新移动止盈——与 V1 引擎的 exit_flag 一致
+CREATE TABLE IF NOT EXISTS exit_signals (
+    card_id       TEXT PRIMARY KEY REFERENCES cards(id),
+    signal_date   TEXT NOT NULL CHECK (date(signal_date) IS signal_date),
+    reason        TEXT NOT NULL CHECK (reason IN ('失效位', '移动止盈', '论点作废', '手动')),
+    manual_reason TEXT,
+    signal_close  REAL NOT NULL CHECK (typeof(signal_close) IN ('integer', 'real') AND abs(signal_close) < 1e15 AND signal_close > 0),
+    recorded_at   TEXT NOT NULL,
+    CHECK ((reason = '手动') = (length(trim(coalesce(manual_reason, ''))) > 0))
+) WITHOUT ROWID;
+
 -- §2.3 出场（write-once）
 CREATE TABLE IF NOT EXISTS exits (
     card_id              TEXT PRIMARY KEY REFERENCES cards(id),
@@ -279,6 +291,24 @@ BEGIN
      WHERE NEW.date < (SELECT exit_date FROM exits WHERE card_id = NEW.card_id);
 END;
 
+CREATE TRIGGER IF NOT EXISTS exit_signals_insert BEFORE INSERT ON exit_signals
+BEGIN
+    SELECT RAISE(ABORT, '已有出场信号（REPLACE 也不行）') WHERE EXISTS (SELECT 1 FROM exit_signals WHERE card_id = NEW.card_id);
+    SELECT RAISE(ABORT, 'recorded_at 必须是数据库时钟') WHERE NEW.recorded_at IS NOT ledger_now();
+    SELECT RAISE(ABORT, '没有进场记录') WHERE NOT EXISTS (SELECT 1 FROM entries WHERE card_id = NEW.card_id);
+    SELECT RAISE(ABORT, '已出场') WHERE EXISTS (SELECT 1 FROM exits WHERE card_id = NEW.card_id);
+    SELECT RAISE(ABORT, '信号日早于进场日') WHERE NEW.signal_date < (SELECT entry_date FROM entries WHERE card_id = NEW.card_id);
+    SELECT RAISE(ABORT, '信号日晚于当前日期') WHERE NEW.signal_date > substr(ledger_now(), 1, 10);
+    -- v1.1-g 第 1 条 (a)：触发收盘必须是台账自己的观测——信号日那一行每日记录的收盘（信号在该日收盘后产生）
+    SELECT RAISE(ABORT, '信号日必须已有每日行，且 signal_close 等于它的收盘')
+     WHERE NEW.signal_close IS NOT (SELECT close FROM daily WHERE card_id = NEW.card_id AND date = NEW.signal_date);
+    SELECT RAISE(ABORT, '信号日之后已有每日行：不能补记更早的出场信号')
+     WHERE EXISTS (SELECT 1 FROM daily WHERE card_id = NEW.card_id AND date > NEW.signal_date);
+    -- v1.1-g 第 1 条 (b)：标为失效位的信号，触发收盘必须低于锁定失效位（标签与事实一致）
+    SELECT RAISE(ABORT, '「失效位」信号的触发收盘必须低于锁定的失效位')
+     WHERE NEW.reason = '失效位' AND NEW.signal_close >= (SELECT invalidation_price FROM cards WHERE id = NEW.card_id);
+END;
+
 CREATE TRIGGER IF NOT EXISTS exits_insert BEFORE INSERT ON exits
 BEGIN
     SELECT RAISE(ABORT, '已有出场记录（REPLACE 也不行）') WHERE EXISTS (SELECT 1 FROM exits WHERE card_id = NEW.card_id);
@@ -286,15 +316,20 @@ BEGIN
     SELECT RAISE(ABORT, '没有进场记录') WHERE NOT EXISTS (SELECT 1 FROM entries WHERE card_id = NEW.card_id);
     SELECT RAISE(ABORT, '出场日早于进场日') WHERE NEW.exit_date < (SELECT entry_date FROM entries WHERE card_id = NEW.card_id);
     SELECT RAISE(ABORT, '出场日晚于当前日期') WHERE NEW.exit_date > substr(ledger_now(), 1, 10);
-    -- v1.1-f 的触发收盘（实现口径，待 Cowork 确认）：出场一律按开盘成交，触发出场的是出场日之前最近一行每日记录的收盘。
-    -- 有这样的行时必须等于它（不能随手填一个高于失效位的数躲开证伪）；配合 daily_insert 不许出场后补出场日之前的行，事后可审计
-    SELECT RAISE(ABORT, 'exit_signal_close 必须等于出场日之前最近一行每日记录的收盘')
-     WHERE EXISTS (SELECT 1 FROM daily WHERE card_id = NEW.card_id AND date < NEW.exit_date)
-       AND NEW.exit_signal_close IS NOT (SELECT close FROM daily WHERE card_id = NEW.card_id AND date < NEW.exit_date
-                                          ORDER BY date DESC LIMIT 1);
-    SELECT RAISE(ABORT, '「失效位」出场的触发收盘必须低于锁定的失效位')
-     WHERE NEW.exit_reason = '失效位'
-       AND NEW.exit_signal_close >= (SELECT invalidation_price FROM cards WHERE id = NEW.card_id);
+    -- v1.1-g 第 3 条：出场必须引用出场信号——次日（或顺延到第一个有开盘价的日子）开盘成交，原因与触发收盘都取自信号
+    SELECT RAISE(ABORT, '没有出场信号：先在触发那天收盘后记出场信号，再在之后的开盘成交')
+     WHERE NOT EXISTS (SELECT 1 FROM exit_signals WHERE card_id = NEW.card_id);
+    SELECT RAISE(ABORT, '出场日必须晚于信号日（按之后的开盘成交）')
+     WHERE NEW.exit_date <= (SELECT signal_date FROM exit_signals WHERE card_id = NEW.card_id);
+    SELECT RAISE(ABORT, 'exit_reason、manual_reason 与 exit_signal_close 必须取自出场信号')
+     WHERE NEW.exit_reason IS NOT (SELECT reason FROM exit_signals WHERE card_id = NEW.card_id)
+        OR NEW.manual_reason IS NOT (SELECT manual_reason FROM exit_signals WHERE card_id = NEW.card_id)
+        OR NEW.exit_signal_close IS NOT (SELECT signal_close FROM exit_signals WHERE card_id = NEW.card_id);
+    -- v1.1-g 第 2 条：owner 在某日收盘后声明手动 / 论点作废，成交在之后的开盘——声明必须早于成交那天 09:30
+    -- （否则等于看了当天盘中走势再拿更早的开盘价成交）。止损信号由每日任务写，补跑时记录时刻会晚，不受这条限制
+    SELECT RAISE(ABORT, '手动 / 论点作废的出场信号必须在成交那天开盘前记录')
+     WHERE (SELECT reason FROM exit_signals WHERE card_id = NEW.card_id) IN ('手动', '论点作废')
+       AND (SELECT recorded_at FROM exit_signals WHERE card_id = NEW.card_id) >= NEW.exit_date || 'T09:30';
 END;
 
 CREATE TRIGGER IF NOT EXISTS finals_insert BEFORE INSERT ON finals
@@ -350,12 +385,13 @@ SELECT c.id, c.container, c.trigger_type, c.created_at, c.supersedes, c.evidence
             WHEN x.card_id IS NOT NULL THEN '过去'
             WHEN e.card_id IS NOT NULL THEN '当下'
             ELSE '候选' END AS status,
-       f.final_score, x.exit_reason, x.realized_r,
+       f.final_score, x.exit_reason, x.realized_r, es.signal_date AS exit_signal_date, es.reason AS exit_signal_reason,
        (SELECT score FROM strength_scores s WHERE s.card_id = c.id AND s.rater = 'agent') AS agent_strength,
        (SELECT score FROM strength_scores s WHERE s.card_id = c.id AND s.rater = 'owner') AS owner_strength
   FROM cards c
   LEFT JOIN voids v ON v.card_id = c.id
   LEFT JOIN finals f ON f.card_id = c.id
   LEFT JOIN exits x ON x.card_id = c.id
+  LEFT JOIN exit_signals es ON es.card_id = c.id
   LEFT JOIN entries e ON e.card_id = c.id
  WHERE c.sealed = 1;

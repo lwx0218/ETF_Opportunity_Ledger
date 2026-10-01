@@ -101,7 +101,8 @@ class Base(unittest.TestCase):
         self.at("2026-10-12T09:35").L.enter(cid, "2026-10-12", 10.05, 6.25)
         self.at("2026-10-12T16:00").L.append_daily(cid, dict(date="2026-10-12", close=10.2, state="TREND_UP", r_current=0.19, stop_now=9.2))
         self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=signal, state="NEUTRAL"))
-        self.at("2026-11-20T16:00").L.exit(cid, exit_date="2026-11-20", exit_price=11.5, exit_reason=reason, manual_reason=manual,
+        self.L.signal_exit(cid, "2026-11-19", reason, signal, manual)                 # v1.1-g：信号日收盘后记出场信号
+        self.at("2026-11-20T09:35").L.exit(cid, exit_date="2026-11-20", exit_price=11.5, exit_reason=reason, manual_reason=manual,
                                            realized_r=r, realized_excess_pct=excess, holding_days=28, exit_signal_close=signal)
         return cid
 
@@ -280,6 +281,15 @@ class SchemaV11(Base):
             L.close()
             with self.assertRaisesRegex(LedgerError, "schema 是 v1.1，"):
                 Ledger(v11, clock=lambda: T0, replay=True)
+            v11f = Path(d) / "v11f.sqlite"                                         # P6c 的 v1.1-f 库：没有出场信号表
+            L = Ledger(v11f, clock=lambda: T0, replay=True)
+            L.conn.execute("DROP TRIGGER ledger_meta_no_update")
+            L.conn.execute("UPDATE ledger_meta SET value = 'v1.1-f' WHERE key = 'schema'")
+            L.close()
+            before = v11f.read_bytes()
+            with self.assertRaisesRegex(LedgerError, "schema 是 v1.1-f，"):
+                Ledger(v11f, clock=lambda: T0, replay=True)
+            self.assertEqual(v11f.read_bytes(), before)
             # 真正的旧库（v1 的 cards 没有 evidence_status）：拒绝，且一个字节都不改
             old = Path(d) / "older.sqlite"
             c = sqlite3.connect(old)
@@ -317,38 +327,84 @@ class FalsificationV11f(Base):
                     self.L.finalize(cid, final_score=want, **self.KW)
         self.assertEqual(self.L.summary()["falsified_thesis_void_positive_r"], 2)    # 论点作废、R > 0：两项菜单各一张，单列
 
-    def test_signal_close_must_match_the_ledger(self):
+    def entered(self):
         self.t = T0
         cid = self.make()
         self.at("2026-10-12T09:35").L.enter(cid, "2026-10-12", 10.05, 6.25)
-        self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))
-        base = dict(exit_date="2026-11-20", exit_price=9.4, realized_r=-0.8, realized_excess_pct=-3.0, holding_days=28)
-        with self.assertRaisesRegex(LedgerError, "最近一行"):                  # 不能填一个高于失效位的收盘来躲开证伪
-            self.at("2026-11-20T16:00").L.exit(cid, exit_reason="移动止盈", exit_signal_close=9.5, **base)
-        self.L.exit(cid, exit_reason="移动止盈", exit_signal_close=9.0, **base)
+        return cid
 
-    def test_no_backfill_before_the_exit_and_order_does_not_matter(self):
-        """触发收盘 = 出场日之前最近一行（出场按开盘成交）。出场后不能补出场日之前的行；出场日当天的行记在出场前后都一样。"""
-        base = dict(exit_date="2026-11-20", exit_price=10.5, exit_reason="手动", manual_reason="构造", realized_r=0.1,
-                    realized_excess_pct=0.5, holding_days=28)
-        self.t = T0
-        a = self.make()
-        self.at("2026-10-12T09:35").L.enter(a, "2026-10-12", 10.05, 6.25)
-        self.at("2026-11-20T09:35").L.exit(a, exit_signal_close=10.8, **base)          # 出场前没有任何每日行：只能要求为正数
-        with self.assertRaisesRegex(LedgerError, "已出场"):
-            self.at("2026-11-20T16:00").L.append_daily(a, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))   # 事后补一根跌破的收盘
-        for when in ("before", "after"):                                               # 11-20 当天的行在出场前 / 后记账
-            with self.subTest(when):
-                self.t = T0
-                cid = self.make()
-                self.at("2026-10-12T09:35").L.enter(cid, "2026-10-12", 10.05, 6.25)
-                self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))
-                if when == "after":
-                    self.at("2026-11-20T16:00").L.append_daily(cid, dict(date="2026-11-20", close=10.5, state="NEUTRAL"))
-                with self.assertRaisesRegex(LedgerError, "最近一行"):
-                    self.at("2026-11-20T16:05").L.exit(cid, exit_signal_close=10.5, **base)
-                self.L.exit(cid, exit_signal_close=9.0, **base)                            # 两种顺序都只能填 11-19 的 9.0 → 证伪
-                self.assertEqual(mechanical_score(self.L.card(cid), self.cols("exits", cid)), "证伪")
+    def test_signal_close_must_be_the_signal_row_close(self):
+        """v1.1-g 第 1 条 (a)：触发收盘是台账自己的观测——信号日那一行每日记录的收盘；没有那一行不能记信号。"""
+        cid = self.entered()
+        with self.assertRaisesRegex(LedgerError, "信号日必须已有每日行"):
+            self.at("2026-11-19T16:00").L.signal_exit(cid, "2026-11-19", "移动止盈", 9.0)
+        self.L.append_daily(cid, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))
+        with self.assertRaisesRegex(LedgerError, "信号日必须已有每日行"):     # 不能填一个高于失效位的收盘来躲开证伪
+            self.L.signal_exit(cid, "2026-11-19", "移动止盈", 9.5)
+        self.L.signal_exit(cid, "2026-11-19", "移动止盈", 9.0)
+        with self.assertRaisesRegex(LedgerError, "已有出场信号"):                # write-once
+            self.L.signal_exit(cid, "2026-11-19", "手动", 9.0, "改主意")
+        self.assertEqual(self.L.exit_signal(cid)["signal_close"], 9.0)
+
+    def test_exit_must_follow_its_signal(self):
+        """v1.1-g 第 3 条：出场引用信号——晚于信号日、原因与触发收盘取自信号；没有信号不能出场。"""
+        cid = self.entered()
+        base = dict(exit_price=9.4, realized_r=-0.8, realized_excess_pct=-3.0, holding_days=28)
+        self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))
+        with self.assertRaisesRegex(LedgerError, "没有出场信号"):
+            self.at("2026-11-20T09:35").L.exit(cid, exit_date="2026-11-20", exit_reason="失效位", exit_signal_close=9.0, **base)
+        self.at("2026-11-19T16:00").L.signal_exit(cid, "2026-11-19", "失效位", 9.0)
+        with self.assertRaisesRegex(LedgerError, "晚于信号日"):                  # 不存在当天收盘或盘中的出场时点
+            self.L.exit(cid, exit_date="2026-11-19", exit_reason="失效位", exit_signal_close=9.0, **base)
+        self.at("2026-11-23T09:35")
+        for bad in (dict(exit_reason="移动止盈", exit_signal_close=9.0), dict(exit_reason="失效位", exit_signal_close=9.3)):
+            with self.subTest(bad), self.assertRaisesRegex(LedgerError, "取自出场信号"):
+                self.L.exit(cid, exit_date="2026-11-23", **bad, **base)
+        self.L.exit(cid, exit_date="2026-11-23", exit_reason="失效位", exit_signal_close=9.0, **base)   # 顺延到 11-23 成交也行
+        with self.assertRaisesRegex(LedgerError, "已出场|已有出场信号"):
+            self.L.signal_exit(cid, "2026-11-19", "手动", 9.0, "x")
+
+    def test_manual_signal_must_precede_the_fill_and_match(self):
+        """手动 / 论点作废：声明必须早于成交那天 09:30（收盘后决定、次日开盘成交，不能看了盘中再按开盘价成交）；
+        出场的理由必须取自信号。止损信号由每日任务写，补跑晚记不受这条限制。"""
+        base = dict(exit_price=10.4, realized_r=0.1, realized_excess_pct=0.5, holding_days=28, exit_signal_close=10.6)
+        cid = self.entered()
+        self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=10.6, state="NEUTRAL"))
+        self.at("2026-11-20T10:30").L.signal_exit(cid, "2026-11-19", "手动", 10.6, "盘中看到暴跌")   # 11-20 盘中才记
+        with self.assertRaisesRegex(LedgerError, "开盘前记录"):
+            self.L.exit(cid, exit_date="2026-11-20", exit_reason="手动", manual_reason="盘中看到暴跌", **base)
+        self.at("2026-11-23T09:35")
+        with self.assertRaisesRegex(LedgerError, "取自出场信号"):
+            self.L.exit(cid, exit_date="2026-11-23", exit_reason="手动", manual_reason="换个说法", **base)
+        self.L.exit(cid, exit_date="2026-11-23", exit_reason="手动", manual_reason="盘中看到暴跌", **base)   # 下一个开盘成交可以
+        late = self.entered()                                                         # 止损信号补跑晚记：照常成交
+        self.at("2026-11-19T16:00").L.append_daily(late, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))
+        self.at("2026-11-21T20:00").L.signal_exit(late, "2026-11-19", "失效位", 9.0)
+        self.L.exit(late, exit_date="2026-11-20", exit_reason="失效位", manual_reason=None, exit_price=9.4, realized_r=-0.8,
+                    realized_excess_pct=-3.0, holding_days=28, exit_signal_close=9.0)
+
+    def test_no_late_signal_and_no_backfill(self):
+        """信号日之后已有每日行时不能补记更早的信号（看了后面的行情再挑一根收盘）；出场后不能补出场日之前的每日行。"""
+        cid = self.entered()
+        self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))
+        self.at("2026-11-20T16:00").L.append_daily(cid, dict(date="2026-11-20", close=10.6, state="NEUTRAL"))
+        with self.assertRaisesRegex(LedgerError, "不能补记更早的出场信号"):
+            self.L.signal_exit(cid, "2026-11-19", "手动", 9.0, "回头看")
+        self.L.signal_exit(cid, "2026-11-20", "手动", 10.6, "收盘后决定")
+        self.at("2026-11-23T09:35").L.exit(cid, exit_date="2026-11-23", exit_price=10.4, exit_reason="手动", manual_reason="收盘后决定",
+                                           realized_r=0.1, realized_excess_pct=0.5, holding_days=29, exit_signal_close=10.6)
+        with self.assertRaisesRegex(LedgerError, "已出场|向后追加"):
+            self.at("2026-11-23T16:00").L.append_daily(cid, dict(date="2026-11-21", close=8.0, state="NEUTRAL"))
+
+    def test_manual_and_thesis_void_take_the_same_path(self):
+        """v1.1-g 第 2 条：手动与论点作废也是「某日收盘后声明 → 次日开盘成交」；论点作废不论收盘一律证伪。"""
+        for reason, manual, sig, want in (("手动", "流动性不足", 9.1, "证伪"), ("手动", "流动性不足", 10.8, "部分"),
+                                          ("论点作废", None, 10.8, "证伪")):
+            with self.subTest(reason=reason, sig=sig):
+                cid = self.run_to_exit(reason=reason, manual=manual, r=0.3, excess=1.0, signal=sig)
+                self.assertEqual(self.L.exit_signal(cid)["reason"], reason)
+                self.track(cid)
+                self.L.finalize(cid, final_score=want, **self.KW)
 
     def test_close_exactly_on_the_line_is_not_falsified(self):
         """证伪是「收盘 < 锁定失效位」：恰好等于 9.2 的移动止盈 / 手动出场不算，按菜单分档。"""
@@ -362,17 +418,23 @@ class FalsificationV11f(Base):
                         self.L.finalize(cid, final_score="证伪", **self.KW)
                     self.L.finalize(cid, final_score=want, **self.KW)
 
-    def test_stop_exit_needs_a_close_below_the_line(self):
-        self.t = T0
-        cid = self.make()
-        self.at("2026-10-12T09:35").L.enter(cid, "2026-10-12", 10.05, 6.25)
+    def test_stop_signal_needs_a_close_below_the_line(self):
+        """v1.1-g 第 1 条 (b)：标为失效位的信号，触发收盘必须低于锁定失效位。"""
+        cid = self.entered()
+        self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=9.2, state="NEUTRAL"))
         with self.assertRaisesRegex(LedgerError, "低于锁定的失效位"):
-            self.at("2026-11-20T16:00").L.exit(cid, exit_date="2026-11-20", exit_price=9.4, exit_reason="失效位", realized_r=-0.8,
-                                               realized_excess_pct=-3.0, holding_days=28, exit_signal_close=9.2)
+            self.L.signal_exit(cid, "2026-11-19", "失效位", 9.2)
 
 
 class Section25(Base):
     """schema §2.5 明令禁止——每条一个失败测试（UPDATE、DELETE、REPLACE 三种写法都试）。"""
+
+    def test_exit_signal_is_frozen(self):
+        cid = self.run_to_exit(reason="失效位", r=-1.05, excess=-4.0)
+        self.rejects("UPDATE exit_signals SET reason = '移动止盈', signal_close = 10.8 WHERE card_id = ?", cid)
+        self.rejects("DELETE FROM exit_signals WHERE card_id = ?", cid)
+        self.replace("exit_signals", self.cols("exit_signals", cid), reason="手动", manual_reason="改成手动")
+        self.assertEqual(self.cols("exit_signals", cid)["reason"], "失效位")
 
     def test_no_evidence_added_after_creation(self):
         cid = self.make()
@@ -564,6 +626,8 @@ class Statistics(Base):
         ids = [self.make() for _ in range(4)]
         self.at("2026-10-12T09:31").L.void(ids[0], "未进场而失效")
         self.at("2026-10-12T09:35").L.enter(ids[1], "2026-10-12", 10.0, 5)
+        self.at("2026-11-09T16:00").L.append_daily(ids[1], dict(date="2026-11-09", close=10.9, state="NEUTRAL"))
+        self.L.signal_exit(ids[1], "2026-11-09", "移动止盈", 10.9)
         self.at("2026-11-10T16:00").L.exit(ids[1], exit_date="2026-11-10", exit_price=11, exit_reason="移动止盈",
                                            realized_r=1.2, realized_excess_pct=6.0, holding_days=20, exit_signal_close=10.9)
         self.track(ids[1], start="2026-11-10")
