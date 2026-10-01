@@ -15,7 +15,8 @@ from pathlib import Path
 import pandas as pd
 
 ACTIVE_BEFORE_V1 = ("恐慌下轨", "事件驱动")
-TERMS_VERSION = "jobs-daily-v3"        # docs/jobs-daily.md 口径版本（v1：v1.1-e；v2：v1.1-f 证伪判定；v3：v1.1-g 出场信号持久化）；配置里显式确认后规则才启用
+TERMS_VERSION = "jobs-daily-v4"        # docs/jobs-daily.md 口径版本（v1：v1.1-e；v2：v1.1-f 证伪判定；v3：v1.1-g 出场信号持久化；
+                                       # v4：v1.1-h 出场信号边角 + I-26 断档行不做决策）；配置里显式确认后规则才启用
 RULE_R = {"scoring_rule": "schema-v1.1-R", "horizon_days": None, "target_excess_pct": None, "target_r": 2, "benchmark": "等权组合"}
 
 
@@ -39,7 +40,7 @@ class Candidate:
 
 def load_rule_config(path: Path, problems: list[str] | None = None) -> dict:
     """返回启用的规则 → 卡片预期：
-    {"confirmed_terms": "jobs-daily-v3",
+    {"confirmed_terms": "jobs-daily-v4",
      "恐慌下轨": {"enabled": true, "scoring_rule": "schema-v1.1-R", "horizon_days": null, "target_r": 2, "benchmark": "等权组合"},
      "事件驱动": {"enabled": true}}                                  # 事件卡的预期由草稿逐卡给
     confirmed_terms 不等于当前口径版本、或 enabled 不为真的规则不启用；恐慌规则的预期必须是菜单第 2 项（v1.1-c）。
@@ -71,8 +72,8 @@ def _number(x, integer: bool) -> bool:
 
 
 def panic_candidates(day_rows: pd.DataFrame, z_threshold: float) -> list[Candidate]:
-    """prereg-v1 §3.2：月末 z ≤ −2（z_month 只在月末行有值）；越超跌越优先。"""
-    rows = day_rows[day_rows["z_month"].le(z_threshold) & day_rows["atr20"].gt(0)]
+    """prereg-v1 §3.2：月末 z ≤ −2（z_month 只在月末行有值）；越超跌越优先。断档行（data_hole = 1）不看（I-26）。"""
+    rows = day_rows[day_rows["z_month"].le(z_threshold) & day_rows["atr20"].gt(0) & day_rows["data_hole"].eq(0)]
     return [Candidate(container=r.container, trigger_type="恐慌下轨", state=r.state, close=float(r.close), atr20=float(r.atr20),
                       z=float(r.z_month), priority=float(r.z_month),
                       thesis=f"月末 z={r.z_month:.2f} ≤ {z_threshold:g}，恐慌下轨（prereg-v1 §3.2）")

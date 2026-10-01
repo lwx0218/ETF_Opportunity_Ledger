@@ -43,8 +43,8 @@ FROZEN_FIELDS = CARD_FIELDS + ("recorded_at",)
 EVIDENCE_FIELDS = ("source_id", "published_at", "summary", "url", "first_seen_at", "available_at", "snapshot_path", "snapshot_sha256")
 SCORING_RULE = "schema-v1-§3"          # 菜单第 1 项（按超额与期限）
 SCORING_RULE_R = "schema-v1.1-R"        # 菜单第 2 项（按 R 倍数，规则卡；v1.1-c）
-SCHEMA_VERSION = "v1.1-g.1"             # v1.1-g.1：等权日收益 ew_daily 与已处理交易日 job_days 进库（replan §11），记账口径仍是 v1.1-g；
-                                         # 之前建的库拒绝打开（v1.1-g：出场信号表 exit_signals；v1.1-f：exit_signal_close）
+SCHEMA_VERSION = "v1.1-h"               # v1.1-h：出场信号的五个边角（同日论点作废覆盖止损类信号 → exit_signals 加 seq；止损类信号收盘
+                                         # 低于当时生效的止损）；之前建的库拒绝打开（v1.1-g.1：ew_daily / job_days 进库；v1.1-g：exit_signals）
 
 
 class LedgerError(ValueError):
@@ -228,18 +228,29 @@ class Ledger:
         def write():
             self._insert("daily", {"card_id": card_id, **row})
             if signal is not None:
-                self._insert("exit_signals", {"card_id": card_id, "signal_date": row["date"], "manual_reason": None, **signal})
+                self._insert("exit_signals", {"card_id": card_id, "seq": 1, "signal_date": row["date"], "manual_reason": None, **signal})
         self._tx(write)
 
     def signal_exit(self, card_id: str, signal_date: str, reason: str, signal_close: float, manual_reason: str | None = None) -> None:
         """v1.1-g：出场信号（write-once）。止损由每日任务在跌破那天收盘后写；手动 / 论点作废由 owner 在某日收盘后声明，
-        该日就是信号行。成交在之后第一个有开盘价的交易日（exit）。"""
-        self._tx(lambda: self._insert("exit_signals", {"card_id": card_id, "signal_date": signal_date, "reason": reason,
-                                                       "signal_close": signal_close, "manual_reason": manual_reason}))
+        该日就是信号行。成交在之后第一个有开盘价的交易日（exit）。已有信号时这一条按覆盖写（seq = 2）：
+        只有同一信号日的「论点作废」覆盖「失效位 / 移动止盈」被接受（v1.1-h 第 4 条，存储层核对）。"""
+        def run():
+            seq = 1 + self.conn.execute("SELECT count(*) FROM exit_signals WHERE card_id = ?", (card_id,)).fetchone()[0]
+            self._insert("exit_signals", {"card_id": card_id, "seq": seq, "signal_date": signal_date, "reason": reason,
+                                          "signal_close": signal_close, "manual_reason": manual_reason})
+        self._tx(run)
 
-    def exit_signal(self, card_id: str) -> dict | None:
-        r = self.conn.execute("SELECT * FROM exit_signals WHERE card_id = ?", (card_id,)).fetchone()
-        return dict(r) if r else None
+    def exit_signal(self, card_id: str, fill_date: str | None = None) -> dict | None:
+        """出场信号。fill_date 给出时返回在该日开盘成交时生效的那条：该日 09:30 前记录的覆盖（seq = 2）优先，否则第一条；
+        不给时返回第一条（信号日、触发收盘与它相同）。没有信号返回 None。"""
+        rows = [dict(r) for r in self.conn.execute("SELECT * FROM exit_signals WHERE card_id = ? ORDER BY seq", (card_id,))]
+        if not rows:
+            return None
+        if fill_date is None:
+            return rows[0]
+        live = [r for r in rows if r["seq"] == 1 or r["recorded_at"] < f"{fill_date}T09:30"]
+        return live[-1]
 
     def exit(self, card_id: str, **row) -> None:
         self._tx(lambda: self._insert("exits", {"card_id": card_id, **row}))
