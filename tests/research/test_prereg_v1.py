@@ -26,8 +26,9 @@ DATES = pd.bdate_range("2020-01-01", periods=400)
 P1 = Params(rs_top_pct=1.0)          # 与相对强弱无关的测试：放开前 20% 门槛，只测其余规则
 
 
-def make(closes: dict, states: dict = None, rs: dict = None, atr: float = 2.0, opens: dict = None, z: dict = None):
-    """closes: 容器 → 收盘序列；opens 默认等于前一日收盘；states/rs/z: 容器 → {日序号: 值}。"""
+def make(closes: dict, states: dict = None, rs: dict = None, atr: float = 2.0, opens: dict = None, z: dict = None,
+         holes: dict = None):
+    """closes: 容器 → 收盘序列；opens 默认等于前一日收盘；states/rs/z: 容器 → {日序号: 值}；holes: 容器 → data_hole = 1 的日序号集合。"""
     rows = []
     for c, cl in closes.items():
         cl = np.asarray(cl, float)
@@ -37,7 +38,7 @@ def make(closes: dict, states: dict = None, rs: dict = None, atr: float = 2.0, o
             rows.append(dict(date=d, container=c, open=o, high=max(o, x) + 0.1, low=min(o, x) - 0.1, close=x,
                              state=(states or {}).get(c, {}).get(i, "NEUTRAL"),
                              rs_1m=(rs or {}).get(c, {}).get(i, 0.0), atr20=atr,
-                             z_month=(z or {}).get(c, {}).get(i, np.nan)))
+                             z_month=(z or {}).get(c, {}).get(i, np.nan), data_hole=int(i in (holes or {}).get(c, ()))))
     return validate_panel(pd.DataFrame(rows))
 
 
@@ -103,6 +104,61 @@ class SignalTests(unittest.TestCase):
         pn = make({"A": flat(3), "B": flat(3)}, z={"A": {1: -2.1}, "B": {1: -1.9}})
         s = all_signals(pn, Params())
         self.assertEqual(list(zip(s["container"], s["branch"])), [("A", "恐慌")])
+
+
+class DataHoleTests(unittest.TestCase):
+    """I-25：data_hole = 1 的行（数据断档上的平盘占位）不产生入场信号，也不占 20 日冷却；已持仓照引擎处理。
+    标记形状与 build 产出的一致：30 行平盘（100–129）里，连续平盘数到第 5 行起（104–129）才标 1。"""
+    FLAT = set(range(100, 130))                                          # 30 行平盘
+    HOLE = set(range(104, 130))                                          # build 只标第 5 行起
+
+    def panel(self, holes=None, n=200):
+        st = {i: "BNB" for i in range(n)}                                # 每天都是可进态：信号只由冷却与断档决定
+        z = {i: -2.5 for i in (101, 110, 125, 150)}                      # 101 在平盘前 4 行；110、125 在断档里；150 在断档后
+        return make({"A": flat(n), "B": flat(n)}, states={"A": st}, rs={"A": {i: 1 for i in range(n)}}, z={"A": z},
+                    holes={"A": holes} if holes else None)
+
+    def test_no_signal_inside_the_hole(self):
+        s = all_signals(self.panel(self.HOLE), P1)
+        idx = {d: i for i, d in enumerate(DATES)}
+        inside = [idx[d] for d in s["date"] if idx[d] in self.HOLE]
+        self.assertEqual(inside, [])                                      # 突破与恐慌两个分支都没有
+        panic = set(s.loc[s["branch"] == "恐慌", "date"])
+        self.assertIn(DATES[150], panic)
+        self.assertIn(DATES[101], panic)                                  # 平盘前 4 行没标：当时与真实休市无法区分，照常出信号
+
+    def test_signals_outside_the_hole_as_if_hole_rows_carried_nothing(self):
+        """断档行等于「没有信号的行」：与把这些行的状态改成非可进态、z 清空的面板，信号完全相同（冷却从断档前最后一个真信号算）。"""
+        masked = all_signals(self.panel(self.HOLE), P1)
+        blank = self.panel()
+        rows = (blank["container"] == "A") & blank["date"].isin([DATES[i] for i in self.HOLE])
+        blank.loc[rows, ["state", "z_month"]] = ["NEUTRAL", np.nan]
+        pd.testing.assert_frame_equal(masked, all_signals(blank, P1))
+        before = all_signals(self.panel(), P1)                            # 断档之前与不标断档时相同
+        cut = DATES[min(self.HOLE)]
+        pd.testing.assert_frame_equal(masked[masked["date"] < cut].reset_index(drop=True),
+                                      before[before["date"] < cut].reset_index(drop=True))
+
+    def test_held_position_rides_through_the_hole(self):
+        """已持仓：断档内平盘收盘不跌破止损、不出场；断档结束后第一根真 K 线按正常规则判（跌破 → 次日开盘离场）。"""
+        n = 60
+        cl = [100.0, 100.0] + [100.0 + k for k in range(1, 11)]          # 入场 100、1R=4，涨到 110 激活，止损 110−6=104
+        cl += [110.0] * 30                                                # 断档：平盘 30 行（data_hole = 1）
+        cl += [103.0] + [103.0] * (n - len(cl) - 1)                       # 断档后第一根真 K 线 103 < 104
+        hole = set(range(12, 42))
+        pn = make({"A": cl, "B": flat(n)}, states={"A": {1: "XB"}}, rs={"A": {1: 1}}, holes={"A": hole})
+        t = run(pn, n=n).trades.iloc[0]
+        self.assertEqual((t["exit_reason"], t["exit_date"]), ("移动止盈", DATES[43]))
+        self.assertAlmostEqual(t["mfe_R"], (110 - 100) / 4)                # 断档内止损没动：仍是 104
+
+    def test_panel_without_data_hole_is_rejected(self):
+        with self.assertRaisesRegex(PanelError, "data_hole"):
+            validate_panel(make({"A": flat(5)}).drop(columns="data_hole"))   # 不默认 0
+        bad = make({"A": flat(5)})
+        bad["data_hole"] = bad["data_hole"].astype(float)
+        bad.loc[0, "data_hole"] = np.nan
+        with self.assertRaisesRegex(PanelError, "data_hole"):
+            validate_panel(bad)
 
 
 class EngineTests(unittest.TestCase):
@@ -308,7 +364,7 @@ class RunnerTests(unittest.TestCase):
                 for i, d in enumerate(dates):
                     rows.append(dict(date=d, container=c, open=cl[i - 1] if i else cl[0], high=cl[i] * 1.01, low=cl[i] * 0.99,
                                      close=cl[i], state=rng.choice(["XB", "NEUTRAL"]), rs_1m=rng.normal(), atr20=cl[i] * 0.01,
-                                     z_month=np.nan))
+                                     z_month=np.nan, data_hole=0))
             df = pd.DataFrame(rows)
             df["high"] = df[["open", "high", "close"]].max(axis=1)
             df["low"] = df[["open", "low", "close"]].min(axis=1)

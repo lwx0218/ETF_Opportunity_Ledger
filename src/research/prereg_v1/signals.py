@@ -1,4 +1,5 @@
-"""入场信号（prereg-v1 §3）。只用 t 日收盘及以前的面板字段；成交在 t+1 开盘（engine）。"""
+"""入场信号（prereg-v1 §3）。只用 t 日收盘及以前的面板字段；成交在 t+1 开盘（engine）。
+data_hole = 1 的行（I-25：数据断档上的平盘占位）两个分支都不产生信号，也不计入 20 日冷却——占位拷贝不是信号。"""
 import numpy as np
 import pandas as pd
 
@@ -17,7 +18,7 @@ def breakout_signals(panel: pd.DataFrame, p: Params) -> pd.DataFrame:
     """主分支：状态 ∈ 可进态 且 rs_1m 前 20% 且 该容器 20 个交易日内没有触发过（I-05：按信号计，不论是否成交）。"""
     df = panel.copy()
     df["rs_top"] = rs_top_flags(df, p)
-    cand = df[df["state"].isin(p.entry_states) & df["rs_top"] & df["atr20"].gt(0)]
+    cand = df[df["state"].isin(p.entry_states) & df["rs_top"] & df["atr20"].gt(0) & df["data_hole"].eq(0)]
     dates = pd.Index(sorted(panel["date"].unique()))
     pos = pd.Series(np.arange(len(dates)), index=dates)
     keep = []
@@ -35,7 +36,7 @@ def breakout_signals(panel: pd.DataFrame, p: Params) -> pd.DataFrame:
 
 def panic_signals(panel: pd.DataFrame, p: Params) -> pd.DataFrame:
     """次分支：月末 z ≤ −2（z 由 R3 按前 20 个已完成月末计算，只在月末行有值）。"""
-    out = panel[panel["z_month"].le(p.z_threshold) & panel["atr20"].gt(0)].copy()
+    out = panel[panel["z_month"].le(p.z_threshold) & panel["atr20"].gt(0) & panel["data_hole"].eq(0)].copy()
     out["branch"] = "恐慌"
     out["priority"] = 1e6 + out["z_month"]           # I-07：排在突破之后；越超跌越优先
     return out

@@ -2,7 +2,7 @@
 
     python -m src.indicators build --package outputs/research-package-2026-09-30/ [--out outputs/panel-2026-09-30/]
 
-输出 panel.csv（date, container, open, high, low, close, state, rs_1m, atr20, z_month）、bench.csv（date, hs300 = H00300 收盘,
+输出 panel.csv（date, container, open, high, low, close, state, rs_1m, atr20, z_month, data_hole）、bench.csv（date, hs300 = H00300 收盘,
 hs300_open = 原始开盘，缺则空；每日任务的基准窗口用）
 和 build-report.json（每个容器的数据处理与缺陷计数）。全收益指数借价格版本的成交量（I-21），K 线级指标（state、atr20）在容器
 原生序列上算（I-24），再对齐到 A 股日历（I-20）；rs_1m、z_month 在对齐后的收盘上算。之后跑
@@ -27,9 +27,11 @@ from .states import form_states
 BENCH_CODE = "H00300"          # I-18：沪深300 全收益，不用价格指数 000300 顶替
 OVERSEAS_ROUTES = {"yahoo", "stooq", "eia"}      # I-20：本地日期晚于 A 股收盘的路由，取 D−1
 VOLUME_BORROW_SHARE = 0.5      # I-21：研究序列缺成交量的行超过一半就借价格版本
-PANEL_COLUMNS = ["date", "container", "open", "high", "low", "close", "state", "rs_1m", "atr20", "z_month"]
+PANEL_COLUMNS = ["date", "container", "open", "high", "low", "close", "state", "rs_1m", "atr20", "z_month", "data_hole"]
 BAR_COLUMNS = ["date", "open", "high", "low", "close", "volume"]
 INDICATOR_COLUMNS = ["state", "atr20"]            # I-24：在原生 K 线上算、随 K 线带到 D 的列
+MARK_COLUMNS = ["stale", "data_hole"]              # 对齐时打的标记：平盘行（I-20）、数据断档（I-25）
+HOLE_MIN = 5                                       # I-25：连续平盘到第 5 行即为数据断档（真实休市最长 4 个交易日）
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -94,10 +96,12 @@ def align_to_calendar(df: pd.DataFrame, cal: pd.DatetimeIndex, overseas: bool) -
       没有新 K 线（海外休市）写平盘 K 线：开高低收 = 前收，成交量 0，计 stale_days。
       两个 A 股交易日之间有多根新 K 线时（A 股长假）只用最后一根，计 multi_bar_days——跨假期收益落在这一根的收盘里。
       last_bar_date 是最后一行实际用到的 K 线日期（停更时远早于 D）。
-    df 里的指标列（INDICATOR_COLUMNS，I-24：原生序列上算好的）随 K 线一起带到 D；平盘行沿用上一行的值。其他非 K 线列不带。"""
+    df 里的指标列（INDICATOR_COLUMNS，I-24：原生序列上算好的）随 K 线一起带到 D；平盘行沿用上一行的值。其他非 K 线列不带。
+    另加两列标记（MARK_COLUMNS）：stale = 平盘行；data_hole = 连续平盘数到第 HOLE_MIN 行起为 1（I-25）。只看 ≤ D 的行：
+    D 日还不知道这段平盘会不会延长，前 4 行与真实休市无法区分，按休市处理。报告里 stale_runs / max_stale_run 是事后整段统计。"""
     if not overseas:
         on = df["date"].isin(cal)
-        kept = df[on].reset_index(drop=True)
+        kept = df[on].reset_index(drop=True).assign(stale=0, data_hole=0)
         span = cal[(cal >= kept["date"].min()) & (cal <= kept["date"].max())] if len(kept) else cal[:0]
         return kept, {"calendar": "a_share", "dropped_off_calendar": int((~on).sum()),
                       "missing_on_calendar": int((~span.isin(kept["date"])).sum())}
@@ -121,9 +125,24 @@ def align_to_calendar(df: pd.DataFrame, cal: pd.DatetimeIndex, overseas: bool) -
             flat.append(False)
         prev = i
     out = pd.DataFrame(rows, columns=BAR_COLUMNS + extra)
+    run, hole, runs = 0, [], []                        # runs：连续平盘段 [起始行, 行数]
+    for k, f in enumerate(flat):
+        run = run + 1 if f else 0
+        hole.append(int(run >= HOLE_MIN))
+        if run == 1:
+            runs.append([k, 0])
+        if run:
+            runs[-1][1] = run
+    out["stale"], out["data_hole"] = [int(f) for f in flat], hole
     trailing = len(flat) - (max((k for k, f in enumerate(flat) if not f), default=-1) + 1)
+    ends_at_tail = lambda r: r[0] + r[1] == len(flat)                                 # noqa: E731
     return out, {"calendar": "overseas_d_minus_1", "stale_days": sum(flat), "multi_bar_days": multi, "trailing_stale_days": trailing,
-                 "last_bar_date": str(src["date"].iloc[prev].date()) if prev is not None else None}
+                 "last_bar_date": str(src["date"].iloc[prev].date()) if prev is not None else None,
+                 "max_stale_run": max((n for k0, n in runs if not ends_at_tail([k0, n])), default=0),     # 中段最长连续平盘
+                 "stale_runs": [{"first": str(out["date"].iloc[k0].date()), "last": str(out["date"].iloc[k0 + n - 1].date()),
+                                 "rows": n, "trailing": ends_at_tail([k0, n]), "hole_rows": n - HOLE_MIN + 1}
+                                for k0, n in runs if n >= HOLE_MIN],
+                 "data_hole_rows": int(sum(hole))}
 
 
 def bar_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -164,14 +183,19 @@ def container_panel(df: pd.DataFrame, bench: pd.Series, end: date, trading_days:
     """state / atr20 用 research_frame 带来的列（I-24）。缺这两列就报错，不静默在给定序列上重算——对齐后的海外序列上
     重算就是退回 P6a 口径（平盘进指标）。只有调用方明确给的是一条原生序列时才传 compute_indicators=True 就地算。
     rs_1m、z_month 用对齐后的收盘（横截面口径），不变。"""
+    hole = df["data_hole"].to_numpy() if "data_hole" in df else None
     if compute_indicators:
         df = bar_indicators(df[BAR_COLUMNS])
     elif "state" not in df or "atr20" not in df:
         raise BuildError("缺 state / atr20：先经 research_frame 在原生 K 线上算（I-24），或对原生序列显式传 compute_indicators=True")
+    if hole is None:
+        if not compute_indicators:
+            raise BuildError("缺 data_hole：先经 research_frame 对齐（I-25）")
+        hole = np.zeros(len(df), dtype=int)                     # 原生序列没有平盘行，也就没有断档
     return pd.DataFrame({
         "date": df["date"], "open": df["open"], "high": df["high"], "low": df["low"], "close": df["close"],
         "state": df["state"], "rs_1m": rs_1m(df["close"], df["date"], bench), "atr20": df["atr20"],
-        "z_month": z_month(df["close"], df["date"], end, trading_days=trading_days),
+        "z_month": z_month(df["close"], df["date"], end, trading_days=trading_days), "data_hole": hole,
     })
 
 
@@ -222,17 +246,18 @@ def build(package: Path, out: Path | None = None, *, log=print) -> Path:
         frames.append(p)
         rep.update(series_file=c["series_file"], route=c["route_used"], price_only=c["price_only"],
                    first=str(df["date"].min().date()), last=str(df["date"].max().date()), aligned_rows=len(df),
-                   states={k: int(v) for k, v in p["state"].value_counts().items()},
+                   states={k: int(v) for k, v in p.loc[df["stale"].to_numpy() == 0, "state"].value_counts().items()},   # 只数非平盘行
                    z_month_values=int(p["z_month"].notna().sum()))
         report["containers"][name] = rep
         flags = {"补开高低": rep["ohl_filled_from_close"], "扩高低": rep["hl_clamped"], "原始无成交量": rep["volume_missing_or_zero"],
                  "缺收盘丢弃": rep["dropped_missing_close"], "重复日期": rep["dropped_duplicate_dates"],
                  "不在 A 股日历丢弃": rep.get("dropped_off_calendar", 0), "日历内缺日": rep.get("missing_on_calendar", 0),
                  "平盘": rep.get("stale_days", 0),
-                 "长假并入最后一根": rep.get("multi_bar_days", 0)}
+                 "长假并入最后一根": rep.get("multi_bar_days", 0), "数据断档（不产生入场信号）": rep.get("data_hole_rows", 0)}
         log(f"  ok  {name}: {rep['aligned_rows']} 行 {rep['first']}→{rep['last']}；成交量 {rep['volume_source']}"
             + "".join(f"；{k} {v} 行" for k, v in flags.items() if v)
-            + (f"；⚠ 末尾连续平盘 {rep['trailing_stale_days']} 行（序列可能停更）" if rep.get("trailing_stale_days", 0) > 3 else ""))
+            + (f"；⚠ 末尾连续平盘 {rep['trailing_stale_days']} 行（序列可能停更）" if rep.get("trailing_stale_days", 0) > 3 else "")
+            + "".join(f"；⚠ 断档 {r['first']}→{r['last']} {r['rows']} 行" for r in rep.get("stale_runs", [])))
     if not frames:
         raise BuildError("没有任何容器有研究序列")
     panel = pd.concat(frames, ignore_index=True).sort_values(["date", "container"]).reset_index(drop=True)
