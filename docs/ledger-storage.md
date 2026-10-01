@@ -7,7 +7,7 @@
 - Status: active
 - Owner: Faye
 - Last updated: 2026-09-29
-- Source of truth: `docs/etf-card-schema-v1.md`（含 v1.1 补充 a–f）；`docs/etf-fixed-sources-v1.md` §3–§5；`operations/planning/2026-09-27-astra-execution.md`（A1–A4）；replan §3 P3、§8 P6b、§9 P6c-2
+- Source of truth: `docs/etf-card-schema-v1.md`（含 v1.1 补充 a–g）；`docs/etf-fixed-sources-v1.md` §3–§5；`operations/planning/2026-09-27-astra-execution.md`（A1–A4）；replan §3 P3、§8 P6b、§9 P6c-2
 
 ## 用法
 
@@ -20,7 +20,7 @@ python -m src.ledger summary   [--db …]                     # 分母、分档�
 
 **数据库时钟**：触发器用 `ledger_now()`（`Ledger` 注册，北京时间到分钟，每个事务内冻结为同一时刻）判断截止与「不能写未来」；各表的 `recorded_at` 必须等于它。没注册这个函数的连接（sqlite3 命令行、别的进程）写不进台账行与固定源版本；自己注册同名函数等于注入时钟，属于蓄意绕过，存储层不防。注入时钟只用于回放：`Ledger(回放库, clock=…, replay=True)`，不能指向正式库；库第一次打开时记下时钟模式（`ledger_meta.clock` = real / replay），之后换模式打开即拒绝——回放写出的卡进不了正式台账。
 
-**schema 版本**：`ledger_meta.schema` = `v1.1-f`（新库建库时写入）。之前版本建的库（P3 / P5 的回放库没有 `evidence_status` 等列；P6b 的 `v1.1` 库出场记录没有触发收盘）打开即拒绝并提示迁移；正式台账按 A7 还没有启用，所以本包不提供迁移脚本，旧回放库删掉重跑即可。
+**schema 版本**：`ledger_meta.schema` = `v1.1-g`（新库建库时写入）。之前版本建的库（P3 / P5 的回放库没有 `evidence_status` 等列；P6b 的 `v1.1` 库出场记录没有触发收盘；P6c 的 `v1.1-f` 库没有出场信号表）打开即拒绝并提示迁移；正式台账按 A7 还没有启用，所以本包不提供迁移脚本，旧回放库删掉重跑即可。
 
 ## 字段落点（schema §2 → 表.列）
 
@@ -47,7 +47,8 @@ python -m src.ledger summary   [--db …]                     # 分母、分档�
 | `supersedes` | `cards.supersedes` | 只能引用已作废的卡，且新卡晚于作废时刻；一张旧卡只能被取代一次 |
 | §2.2 每日行 | `daily` 表 | 按日期严格递增追加，不晚于数据库时钟；出场后继续追加到期满；作废或期满后拒绝 |
 | 进场 | `entries` 表 | 成交不早于 `owner_score_deadline` 那次开盘（不能倒填；owner 打分时这笔交易还没发生；早盘确认的卡当天可进）、不晚于数据库时钟；进场价必须高于失效位（否则按「未进场而失效」作废）；只一次 |
-| §2.3 出场 | `exits` 表 | 须先有进场；不晚于数据库时钟；`手动` 必须写 `manual_reason`；`exit_signal_close`（v1.1-f，触发出场的那根收盘，研究序列上）必填。实现口径（待 Cowork 确认）：出场一律按开盘成交，触发收盘 = 出场日之前最近一行每日记录的收盘，有这样的行时必须等于它；出场后不能再补出场日之前的每日行（事后可审计，记账顺序不影响结果）；`失效位` 出场时它必须低于锁定的失效位 |
+| 出场信号（v1.1-g 第 3 条） | `exit_signals(card_id, signal_date, reason, manual_reason, signal_close, recorded_at)` | write-once，每张卡至多一条；须已进场、未出场；信号日不早于进场日、不晚于数据库时钟；**信号日必须已有每日行，`signal_close` 等于它的收盘**（触发收盘是台账自己的观测，v1.1-g 第 1 条 (a)），信号日之后已有每日行时不能补记更早的信号；`失效位` 信号的收盘必须低于锁定失效位（第 1 条 (b)）；`手动` 必须写 `manual_reason`。止损信号由每日任务在跌破那天收盘后写；手动 / 论点作废由 owner 在某日收盘后声明（第 2 条） |
+| §2.3 出场 | `exits` 表 | 须先有进场；不晚于数据库时钟；`手动` 必须写 `manual_reason`；**必须有出场信号**，`exit_date` 晚于信号日（之后第一个有开盘价的交易日按开盘成交，中间不撤销），`exit_reason` 与 `exit_signal_close` 都必须等于信号的原因与收盘；出场后不能再补出场日之前的每日行 |
 | §2.4 跟踪期满 | `finals` 表 | 出场后的每日行满 `tracking_days` 行才能写；`final_score` 必须等于机械结果（触发器重算，v1.1-f）：先判证伪——`exit_signal_close` < 锁定的 `invalidation_price`（不论出场原因标签）或 `exit_reason = 论点作废`（哪怕 R > 0）；未证伪的卡按锁定菜单分档：第 1 项按 `realized_excess_pct` 对 `target_excess_pct`，第 2 项按 `realized_r`（含成本）：≥ 2 达标、> 0 部分、≤ 0 未达（没有 −1 下限） |
 | 作废 | `voids` 表 | 只有未进场的候选能作废；已进场的卡按「论点作废 / 手动」出场 |
 
@@ -66,4 +67,4 @@ python -m src.ledger summary   [--db …]                     # 分母、分档�
 2. 固定源 §3 的 B 级 `available_at` 已由 I-23 更正为取 min；存储层只强制 `available_at ≤ created_at`、`first_seen_at ≤ created_at`、`available_at ≥ published_at`，具体取值由写入方按规则算。
 3. A1 双栏（v1.1-b）与证据时点字段（v1.1-d）已补进 schema v1.1。
 4. 已进场的卡不能作废（否则亏损可以靠作废从 R 分布里消失），只能按「论点作废 / 手动」出场；已进场的卡要不要也能 `supersedes`，待 Cowork 定口径。
-5. 「证伪」的判定已由 v1.1-f 统一（两项菜单）：按触发收盘对锁定失效位与论点作废判，不再用 `realized_r ≤ −1`。`exit_signal_close` 的一致性只能对照已写入的每日行核对；出场日之前没有任何每日行的卡（例如进场当天就手动出场）存储层只要求它为正数（`失效位` 出场另要求低于失效位），出场后也不能再补行。
+5. 「证伪」的判定已由 v1.1-f 统一（两项菜单）：按触发收盘对锁定失效位与论点作废判，不再用 `realized_r ≤ −1`。v1.1-g 起触发收盘 = 出场信号那一行每日记录的收盘，记信号时就要求那一行已存在——进场当天收盘后才能记第一条信号，所以不再有「出场前没有每日行」的卡。

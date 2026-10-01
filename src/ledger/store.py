@@ -25,7 +25,7 @@ FIXED_SOURCES = ROOT / "docs" / "etf-fixed-sources-v1.csv"
 DEFAULT_DB = ROOT / "data" / "ledger.sqlite"          # 不入 Git（.gitignore：*.sqlite）
 BEIJING = ZoneInfo("Asia/Shanghai")
 
-APPEND_ONLY = ("cards", "evidence", "strength_scores", "entries", "daily", "exits", "finals", "voids",
+APPEND_ONLY = ("cards", "evidence", "strength_scores", "entries", "daily", "exit_signals", "exits", "finals", "voids",
                "source_loads", "fixed_sources")
 CARD_FIELDS = (
     "id", "created_at", "close_date", "scan_key", "container", "instrument_code", "instrument_name", "research_index_code",
@@ -40,7 +40,7 @@ FROZEN_FIELDS = CARD_FIELDS + ("recorded_at",)
 EVIDENCE_FIELDS = ("source_id", "published_at", "summary", "url", "first_seen_at", "available_at", "snapshot_path", "snapshot_sha256")
 SCORING_RULE = "schema-v1-§3"          # 菜单第 1 项（按超额与期限）
 SCORING_RULE_R = "schema-v1.1-R"        # 菜单第 2 项（按 R 倍数，规则卡；v1.1-c）
-SCHEMA_VERSION = "v1.1-f"               # v1.1-f：出场记录加 exit_signal_close，期满先判证伪；之前建的库拒绝打开
+SCHEMA_VERSION = "v1.1-g"               # v1.1-g：出场信号表 exit_signals，出场引用信号；之前建的库拒绝打开（v1.1-f：exit_signal_close）
 
 
 class LedgerError(ValueError):
@@ -215,6 +215,16 @@ class Ledger:
 
     def append_daily(self, card_id: str, row: dict) -> None:
         self._tx(lambda: self._insert("daily", {"card_id": card_id, **row}))
+
+    def signal_exit(self, card_id: str, signal_date: str, reason: str, signal_close: float, manual_reason: str | None = None) -> None:
+        """v1.1-g：出场信号（write-once）。止损由每日任务在跌破那天收盘后写；手动 / 论点作废由 owner 在某日收盘后声明，
+        该日就是信号行。成交在之后第一个有开盘价的交易日（exit）。"""
+        self._tx(lambda: self._insert("exit_signals", {"card_id": card_id, "signal_date": signal_date, "reason": reason,
+                                                       "signal_close": signal_close, "manual_reason": manual_reason}))
+
+    def exit_signal(self, card_id: str) -> dict | None:
+        r = self.conn.execute("SELECT * FROM exit_signals WHERE card_id = ?", (card_id,)).fetchone()
+        return dict(r) if r else None
 
     def exit(self, card_id: str, **row) -> None:
         self._tx(lambda: self._insert("exits", {"card_id": card_id, **row}))

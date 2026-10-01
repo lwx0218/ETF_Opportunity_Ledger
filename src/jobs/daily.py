@@ -1,13 +1,14 @@
 """收盘后的每日流程骨架（replan §3 P5）。一个交易日 D 依次：
 
-  1. 开盘离场：在场卡若在上一行收盘跌破当时生效的止损，按 D 开盘离场（prereg-v1 §4，与 V1 引擎同一时序）
+  1. 开盘离场：有未成交出场信号的卡按 D 开盘成交；D 无开盘价则顺延，信号不撤销（v1.1-g 第 3 条，与 V1 引擎的 exit_flag 一致）
   2. 开盘进场：上一交易日立的候选卡按 D 开盘成交；开盘不高于失效位、持仓已满、已持有该容器、错过次日开盘 → 作废（A4：留在分母）
-  3. 收盘每日行：在场卡与跟踪期内的卡各追加一行（收盘、状态、z、排名、R、MFE / MAE、止损）；止损按 §4 只上不下
+  3. 收盘每日行：在场卡与跟踪期内的卡各追加一行（收盘、状态、z、排名、R、MFE / MAE、止损）；止损按 §4 只上不下；
+     收盘跌破当时生效的止损 → 写出场信号（write-once），此后止损不再更新，直到成交
   4. 跟踪期满：出场后满 tracking_days 行 → 写期满记录，final_score 由存储层按 v1.1-f 机械核对（先判证伪，再按菜单分档）
   5. 触发候选：只接「恐慌下轨」与「事件驱动」（A7），立卡即锁死
 
 幂等：每一步都先查台账已有的记录，同一天重跑不产生任何新行。所有价格都在卡片的研究序列上（后复权 / 全收益点位）。
-只验流程，不产出任何研究结论；记账口径按 schema v1.1-e 与 v1.1-f（docs/jobs-daily.md，jobs-daily-v2）。
+只验流程，不产出任何研究结论；记账口径按 schema v1.1-e、v1.1-f、v1.1-g（docs/jobs-daily.md，jobs-daily-v3）。
 """
 from __future__ import annotations
 
@@ -34,13 +35,14 @@ class DayReport:
     voids: list = field(default_factory=list)
     daily_rows: int = 0
     finals: list = field(default_factory=list)
+    signals: list = field(default_factory=list)          # 当日收盘新写的出场信号
     created: list = field(default_factory=list)
     skipped: list = field(default_factory=list)
     reminders: list = field(default_factory=list)
     blocked: str = ""                                    # 非空 = 台账一行未动（CLI 不记为已处理）
 
     def changed(self) -> bool:
-        return bool(self.exits or self.entries or self.voids or self.daily_rows or self.finals or self.created)
+        return bool(self.exits or self.entries or self.voids or self.daily_rows or self.finals or self.created or self.signals)
 
 
 def default_scorer(c: R.Candidate) -> dict | None:
@@ -160,21 +162,18 @@ class DailyJob:
                                      f"核对「{c['thesis_inval_statement']}」，成立则按「论点作废」出场")
 
     def _exits(self, D, rep):
+        """v1.1-g 第 3 条：出场信号在之后第一个有开盘价的交易日按开盘成交；原因与触发收盘取自信号。"""
         for cid in self.L.cards_in("当下"):
-            card, rows = self.L.card(cid), self.L.daily_rows(cid)
-            if not rows or rows[-1]["date"] >= D.date().isoformat():
+            sig = self.L.exit_signal(cid)
+            if sig is None or sig["signal_date"] >= D.date().isoformat():
                 continue
-            stop_eff = rows[-2]["stop_now"] if len(rows) > 1 else card["invalidation_price"]
-            last = rows[-1]
-            if not last["close"] < stop_eff:
-                continue
+            card = self.L.card(cid)
             r = self._row(card["container"], D)
             if r is None or not np.isfinite(r.open):
-                rep.skipped.append(f"{cid}：应离场但 {D.date()} 无开盘价，顺延")
+                rep.skipped.append(f"{cid}：{sig['signal_date']} 的出场信号，{D.date()} 无开盘价，顺延（信号不撤销）")
                 continue
             entry = self._entry(cid)
             r_unit = entry["entry_price"] - card["invalidation_price"]
-            activated = any(x["close"] >= entry["entry_price"] + self.p.activate_at_r * r_unit for x in rows[:-1])
             c = self.p.cost_per_side
             px = float(r.open)
             realized_r = (px * (1 - c) - entry["entry_price"] * (1 + c)) / r_unit
@@ -183,9 +182,9 @@ class DailyJob:
             excess = (held_ret - bench_ret) * 100
             held = self.panel[(self.panel["container"] == card["container"]) & (self.panel["date"] >= pd.Timestamp(entry["entry_date"]))
                               & (self.panel["date"] < D)]
-            self.L.exit(cid, exit_date=D.date().isoformat(), exit_price=px, exit_reason="移动止盈" if activated else "失效位",
+            self.L.exit(cid, exit_date=D.date().isoformat(), exit_price=px, exit_reason=sig["reason"], manual_reason=sig["manual_reason"],
                         realized_r=round(realized_r, 6), realized_excess_pct=round(excess, 6), holding_days=int(len(held)),
-                        exit_signal_close=last["close"])                  # v1.1-f：触发出场的那根收盘，期满时判证伪
+                        exit_signal_close=sig["signal_close"])            # v1.1-g：触发收盘 = 信号行收盘，期满时判证伪
             rep.exits.append(cid)
 
     def _entry(self, cid):
@@ -250,6 +249,7 @@ class DailyJob:
             close = float(r.close)
             r_cur = (close - entry["entry_price"]) / r_unit
             exited = self.L.status(cid) == "过去"
+            pending = not exited and self.L.exit_signal(cid) is not None      # 有未成交的出场信号
             prev_mfe = rows[-1]["mfe"] if rows else None
             prev_mae = rows[-1]["mae"] if rows else None
             if exited:
@@ -258,8 +258,8 @@ class DailyJob:
                 mfe = max(r_cur, prev_mfe) if prev_mfe is not None else r_cur
                 mae = min(r_cur, prev_mae) if prev_mae is not None else r_cur
                 stop_eff = rows[-1]["stop_now"] if rows else card["invalidation_price"]
-                if close < stop_eff:
-                    stop_now = stop_eff                          # 跌破：止损不再更新，次日开盘离场
+                if pending or close < stop_eff:
+                    stop_now = stop_eff                          # 跌破或已有出场信号：止损不再更新，直到成交
                 else:
                     closes = [x["close"] for x in rows] + [close]
                     activated = max(closes) >= entry["entry_price"] + self.p.activate_at_r * r_unit
@@ -271,6 +271,10 @@ class DailyJob:
                                           r_current=round(r_cur, 6), mfe=_num(mfe), mae=_num(mae), stop_now=_num(stop_now),
                                           bench_close=_num(hs)))
             rep.daily_rows += 1
+            if not exited and not pending and close < stop_eff:                 # v1.1-g：跌破那天收盘后写出场信号
+                activated = any(x["close"] >= entry["entry_price"] + self.p.activate_at_r * r_unit for x in rows)
+                self.L.signal_exit(cid, D.date().isoformat(), "移动止盈" if activated else "失效位", close)
+                rep.signals.append(cid)
 
     def _finals(self, D, rep):
         for cid in self.L.cards_in("过去"):
