@@ -172,3 +172,21 @@ P6a / P6b 已合并（PR #6、#7，main `7fba10a`，170 个测试通过）。两
 - **P6c-1 `src/indicators/build.py`（I-24）**：`research_frame` 里把 `form_states` 与 `atr20` 的计算移到 `align_to_calendar` 之前（借量之后；A 股容器先丢非日历行再算）；`align_to_calendar` 把指标列随 K 线一起带到 D，平盘行沿用上一根的指标；`container_panel` 改用带来的列；`rs_1m` / `z_month` 不动。每日任务共用 `research_frame`，自然跟上。测试（构造海外序列）：(a) 平盘日的 `state` / `atr20` 等于上一根的值；(b) 美股假日后一天的 `atr20` 等于原生序列上该 K 线的 ATR20，与不对齐时逐根相等；(c) 长假内出现的最高价进入其后的 hi20（构造一个只在假期中段出现的高点，验证 BNB / tight 的判定用到了它）；(d) 截断测试仍逐行相等；(e) A 股容器结果与 P6a 完全相同。`docs/indicators-layer.md`「日历对齐与成交量来源」一节同步。
 - **P6c-2 `src/ledger/` + `src/jobs/`（v1.1-f）**：出场记录加 write-once 字段记录触发出场的那根收盘；`mechanical_score` 与 `finals_insert` 触发器改为先判证伪（该收盘 < `cards.invalidation_price` 或 `exit_reason = 论点作废`），再按菜单分档，第 2 项「未达」= `realized_r ≤ 0`；旧回放库按 P6b 做法拒绝打开，不写迁移；`TERMS_VERSION` 升一版；`docs/jobs-daily.md` 同步。测试：失效位出场次日高开（−1 < R < 0）记证伪；移动止盈出场但收盘低于锁定失效位记证伪；论点作废且 R > 0 记证伪；未证伪但跳空致 R ≤ −1 记未达；菜单第 1 项同样四例。
 - 每包仍是一页工作日志 + 包末一次复核；合并后 Cowork 做研究逻辑复核（只读）。
+
+## 10. 追加（2026-10-01）· P6c 合并后的裁定与 P6d
+
+P6c-1 / P6c-2 已合并（PR #8、#9，main `5c0ef8b`，183 个测试通过）。两份工作日志「交 Cowork 留意」裁定如下，细节见 implementation-notes I-25 与 `docs/etf-card-schema-v1.md` v1.1-g。
+
+| 留意项 | 裁定 |
+|---|---|
+| P6c-2 存储层自加的两条核对（触发收盘 = 出场日之前最近一行的收盘、出场后不能补行；失效位出场的触发收盘必须低于失效位） | **接受**，写进 v1.1-g 第 1 条。手动出场同样用触发行收盘判证伪；出场一律次日开盘成交，没有盘中或当天收盘的出场时点 |
+| 海外序列中段长断档，平盘行沿用陈旧状态 | **不只是注明，要标记并挡住开仓**（I-25）：连续 ≥ 5 个 A 股交易日没有新 K 线的平盘段 = 数据断档（真实休市最长 4 天），面板加 `data_hole` 列，V1 不在这些行上开新仓，已持仓照引擎处理；报告记 `max_stale_run` 与各断档段 |
+| 可达状态表按面板行计数，平盘日重复计入 | 改为只按非平盘行计数（并入 P6d-1） |
+| P5 遗留：止损次日无开盘价时出场顺延，若当天收盘回到止损之上信号丢失 | **按 V1 引擎修**（v1.1-g 第 3 条）：出场信号写 write-once 记录并持久化到成交，触发收盘改为信号行的收盘，第 1 条核对随之改为对信号行。不阻塞 V1，A7 之前无正式卡片、不迁移 |
+| 远端 `-p6c1`、`-p6c2` 分支 | 删除；`claude/bold-archimedes-8mka2j*` 下其余已合并分支一并删除（先 `git branch -r --merged origin/main` 核对） |
+
+### P6d · CC 下一包（P6d-1 很小但在 V1 之前落地；P6d-2 不阻塞）
+
+- **P6d-1 `src/indicators/build.py` + `src/research/prereg_v1/{signals,run}.py` + `docs/indicators-layer.md`（I-25）**：`align_to_calendar` 对平盘段标 `data_hole`（连续 ≥ 5 行的中段或末尾平盘段整段为 1，≤ 4 行为 0），报告加 `max_stale_run`（中段最长连续平盘）与 `stale_runs`（≥ 5 的各段起止日期与行数）；`container_panel` 输出 `data_hole` 列（A 股容器恒 0）；`states` 可达状态表只按非平盘行计数。`signals.py` 的 `breakout_signals` 与 `panic_signals` 都排除 `data_hole = 1` 的行；`run.py check` 校验该列存在并打印各容器断档段；引擎不改。实现 `panel.py` 读取时若缺该列报错，不默认 0。测试：构造一段 30 行断档，断档内无信号、断档前后信号与无断档时相同；4 行休市段不标；末尾 ≥ 5 行标；已持仓的卡在断档内不出场、断档结束后第一根真 K 线按正常规则判；可达状态表不计平盘行；截断测试仍逐行相等。
+- **P6d-2 `src/ledger/` + `src/jobs/`（v1.1-g 第 3 条）**：出场信号 write-once 记录（卡片、信号日、原因、信号日收盘），每日任务先处理未成交的信号，在第一个有开盘价的交易日成交，中间不撤销、不更新移动止盈；`exits` 引用信号，触发收盘 = 信号行收盘，核对 (a) 改为对信号行；`SCHEMA_VERSION` 与 `TERMS_VERSION` 各升一版，旧库拒绝、不迁移；`docs/ledger-storage.md`、`docs/jobs-daily.md` 同步。测试：止损次日无开盘价、第二天收盘回到止损之上，第三天仍出场且触发收盘是跌破那一行；顺延期间移动止盈不更新；手动与论点作废走同一条路径；与 V1 引擎用同一组构造数据比对出场日与价格。
+- 每包仍是一页工作日志 + 包末一次复核；合并后 Cowork 做研究逻辑复核（只读）。
