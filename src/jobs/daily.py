@@ -266,14 +266,16 @@ class DailyJob:
                     atr = float(r.atr20) if np.isfinite(r.atr20) else None
                     stop_now = max(stop_eff, max(closes) - self.p.trail_atr * atr) if activated and atr else stop_eff
             rank = ranks.get(card["container"])
+            signal = None
+            if not exited and not pending and close < stop_eff:                 # v1.1-g：跌破那天收盘后写出场信号（与每日行同一事务）
+                activated = any(x["close"] >= entry["entry_price"] + self.p.activate_at_r * r_unit for x in rows)
+                signal = {"reason": "移动止盈" if activated else "失效位", "signal_close": close}
             self.L.append_daily(cid, dict(date=D.date().isoformat(), close=close, state=r.state, z=_num(r.z_month),
                                           rs_1m_rank=int(rank) if rank == rank and rank is not None else None,
                                           r_current=round(r_cur, 6), mfe=_num(mfe), mae=_num(mae), stop_now=_num(stop_now),
-                                          bench_close=_num(hs)))
+                                          bench_close=_num(hs)), signal=signal)
             rep.daily_rows += 1
-            if not exited and not pending and close < stop_eff:                 # v1.1-g：跌破那天收盘后写出场信号
-                activated = any(x["close"] >= entry["entry_price"] + self.p.activate_at_r * r_unit for x in rows)
-                self.L.signal_exit(cid, D.date().isoformat(), "移动止盈" if activated else "失效位", close)
+            if signal:
                 rep.signals.append(cid)
 
     def _finals(self, D, rep):

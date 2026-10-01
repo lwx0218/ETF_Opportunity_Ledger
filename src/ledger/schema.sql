@@ -321,9 +321,15 @@ BEGIN
      WHERE NOT EXISTS (SELECT 1 FROM exit_signals WHERE card_id = NEW.card_id);
     SELECT RAISE(ABORT, '出场日必须晚于信号日（按之后的开盘成交）')
      WHERE NEW.exit_date <= (SELECT signal_date FROM exit_signals WHERE card_id = NEW.card_id);
-    SELECT RAISE(ABORT, 'exit_reason 与 exit_signal_close 必须取自出场信号')
+    SELECT RAISE(ABORT, 'exit_reason、manual_reason 与 exit_signal_close 必须取自出场信号')
      WHERE NEW.exit_reason IS NOT (SELECT reason FROM exit_signals WHERE card_id = NEW.card_id)
+        OR NEW.manual_reason IS NOT (SELECT manual_reason FROM exit_signals WHERE card_id = NEW.card_id)
         OR NEW.exit_signal_close IS NOT (SELECT signal_close FROM exit_signals WHERE card_id = NEW.card_id);
+    -- v1.1-g 第 2 条：owner 在某日收盘后声明手动 / 论点作废，成交在之后的开盘——声明必须早于成交那天 09:30
+    -- （否则等于看了当天盘中走势再拿更早的开盘价成交）。止损信号由每日任务写，补跑时记录时刻会晚，不受这条限制
+    SELECT RAISE(ABORT, '手动 / 论点作废的出场信号必须在成交那天开盘前记录')
+     WHERE (SELECT reason FROM exit_signals WHERE card_id = NEW.card_id) IN ('手动', '论点作废')
+       AND (SELECT recorded_at FROM exit_signals WHERE card_id = NEW.card_id) >= NEW.exit_date || 'T09:30';
 END;
 
 CREATE TRIGGER IF NOT EXISTS finals_insert BEFORE INSERT ON finals

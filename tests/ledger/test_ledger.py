@@ -281,6 +281,15 @@ class SchemaV11(Base):
             L.close()
             with self.assertRaisesRegex(LedgerError, "schema 是 v1.1，"):
                 Ledger(v11, clock=lambda: T0, replay=True)
+            v11f = Path(d) / "v11f.sqlite"                                         # P6c 的 v1.1-f 库：没有出场信号表
+            L = Ledger(v11f, clock=lambda: T0, replay=True)
+            L.conn.execute("DROP TRIGGER ledger_meta_no_update")
+            L.conn.execute("UPDATE ledger_meta SET value = 'v1.1-f' WHERE key = 'schema'")
+            L.close()
+            before = v11f.read_bytes()
+            with self.assertRaisesRegex(LedgerError, "schema 是 v1.1-f，"):
+                Ledger(v11f, clock=lambda: T0, replay=True)
+            self.assertEqual(v11f.read_bytes(), before)
             # 真正的旧库（v1 的 cards 没有 evidence_status）：拒绝，且一个字节都不改
             old = Path(d) / "older.sqlite"
             c = sqlite3.connect(old)
@@ -355,6 +364,25 @@ class FalsificationV11f(Base):
         with self.assertRaisesRegex(LedgerError, "已出场|已有出场信号"):
             self.L.signal_exit(cid, "2026-11-19", "手动", 9.0, "x")
 
+    def test_manual_signal_must_precede_the_fill_and_match(self):
+        """手动 / 论点作废：声明必须早于成交那天 09:30（收盘后决定、次日开盘成交，不能看了盘中再按开盘价成交）；
+        出场的理由必须取自信号。止损信号由每日任务写，补跑晚记不受这条限制。"""
+        base = dict(exit_price=10.4, realized_r=0.1, realized_excess_pct=0.5, holding_days=28, exit_signal_close=10.6)
+        cid = self.entered()
+        self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=10.6, state="NEUTRAL"))
+        self.at("2026-11-20T10:30").L.signal_exit(cid, "2026-11-19", "手动", 10.6, "盘中看到暴跌")   # 11-20 盘中才记
+        with self.assertRaisesRegex(LedgerError, "开盘前记录"):
+            self.L.exit(cid, exit_date="2026-11-20", exit_reason="手动", manual_reason="盘中看到暴跌", **base)
+        self.at("2026-11-23T09:35")
+        with self.assertRaisesRegex(LedgerError, "取自出场信号"):
+            self.L.exit(cid, exit_date="2026-11-23", exit_reason="手动", manual_reason="换个说法", **base)
+        self.L.exit(cid, exit_date="2026-11-23", exit_reason="手动", manual_reason="盘中看到暴跌", **base)   # 下一个开盘成交可以
+        late = self.entered()                                                         # 止损信号补跑晚记：照常成交
+        self.at("2026-11-19T16:00").L.append_daily(late, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))
+        self.at("2026-11-21T20:00").L.signal_exit(late, "2026-11-19", "失效位", 9.0)
+        self.L.exit(late, exit_date="2026-11-20", exit_reason="失效位", manual_reason=None, exit_price=9.4, realized_r=-0.8,
+                    realized_excess_pct=-3.0, holding_days=28, exit_signal_close=9.0)
+
     def test_no_late_signal_and_no_backfill(self):
         """信号日之后已有每日行时不能补记更早的信号（看了后面的行情再挑一根收盘）；出场后不能补出场日之前的每日行。"""
         cid = self.entered()
@@ -400,6 +428,13 @@ class FalsificationV11f(Base):
 
 class Section25(Base):
     """schema §2.5 明令禁止——每条一个失败测试（UPDATE、DELETE、REPLACE 三种写法都试）。"""
+
+    def test_exit_signal_is_frozen(self):
+        cid = self.run_to_exit(reason="失效位", r=-1.05, excess=-4.0)
+        self.rejects("UPDATE exit_signals SET reason = '移动止盈', signal_close = 10.8 WHERE card_id = ?", cid)
+        self.rejects("DELETE FROM exit_signals WHERE card_id = ?", cid)
+        self.replace("exit_signals", self.cols("exit_signals", cid), reason="手动", manual_reason="改成手动")
+        self.assertEqual(self.cols("exit_signals", cid)["reason"], "失效位")
 
     def test_no_evidence_added_after_creation(self):
         cid = self.make()

@@ -134,7 +134,7 @@ class Ledger:
         except sqlite3.DatabaseError as e:
             self.conn.execute("ROLLBACK")
             raise LedgerError(str(e)) from e
-        except Exception:
+        except BaseException:                                        # 含进程内中断：事务整体回滚，不留半截
             self.conn.execute("ROLLBACK")
             raise
         finally:
@@ -213,8 +213,14 @@ class Ledger:
         self._tx(lambda: self._insert("entries", {"card_id": card_id, "entry_date": entry_date, "entry_price": entry_price,
                                                   "size_pct": size_pct}))
 
-    def append_daily(self, card_id: str, row: dict) -> None:
-        self._tx(lambda: self._insert("daily", {"card_id": card_id, **row}))
+    def append_daily(self, card_id: str, row: dict, signal: dict | None = None) -> None:
+        """追加一行每日记录。signal = {"reason", "signal_close"[, "manual_reason"]} 时在同一事务里写出场信号（v1.1-g）：
+        两者要么都写进去、要么都没写——中途崩溃后同一天重跑会重新判断，信号不会因为「当天行已在」而丢失。"""
+        def write():
+            self._insert("daily", {"card_id": card_id, **row})
+            if signal is not None:
+                self._insert("exit_signals", {"card_id": card_id, "signal_date": row["date"], "manual_reason": None, **signal})
+        self._tx(write)
 
     def signal_exit(self, card_id: str, signal_date: str, reason: str, signal_close: float, manual_reason: str | None = None) -> None:
         """v1.1-g：出场信号（write-once）。止损由每日任务在跌破那天收盘后写；手动 / 论点作废由 owner 在某日收盘后声明，

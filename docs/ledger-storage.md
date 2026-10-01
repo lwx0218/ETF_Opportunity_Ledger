@@ -6,8 +6,8 @@
 - Document type: reference
 - Status: active
 - Owner: Faye
-- Last updated: 2026-09-29
-- Source of truth: `docs/etf-card-schema-v1.md`（含 v1.1 补充 a–g）；`docs/etf-fixed-sources-v1.md` §3–§5；`operations/planning/2026-09-27-astra-execution.md`（A1–A4）；replan §3 P3、§8 P6b、§9 P6c-2
+- Last updated: 2026-10-01
+- Source of truth: `docs/etf-card-schema-v1.md`（含 v1.1 补充 a–g）；`docs/etf-fixed-sources-v1.md` §3–§5；`operations/planning/2026-09-27-astra-execution.md`（A1–A4）；replan §3 P3、§8 P6b、§9 P6c-2、§10 P6d-2
 
 ## 用法
 
@@ -48,7 +48,7 @@ python -m src.ledger summary   [--db …]                     # 分母、分档�
 | §2.2 每日行 | `daily` 表 | 按日期严格递增追加，不晚于数据库时钟；出场后继续追加到期满；作废或期满后拒绝 |
 | 进场 | `entries` 表 | 成交不早于 `owner_score_deadline` 那次开盘（不能倒填；owner 打分时这笔交易还没发生；早盘确认的卡当天可进）、不晚于数据库时钟；进场价必须高于失效位（否则按「未进场而失效」作废）；只一次 |
 | 出场信号（v1.1-g 第 3 条） | `exit_signals(card_id, signal_date, reason, manual_reason, signal_close, recorded_at)` | write-once，每张卡至多一条；须已进场、未出场；信号日不早于进场日、不晚于数据库时钟；**信号日必须已有每日行，`signal_close` 等于它的收盘**（触发收盘是台账自己的观测，v1.1-g 第 1 条 (a)），信号日之后已有每日行时不能补记更早的信号；`失效位` 信号的收盘必须低于锁定失效位（第 1 条 (b)）；`手动` 必须写 `manual_reason`。止损信号由每日任务在跌破那天收盘后写；手动 / 论点作废由 owner 在某日收盘后声明（第 2 条） |
-| §2.3 出场 | `exits` 表 | 须先有进场；不晚于数据库时钟；`手动` 必须写 `manual_reason`；**必须有出场信号**，`exit_date` 晚于信号日（之后第一个有开盘价的交易日按开盘成交，中间不撤销），`exit_reason` 与 `exit_signal_close` 都必须等于信号的原因与收盘；出场后不能再补出场日之前的每日行 |
+| §2.3 出场 | `exits` 表 | 须先有进场；不晚于数据库时钟；`手动` 必须写 `manual_reason`；**必须有出场信号**，`exit_date` 晚于信号日（「之后第一个有开盘价的交易日成交、中间不撤销」由每日任务保证；台账不存开盘价，存储层只要求出场日晚于信号日），`exit_reason`、`manual_reason`、`exit_signal_close` 都必须等于信号里的值；`手动` / `论点作废` 信号必须在成交那天 09:30 之前记录（收盘后决定、次日开盘成交，v1.1-g 第 2 条；止损信号由每日任务写，补跑晚记不受限）；出场后不能再补出场日之前的每日行 |
 | §2.4 跟踪期满 | `finals` 表 | 出场后的每日行满 `tracking_days` 行才能写；`final_score` 必须等于机械结果（触发器重算，v1.1-f）：先判证伪——`exit_signal_close` < 锁定的 `invalidation_price`（不论出场原因标签）或 `exit_reason = 论点作废`（哪怕 R > 0）；未证伪的卡按锁定菜单分档：第 1 项按 `realized_excess_pct` 对 `target_excess_pct`，第 2 项按 `realized_r`（含成本）：≥ 2 达标、> 0 部分、≤ 0 未达（没有 −1 下限） |
 | 作废 | `voids` 表 | 只有未进场的候选能作废；已进场的卡按「论点作废 / 手动」出场 |
 
