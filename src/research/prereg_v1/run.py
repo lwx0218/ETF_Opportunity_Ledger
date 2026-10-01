@@ -26,7 +26,7 @@ from .characterize import characterize
 from .config import DESIGN_END, OOS_END, OOS_START, PERTURB_FACTORS, PERTURB_PARAMS, Params
 from .engine import random_entry_null, simulate
 from .metrics import acceptance, avg_pairwise_corr, is_fragile, portfolio_stats, r_by, r_stats
-from .panel import content_sha256, hole_runs, read_table, validate_bench, validate_panel
+from .panel import PanelError, content_sha256, hole_runs, read_table, validate_bench, validate_panel
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -47,13 +47,18 @@ def git_head():
 
 
 def stale_segments(panel_path):
-    """build 旁边的 panel-D.build-report.json 里各容器的整段平盘（stale_runs，≥ 5 行）；没有报告时返回 None。"""
+    """build 旁边的 panel-D.build-report.json（同 src/indicators/build.py 的 report_path 规则）里各容器的整段平盘
+    （stale_runs，≥ 5 行）；没有报告时返回 None，报告读不懂时报 PanelError。"""
     rp = Path(panel_path).with_name(Path(panel_path).stem + ".build-report.json")
     if not rp.exists():
         return None
-    rep = json.loads(rp.read_text(encoding="utf-8"))
-    rows = [dict(container=c, first=r["first"], last=r["last"], rows=r["rows"], hole_rows=r["hole_rows"], trailing=r["trailing"])
-            for c, v in rep.get("containers", {}).items() for r in v.get("stale_runs", [])]
+    try:
+        rep = json.loads(rp.read_text(encoding="utf-8"))
+        rows = [dict(container=c, first=r["first"], last=r["last"], rows=int(r["rows"]), hole_rows=int(r["hole_rows"]),
+                     trailing=bool(r["trailing"]))
+                for c, v in rep["containers"].items() for r in v.get("stale_runs", [])]
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
+        raise PanelError(f"{rp.name} 读不懂（{type(e).__name__}: {str(e)[:80]}）：重新 build") from e
     return pd.DataFrame(rows, columns=["container", "first", "last", "rows", "hole_rows", "trailing"])
 
 
@@ -84,7 +89,11 @@ def main(argv=None):
         print(cov.to_string())
         print(f"\n容器 {len(cov)} 个；设计期行数 {len(design)}；基准 {hs300.index.min().date()} → {hs300.index.max().date()}")
         print("提醒（I-18）：hs300 必须是沪深300全收益指数 H00300；容器价格必须是全收益或后复权口径。")
-        segs = stale_segments(a.panel)
+        try:
+            segs = stale_segments(a.panel)
+        except PanelError as e:
+            print(f"⚠ {e}")
+            return 2
         if segs is None:
             holes = hole_runs(panel)
             print("\n⚠ 面板旁边没有 build-report（panel-D.build-report.json），整段平盘的起止不详；"
@@ -100,11 +109,13 @@ def main(argv=None):
             print("（整段 = build-report 的 stale_runs。每段从第 5 行起 data_hole = 1：不产生入场信号、不成交、不参与横截面排名、"
                   "不进刻画与零模型；前 4 行与真实休市同样对待）")
             print(segs.to_string(index=False))
-        got = full.groupby("container")["data_hole"].sum()
+        got = full.groupby("container")["data_hole"].sum()          # 用未截断的面板：报告是整个数据包的
         want = segs.groupby("container")["hole_rows"].sum() if not segs.empty else pd.Series(dtype=int)
-        diff = got.sub(want.reindex(got.index, fill_value=0), fill_value=0)
+        idx = got.index.union(want.index)
+        diff = got.reindex(idx, fill_value=0) - want.reindex(idx, fill_value=0)
         if diff.ne(0).any():
-            print(f"⚠ 面板的 data_hole 行数与 build-report 对不上（不是同一次 build？）：{diff[diff.ne(0)].to_dict()}")
+            print(f"⚠ 面板的 data_hole 行数与 build-report 对不上（不是同一次 build？面板 − 报告）：{diff[diff.ne(0)].astype(int).to_dict()}")
+            return 1
         return 0
 
     if a.step == "characterize":
