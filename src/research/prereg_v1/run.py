@@ -24,7 +24,7 @@ from .characterize import characterize
 from .config import DESIGN_END, OOS_END, OOS_START, PERTURB_FACTORS, PERTURB_PARAMS, Params
 from .engine import random_entry_null, simulate
 from .metrics import acceptance, avg_pairwise_corr, is_fragile, portfolio_stats, r_by, r_stats
-from .panel import validate_bench, validate_panel
+from .panel import hole_runs, validate_bench, validate_panel
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -75,6 +75,12 @@ def main(argv=None):
         print(cov.to_string())
         print(f"\n容器 {len(cov)} 个；设计期行数 {len(design)}；基准 {hs300.index.min().date()} → {hs300.index.max().date()}")
         print("提醒（I-18）：hs300 必须是沪深300全收益指数 H00300；容器价格必须是全收益或后复权口径。")
+        holes = hole_runs(panel)
+        if holes.empty:
+            print("数据断档（I-25，data_hole = 1）：无")
+        else:
+            print(f"\n数据断档（I-25，data_hole = 1，这些行不开新仓；V1 报告须列出）：{len(holes)} 段 {int(holes['rows'].sum())} 行")
+            print(holes.to_string(index=False))
         return 0
 
     if a.step == "characterize":

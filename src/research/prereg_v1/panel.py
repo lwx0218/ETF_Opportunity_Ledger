@@ -9,6 +9,8 @@
     rs_1m       近 1 月相对强弱：21 日收益 − 基准 21 日收益（R3 实现；横截面排名只看相对大小）
     atr20       ATR20 = 真实波幅的 20 日简单均值（与 etf_probe.py ATR14 同一算法，见 reference_atr）
     z_month     仅在该容器每月最后一个交易日有值：(月末收盘 − 前 20 个已完成月末收盘均值) / 其标准差
+    data_hole   0 / 1；1 = 海外容器连续 ≥ 5 个 A 股交易日没有新 K 线的平盘段（I-25），这些行不产生入场信号。
+                缺这一列直接报错，不默认 0：默认 0 等于把断档当行情
 
 基准另给一张表：date, hs300（I-18：沪深300 全收益指数 H00300，与策略的后复权口径一致）。
 所有指标只能用 t 日及以前的数据——这是 R3 的责任，本模块只做形状校验。
@@ -18,7 +20,7 @@ import pandas as pd
 
 from .config import STATE_NAMES
 
-REQUIRED = ["date", "container", "open", "high", "low", "close", "state", "rs_1m", "atr20", "z_month"]
+REQUIRED = ["date", "container", "open", "high", "low", "close", "state", "rs_1m", "atr20", "z_month", "data_hole"]
 
 
 class PanelError(ValueError):
@@ -33,6 +35,9 @@ def validate_panel(panel: pd.DataFrame) -> pd.DataFrame:
     p["date"] = pd.to_datetime(p["date"])
     if p.duplicated(["date", "container"]).any():
         raise PanelError("存在重复的 (date, container)")
+    if not p["data_hole"].isin([0, 1]).all():
+        raise PanelError("data_hole 只能是 0 / 1（I-25），不能为空")
+    p["data_hole"] = p["data_hole"].astype(int)
     bad = set(p["state"].dropna().unique()) - set(STATE_NAMES)
     if bad:
         raise PanelError(f"未知的形态状态代码：{sorted(bad)}")
@@ -59,6 +64,25 @@ def reference_atr(df: pd.DataFrame, n: int = 20) -> pd.Series:
     c, h, l = df["close"], df["high"], df["low"]
     tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
     return tr.rolling(n).mean()
+
+
+def hole_runs(panel: pd.DataFrame) -> pd.DataFrame:
+    """各容器 data_hole = 1 的连续段（起止日期、行数），供 check 打印与 V1 报告列出（I-25）。"""
+    rows = []
+    for c, g in panel.sort_values("date").groupby("container"):
+        h = g["data_hole"].to_numpy()
+        d = g["date"].to_numpy()
+        k = 0
+        while k < len(h):
+            if h[k]:
+                j = k
+                while j + 1 < len(h) and h[j + 1]:
+                    j += 1
+                rows.append(dict(container=c, first=pd.Timestamp(d[k]).date(), last=pd.Timestamp(d[j]).date(), rows=j - k + 1))
+                k = j + 1
+            else:
+                k += 1
+    return pd.DataFrame(rows, columns=["container", "first", "last", "rows"])
 
 
 def wide(panel: pd.DataFrame, col: str) -> pd.DataFrame:

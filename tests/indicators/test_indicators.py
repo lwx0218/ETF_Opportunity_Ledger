@@ -163,7 +163,7 @@ class EndToEnd(unittest.TestCase):
         clock.start()
         self.addCleanup(clock.stop)
 
-    def make_package(self, with_bench=True, calendar=None):
+    def make_package(self, with_bench=True, calendar=None, brent_gap=None):
         raw, out = self.tmp / "raw", self.tmp / "out"
         series = {"H00300.csv": (ohlcv(seed=1, start="2005-01-04", n=5600), "csi"),
                   "H30184CNY010.csv": (ohlcv(seed=2, start="2005-01-04", n=5600), "csi"),
@@ -173,6 +173,8 @@ class EndToEnd(unittest.TestCase):
             series.pop("H00300.csv")
         for name, (df, route) in series.items():
             d = df.copy()
+            if name == "BRENT.csv" and brent_gap:                       # 构造原油的数据断档（I-25）
+                d = d[~d["date"].between(*map(pd.Timestamp, brent_gap))]
             if route == "eia":
                 d[["open", "high", "low"]] = np.nan
             d["date"] = d["date"].dt.strftime("%Y-%m-%d")
@@ -227,6 +229,24 @@ class EndToEnd(unittest.TestCase):
         pkg = self.make_package(calendar=cal)
         with self.assertRaisesRegex(B.BuildError, "交易日历"):
             B.build(pkg, self.tmp / "panel2", log=lambda *_: None)
+
+    def test_data_hole_build_report_and_check(self):
+        """I-25 端到端：原油断档进面板 data_hole、报告 stale_runs，可达状态表只数非平盘行，check 打印断档段。"""
+        pkg = self.make_package(brent_gap=("2020-03-02", "2020-04-10"))
+        out = B.build(pkg, self.tmp / "panel", log=lambda *_: None)
+        rep = __import__("json").loads((out / "build-report.json").read_text(encoding="utf-8"))["containers"]["原油"]
+        self.assertEqual(len(rep["stale_runs"]), 1)
+        self.assertEqual(rep["stale_runs"][0]["rows"], rep["max_stale_run"])
+        self.assertEqual(sum(rep["states"].values()), rep["aligned_rows"] - rep["stale_days"])     # 可达状态表只数非平盘行
+        panel = pd.read_csv(out / "panel.csv")
+        self.assertEqual(int(panel.loc[panel["container"] == "原油", "data_hole"].sum()), rep["data_hole_rows"])
+        self.assertEqual(int(panel.loc[panel["container"] != "原油", "data_hole"].sum()), 0)
+        buf = __import__("io").StringIO()
+        with __import__("contextlib").redirect_stdout(buf):
+            self.assertEqual(prereg_run.main(["check", "--panel", str(out / "panel.csv"), "--bench", str(out / "bench.csv"),
+                                              "--out", str(self.tmp / "v1")]), 0)
+        self.assertIn("数据断档", buf.getvalue())
+        self.assertIn("原油", buf.getvalue().split("数据断档")[1])
 
     def test_missing_total_return_bench_fails(self):
         pkg = self.make_package(with_bench=False)
@@ -442,7 +462,7 @@ class NativeIndicators(unittest.TestCase):
         raw = self.us_random(seed=3)
         df, rep = self.frame(raw)
         self.assertGreater(rep["stale_days"], 0)
-        self.assertEqual(list(df.columns), B.BAR_COLUMNS + B.INDICATOR_COLUMNS)                    # amount / source 不带
+        self.assertEqual(list(df.columns), B.BAR_COLUMNS + B.INDICATOR_COLUMNS + B.MARK_COLUMNS)   # amount / source 不带
         p = B.container_panel(df, self.bench, CAL[-1].date())
         native = B.bar_indicators(B.load_series(self._raw_path(raw))[0]).set_index("date")
         for d, st, a in zip(p["date"], p["state"], p["atr20"]):
@@ -465,6 +485,80 @@ class NativeIndicators(unittest.TestCase):
         old_p = B.container_panel(aligned, self.bench, cal[-1].date(), compute_indicators=True)
         pd.testing.assert_frame_equal(new_p, old_p)
         self.assertEqual((rep["dropped_off_calendar"], rep["missing_on_calendar"]), (len(SPRING), 1))
+
+
+GAP_US = pd.bdate_range("2026-01-02", "2026-02-12")          # 美股数据源断档 → A 股 01-05 ~ 02-13 共 30 行平盘（01-02 用 01-01 那根）
+HOLIDAY_US = pd.bdate_range("2026-03-02", "2026-03-05")      # 4 个交易日没有 K 线 → 4 行平盘，按真实休市处理
+
+
+class DataHoles(unittest.TestCase):
+    """I-25：连续平盘数到第 5 行起标 data_hole = 1（D 日只看 ≤ D 的行）；报告记各段与中段最长连续平盘；可达状态表不计平盘行。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def raw(self, stop=None, seed=7):
+        days = US_LONG.difference(GAP_US).difference(HOLIDAY_US)
+        if stop:
+            days = days[days <= stop]
+        return ohlcv(n=len(days), seed=seed).assign(date=days)
+
+    def frame(self, raw, route="yahoo", cal=CAL):
+        _write(self.tmp / "S.csv", raw, route)
+        return B.research_frame(self.tmp, {"series_file": "S.csv", "route_used": route, "code": "S", "series_code": "S"}, cal)
+
+    @staticmethod
+    def run_of(df, first, last):
+        return df[(df["date"] >= pd.Timestamp(first)) & (df["date"] <= pd.Timestamp(last))]
+
+    def test_30_row_gap_marked_from_the_5th_row(self):
+        df, rep = self.frame(self.raw())
+        gap = self.run_of(df, "2026-01-05", "2026-02-13")
+        self.assertEqual((len(gap), int(gap["stale"].sum())), (30, 30))
+        self.assertEqual(self.run_of(df, "2026-01-02", "2026-01-02")["stale"].tolist(), [0])
+        self.assertEqual(gap["data_hole"].tolist(), [0] * 4 + [1] * 26)      # 前 4 行与真实休市无法区分；第 5 行起是断档
+        self.assertEqual(self.run_of(df, "2026-02-23", "2026-02-23")["stale"].tolist(), [0])   # 断档后第一根真 K 线
+        self.assertEqual(rep["stale_runs"], [{"first": "2026-01-05", "last": "2026-02-13", "rows": 30, "trailing": False,
+                                              "hole_rows": 26}])
+        self.assertEqual((rep["max_stale_run"], rep["data_hole_rows"]), (30, 26))
+
+    def test_four_day_closure_not_marked(self):
+        df, rep = self.frame(self.raw())
+        hol = self.run_of(df, "2026-03-03", "2026-03-06")
+        self.assertEqual((hol["stale"].tolist(), hol["data_hole"].tolist()), ([1] * 4, [0] * 4))
+        self.assertEqual(len(rep["stale_runs"]), 1)                         # 只有 30 行那段
+
+    def test_trailing_run_marked_and_not_counted_as_middle(self):
+        df, rep = self.frame(self.raw(stop="2026-03-13"))
+        tail = self.run_of(df, "2026-03-17", "2026-03-31")
+        self.assertEqual(tail["data_hole"].tolist(), [0] * 4 + [1] * (len(tail) - 4))
+        self.assertEqual(rep["stale_runs"][-1], {"first": "2026-03-17", "last": "2026-03-31", "rows": len(tail), "trailing": True,
+                                                 "hole_rows": len(tail) - 4})
+        self.assertEqual(rep["max_stale_run"], 30)                          # 中段最长：不含末尾那段
+
+    def test_truncation_keeps_data_hole_row_by_row(self):
+        raw = self.raw()
+        full, _ = self.frame(raw)
+        for cut in ("2026-01-05", "2026-01-07", "2026-01-08", "2026-01-20", "2026-02-13", "2026-02-23"):
+            c = pd.Timestamp(cut)
+            part, _ = self.frame(raw[raw["date"] < c], cal=CAL[CAL <= c])
+            a = full[full["date"] <= c].reset_index(drop=True)
+            pd.testing.assert_frame_equal(a[["date", "close", "state", "atr20", "stale", "data_hole"]],
+                                          part[["date", "close", "state", "atr20", "stale", "data_hole"]], obj=cut)
+
+    def test_a_share_never_marked(self):
+        df, rep = self.frame(self.raw(), route="csi", cal=CAL)
+        self.assertEqual((int(df["stale"].sum()), int(df["data_hole"].sum())), (0, 0))
+        self.assertNotIn("stale_runs", rep)
+
+    def test_panel_carries_data_hole(self):
+        df, _ = self.frame(self.raw())
+        p = B.container_panel(df, _bars(CAL).set_index("date")["close"], CAL[-1].date())
+        self.assertEqual(list(p.columns), [c for c in B.PANEL_COLUMNS if c != "container"])
+        self.assertEqual(p["data_hole"].tolist(), df["data_hole"].tolist())
+        with self.assertRaisesRegex(B.BuildError, "data_hole"):
+            B.container_panel(df.drop(columns="data_hole"), _bars(CAL).set_index("date")["close"], CAL[-1].date())
 
 
 class VolumeSource(unittest.TestCase):
