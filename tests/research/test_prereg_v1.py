@@ -23,7 +23,7 @@ from src.research.prereg_v1.engine import random_entry_null, simulate      # noq
 from src.research.prereg_v1.metrics import acceptance, is_fragile, r_stats # noqa: E402
 from src.research.prereg_v1.panel import (PanelError, ew_daily_returns,    # noqa: E402
                                           reference_atr, validate_panel)
-from src.research.prereg_v1.signals import all_signals, breakout_signals   # noqa: E402
+from src.research.prereg_v1.signals import all_signals, breakout_signals, rs_top_flags   # noqa: E402
 
 DATES = pd.bdate_range("2020-01-01", periods=400)
 P1 = Params(rs_top_pct=1.0)          # 与相对强弱无关的测试：放开前 20% 门槛，只测其余规则
@@ -162,6 +162,67 @@ class DataHoleTests(unittest.TestCase):
         bad.loc[0, "data_hole"] = np.nan
         with self.assertRaisesRegex(PanelError, "data_hole"):
             validate_panel(bad)
+
+
+class HoleDecisionTests(unittest.TestCase):
+    """I-26：断档行上一律不做决策，也不作为别人的参照——不成交、不参与排名、不进刻画与零模型。"""
+    FLAT = DataHoleTests.FLAT
+    HOLE = DataHoleTests.HOLE
+
+    def test_fill_on_a_hole_row_is_skipped_and_the_signal_dropped(self):
+        n = 160
+        for label, sig, holes in (("build 形状：平盘第 4 行的信号，次日是第 5 行（断档）", 103, self.HOLE),
+                                  ("真 K 线的信号，次日直接是断档行", 99, set(range(100, 130)))):
+            with self.subTest(label):
+                kw = dict(states={"A": {sig: "XB"}}, rs={"A": {sig: 1}})
+                pn = make({"A": flat(n), "B": flat(n)}, holes={"A": holes}, **kw)
+                res = run(pn, n=n)
+                self.assertTrue(res.trades.empty)                                        # 信号不保留：断档后也不补成交
+                self.assertEqual(res.skipped[["date", "container", "reason"]].values.tolist(), [[DATES[sig + 1], "A", "数据断档"]])
+                t = run(make({"A": flat(n), "B": flat(n)}, **kw), n=n).trades             # 对照：不标断档就照常成交
+                self.assertEqual(t["entry_date"].tolist(), [DATES[sig + 1]])
+
+    def test_hole_rows_do_not_take_a_rank(self):
+        """11 个容器，断档容器 H 当日 rs 最高：剔掉它，C2 从 3/11 变成 2/10 进前 20%；前 20% 名单与「H 当日不在面板」时相同。"""
+        names = ["H"] + [f"C{i}" for i in range(1, 11)]
+        rs = {c: {d: 10.0 - k for d in range(3)} for k, c in enumerate(names)}
+        pn = make({c: flat(3) for c in names}, rs=rs, holes={"H": {1}})
+        p = Params()
+        flags = pn.assign(top=rs_top_flags(pn, p)).set_index(["date", "container"])["top"]
+        gone = pn[~((pn["container"] == "H") & (pn["date"] == DATES[1]))].reset_index(drop=True)
+        ref = gone.assign(top=rs_top_flags(gone, p)).set_index(["date", "container"])["top"]
+        pd.testing.assert_series_equal(flags.drop((DATES[1], "H")), ref)
+        top = lambda d: sorted(flags[DATES[d]][flags[DATES[d]]].index)                   # noqa: E731
+        self.assertEqual((top(0), top(1), top(2)), (["C1", "H"], ["C1", "C2"], ["C1", "H"]))   # 断档只影响那一天
+        self.assertFalse(flags[(DATES[1], "H")])
+
+    def hole_panel(self, seed=4):
+        """8 个随机游走容器；A 在 100–129 平盘（build 形状：104–129 标断档），状态随机，平盘行照样带着可进态。"""
+        rng = np.random.default_rng(seed)
+        n, names = 260, ["A"] + [f"C{i}" for i in range(7)]
+        cl = {c: 100 * np.cumprod(1 + rng.normal(0.0005, 0.012, n)) for c in names}
+        cl["A"][100:130] = cl["A"][99]
+        st = {c: dict(enumerate(rng.choice(["XB", "NEUTRAL", "EXH", "POP"], n))) for c in names}
+        pn = make(cl, st, holes={"A": self.HOLE})
+        gone = pn[~((pn["container"] == "A") & pn["date"].isin([DATES[i] for i in self.HOLE]))].reset_index(drop=True)
+        unmarked = pn.assign(data_hole=0)
+        return pn, gone, unmarked
+
+    def test_characterize_ignores_hole_rows(self):
+        pn, gone, unmarked = self.hole_panel()
+        p = Params(char_horizon=5, char_bootstrap=200)
+        a, b, c = (characterize(x, p, DATES[259]) for x in (pn, gone, unmarked))
+        for k in ("by_state", "by_class"):
+            pd.testing.assert_frame_equal(a[k], b[k], obj=k)
+        self.assertEqual((a["diff_entry_minus_rest"], a["ci95"], a["n_blocks"]), (b["diff_entry_minus_rest"], b["ci95"], b["n_blocks"]))
+        self.assertNotEqual(int(c["by_class"]["n"].sum()), int(a["by_class"]["n"].sum()))   # 对照：不排除时样本里有断档行
+
+    def test_null_pool_is_the_strategy_entry_set(self):
+        pn, gone, unmarked = self.hole_panel()
+        p = Params()
+        a, b, c = (random_entry_null(x, p, DATES[0], DATES[259], n_signals=40, reps=8, seed=3) for x in (pn, gone, unmarked))
+        np.testing.assert_array_equal(a, b)                                              # 与「断档行不在面板」时逐次相同
+        self.assertFalse(np.array_equal(a, c))                                           # 对照：断档行进池，抽样就变了
 
 
 class EngineTests(unittest.TestCase):

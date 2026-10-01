@@ -67,7 +67,7 @@ def make_panel(extra: dict | None = None, semis: list[float] | None = None, semi
                 op = semis_open[d]
             rows.append(dict(date=pd.Timestamp(d), container=name, open=op, high=max(op, cl) + 0.5, low=min(op, cl) - 0.5,
                              close=cl, state="NEUTRAL", rs_1m=0.01 * (k % 7) - (0.02 if name == "黄金" else 0), atr20=2.0,
-                             z_month=np.nan))
+                             z_month=np.nan, data_hole=0))
     p = pd.DataFrame(rows)
     p.loc[(p["container"] == "半导体") & (p["date"] == pd.Timestamp(SIGNAL)), "z_month"] = -2.5
     for (name, d), z in (extra or {}).items():

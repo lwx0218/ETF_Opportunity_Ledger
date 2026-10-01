@@ -1,5 +1,6 @@
 """入场信号（prereg-v1 §3）。只用 t 日收盘及以前的面板字段；成交在 t+1 开盘（engine）。
-data_hole = 1 的行（I-25：数据断档上的平盘占位）两个分支都不产生信号，也不计入 20 日冷却——占位拷贝不是信号。"""
+data_hole = 1 的行（I-25：数据断档上的平盘占位）两个分支都不产生信号，也不计入 20 日冷却——占位拷贝不是信号；
+也不参与横截面排名（I-26：既不占名次也不进分母）。"""
 import numpy as np
 import pandas as pd
 
@@ -7,11 +8,13 @@ from .config import Params
 
 
 def rs_top_flags(panel: pd.DataFrame, p: Params) -> pd.Series:
-    """横截面：当日有 rs_1m 的容器按 rs_1m 从高到低排名，名次 / 容器数 ≤ rs_top_pct 为前 20%（I-04）。"""
-    g = panel.groupby("date")["rs_1m"]
+    """横截面：当日有 rs_1m 的容器按 rs_1m 从高到低排名，名次 / 容器数 ≤ rs_top_pct 为前 20%（I-04）。
+    断档行（data_hole = 1）的 rs_1m 是陈旧收盘对基准算的，排名前置空：既不占名次也不进分母（I-26）。"""
+    rs = panel["rs_1m"].where(panel["data_hole"].eq(0))
+    g = rs.groupby(panel["date"])
     n = g.transform("count")
     rk = g.rank(ascending=False, method="first")
-    return ((rk / n) <= p.rs_top_pct + 1e-12) & panel["rs_1m"].notna()
+    return ((rk / n) <= p.rs_top_pct + 1e-12) & rs.notna()
 
 
 def breakout_signals(panel: pd.DataFrame, p: Params) -> pd.DataFrame:
