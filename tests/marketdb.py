@@ -3,6 +3,7 @@ import pandas as pd
 
 from src.data import db as DB
 from src.data import store
+from src.data import universe as U
 
 
 def open_db(path):
@@ -16,6 +17,8 @@ def put(con, code: str, df: pd.DataFrame, route: str) -> None:
 
 
 def put_coverage(con, rows: list[dict], kind: str = "backfill") -> int:
+    """写一批 coverage；与 runner 的作业一样先装入 universe seed（package 靠它认出价格版本序列）。"""
+    DB.load_universe(con, U.load(U.UNIVERSE), DB.sha256_file(U.UNIVERSE))
     run = DB.start_run(con, kind)
     DB.write_coverage(con, run, rows)
     DB.finish_run(con, run)

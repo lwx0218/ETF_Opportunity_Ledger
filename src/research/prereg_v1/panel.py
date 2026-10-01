@@ -56,6 +56,16 @@ def read_table(path, table: str) -> pd.DataFrame:
     return df
 
 
+def content_sha256(path) -> str:
+    """面板库（panel、bench、meta 三表）内容的规范化哈希：同一份数据在任何机器、任何 SQLite 版本上都是同一个值。"""
+    from src.data.db import content_sha256 as _content
+    con = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        return _content(con, {"meta": "key", "bench": "date", "panel": "date, container"})
+    finally:
+        con.close()
+
+
 def read_table_csv(path) -> pd.DataFrame:
     """迁移期对照用的旧 CSV 读法（replan §11：合并后删）。只读，不再有代码写 CSV 面板。"""
     return pd.read_csv(path)

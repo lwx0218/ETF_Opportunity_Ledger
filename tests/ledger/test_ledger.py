@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+import tests  # noqa: E402,F401 — 置位 ETF_LEDGER_TESTING：直接当脚本跑时也只许连临时库
 
 from src.ledger.store import CARD_FIELDS, Ledger, LedgerError, mechanical_score   # noqa: E402
 
@@ -290,6 +291,15 @@ class SchemaV11(Base):
             with self.assertRaisesRegex(LedgerError, "schema 是 v1.1-f，"):
                 Ledger(v11f, clock=lambda: T0, replay=True)
             self.assertEqual(v11f.read_bytes(), before)
+            v11g = Path(d) / "v11g.sqlite"                                         # P6d 的 v1.1-g 库：没有 ew_daily / job_days
+            L = Ledger(v11g, clock=lambda: T0, replay=True)
+            L.conn.execute("DROP TRIGGER ledger_meta_no_update")
+            L.conn.execute("UPDATE ledger_meta SET value = 'v1.1-g' WHERE key = 'schema'")
+            L.close()
+            before = v11g.read_bytes()
+            with self.assertRaisesRegex(LedgerError, "schema 是 v1.1-g，"):
+                Ledger(v11g, clock=lambda: T0, replay=True)
+            self.assertEqual(v11g.read_bytes(), before)
             # 真正的旧库（v1 的 cards 没有 evidence_status）：拒绝，且一个字节都不改
             old = Path(d) / "older.sqlite"
             c = sqlite3.connect(old)

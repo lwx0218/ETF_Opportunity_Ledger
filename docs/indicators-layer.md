@@ -25,8 +25,8 @@ build 先用 `python -m src.data verify` 的同一套检查复验数据包（文
 
 - `panel` 表：`date, container, open, high, low, close, state, rs_1m, atr20, z_month, data_hole`，主键 `(date, container)`，`data_hole` 只能是 0 / 1（implementation-notes §B）。`container` 为 universe 的主题名；全部容器在 A 股日历（H00300 交易日）上（I-20）。海外容器的 `high` / `low` 是该 A 股日所用那根 K 线的值（长假多根只取最后一根、平盘行 = 前收），**V1 不用**：引擎只用 `open`（次日成交）与 `close`（止损按收盘判），高低点只进指标，而指标在原生序列上算（I-24）。
 - `bench` 表：`date, hs300, hs300_open`（H00300 收盘与原始开盘；开盘缺失时为空，不用收盘补。`hs300_open` 供每日任务的基准窗口「开盘到开盘」用，schema v1.1-e；V1 只读 `hs300`）。
-- `meta` 表：`schema`（`panel-v1`）、`end`、数据包 sha256、生成时刻。
-- `build-report.json`：数据包文件的 sha256、源库 sha256 与打包时的 git commit、面板库的 sha256、交易日历（`calendar`：天数与起止，没有则为 null）；每个容器的原始行数与对齐后行数、起止、路由、`price_only`、`volume_source`、各状态天数（可达状态表，只数非平盘行）、`z_month` 个数、补值 / 扩高低计数、原始无成交量行数、`volume_zero_after_align`（对齐后成交量为 0 的行，含平盘）、`calendar`（`a_share` / `overseas_d_minus_1`）；A 股路由另有 `dropped_off_calendar` / `missing_on_calendar`，海外路由另有 `stale_days` / `multi_bar_days` / `trailing_stale_days` / `last_bar_date`，以及 I-25 的 `max_stale_run`（中段最长连续平盘，不含末尾那段）、`stale_runs`（≥ 5 行的各段：`first`、`last`、`rows`、`trailing`、`hole_rows`）、`data_hole_rows`；跳过的容器与原因。
+- `meta` 表：`schema`（`panel-v1`）、`end`、数据包的 `content_sha256`。不含生成时刻：同一个数据包 build 出的面板库逐字节相同（同一 SQLite 版本）；跨机器比对用内容哈希（`prereg_v1.panel.content_sha256`），V1 的 OOS 锁同时记文件与内容两个哈希。
+- `build-report.json`：数据包文件的 sha256 与 `package_content_sha256`、源库 sha256 与打包时的 git commit、面板库的 sha256 与 `panel_content_sha256`、生成时刻、交易日历（`calendar`：天数与起止，没有则为 null）；每个容器的原始行数与对齐后行数、起止、路由、`price_only`、`volume_source`、各状态天数（可达状态表，只数非平盘行）、`z_month` 个数、补值 / 扩高低计数、原始无成交量行数、`volume_zero_after_align`（对齐后成交量为 0 的行，含平盘）、`calendar`（`a_share` / `overseas_d_minus_1`）；A 股路由另有 `dropped_off_calendar` / `missing_on_calendar`，海外路由另有 `stale_days` / `multi_bar_days` / `trailing_stale_days` / `last_bar_date`，以及 I-25 的 `max_stale_run`（中段最长连续平盘，不含末尾那段）、`stale_runs`（≥ 5 行的各段：`first`、`last`、`rows`、`trailing`、`hole_rows`）、`data_hole_rows`；跳过的容器与原因。
 
 ## 口径
 

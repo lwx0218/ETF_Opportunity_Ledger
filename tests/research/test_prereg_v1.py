@@ -13,6 +13,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+import tests  # noqa: E402,F401 — 置位 ETF_LEDGER_TESTING：直接当脚本跑时也只许连临时库
 
 from src.indicators.build import write_panel_db                             # noqa: E402
 from src.research.prereg_v1 import run as runner                          # noqa: E402
@@ -385,6 +386,8 @@ class RunnerTests(unittest.TestCase):
             self.assertTrue((td / "out" / "OOS_LOCK.json").exists())
             lock = json.loads((td / "out" / "OOS_LOCK.json").read_text())
             self.assertEqual(lock["panel_sha256"], lock["bench_sha256"])
+            from src.research.prereg_v1.panel import content_sha256
+            self.assertEqual(lock["panel_content_sha256"], content_sha256(td / "panel.sqlite"))     # 跨机器可复现的数据指纹
 
 
 if __name__ == "__main__":

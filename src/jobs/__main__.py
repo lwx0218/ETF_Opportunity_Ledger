@@ -78,12 +78,17 @@ def main(argv: list[str] | None = None) -> int:
         trading_days = calendar_or_exit(a.market)
         panel, bench, bench_open, problems = live_panel(a.market, day, trading_days)
         covs = coverage(a.market)
+        done = set()
+        if Path(a.db).exists():                          # 先做运行前检查再建库：被拦下时不留一个空台账库
+            L = Ledger(a.db)
+            done = L.processed_days()
+            L.close()
+        blocking, notes = preflight(panel, bench, day.isoformat(), covs, done)
+        if blocking:
+            print("\n".join(["运行前检查未通过，台账未动："] + blocking), file=sys.stderr)
+            return 3
         L = Ledger(a.db)
         try:
-            blocking, notes = preflight(panel, bench, day.isoformat(), covs, L.processed_days())
-            if blocking:
-                print("\n".join(["运行前检查未通过，台账未动："] + blocking), file=sys.stderr)
-                return 3
             job = DailyJob(L, panel, bench, rules=rules, instruments=instruments(covs=covs), events_dir=a.events_dir,
                            bench_open=bench_open, trading_days=trading_days)
             rep = job.run(day.isoformat())

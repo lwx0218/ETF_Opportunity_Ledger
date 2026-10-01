@@ -13,6 +13,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+import tests  # noqa: E402,F401 — 置位 ETF_LEDGER_TESTING：直接当脚本跑时也只许连临时库
 
 from src.data import db as DB, http, runner, store     # noqa: E402
 from src.data import __main__ as data_cli              # noqa: E402
@@ -282,9 +283,24 @@ class BackfillUpdatePackage(Base):
         self.assertEqual(series_rows(self.db, "H00300", "raw"), before)
 
     def test_update_without_backfill_refused_and_recorded(self):
+        with self.assertRaisesRegex(SystemExit, "不存在"):
+            self.update()                                                        # 没有库：拒绝，也不建空库
+        with self.assertRaisesRegex(SystemExit, "不存在"):
+            runner.load_calendar(self._days_file(), db=self.db, log=self.log.append)
+        self.assertFalse(self.db.exists())
+        self.probe(only=["T29"])                                                 # 库在、没有 coverage 指向序列：拒绝并记 error
+        con = DB.connect(self.db)
+        con.execute("DELETE FROM coverage")
+        con.commit()
+        con.close()
         with self.assertRaisesRegex(SystemExit, "先跑 backfill"):
             self.update()
-        self.assertEqual(query(self.db, "SELECT kind, substr(status, 1, 5) FROM runs"), [("update", "error")])
+        self.assertEqual(query(self.db, "SELECT kind, substr(status, 1, 5) FROM runs ORDER BY run_id"), [("probe", "ok"), ("update", "error")])
+
+    def _days_file(self):
+        f = self.tmp / "days.csv"
+        f.write_text("2026-09-29\n2026-09-30\n", encoding="utf-8")
+        return f
 
     def test_package_truncates_and_verifies(self):
         self.backfill(only=["T01", "T16"])
@@ -306,11 +322,17 @@ class BackfillUpdatePackage(Base):
                          ("2026-09-18", src_sha, 5, []))
         self.assertEqual(query(dest, "SELECT kind, status FROM runs"), [("package", "ok")])
         self.assertEqual(runner.verify(dest), [])
+        self.assertNotIn("created_at", info)                                    # 打包时刻只在 MANIFEST，包内容可复现
+        again = self.package(date(2026, 9, 18), force=True)
+        meta2 = json.loads(runner.manifest_path(again).read_text(encoding="utf-8"))
+        self.assertEqual(meta2["content_sha256"], meta["content_sha256"])        # 同一源库同一 end：内容哈希相同（文件哈希含作业时刻）
+        self.assertEqual(len(meta["content_sha256"]), 64)
         with mock.patch("builtins.print"):
             self.assertEqual(data_cli.main(["verify", str(dest)]), 0)
 
-    def _tamper(self, dest, sql, manifest=True):
-        """改一处包内数据；manifest=True 时顺手把 MANIFEST 的 sha256 也改成新文件的（只剩内容层面的检查能发现）。"""
+    def _tamper(self, dest, sql, manifest="both"):
+        """改一处包内数据，再按 manifest 改写 MANIFEST：both = 文件与内容哈希都换成新的（只剩逐项检查能发现）；
+        file = 只换文件哈希（内容哈希能发现）；None = 都不换。"""
         dest.chmod(0o644)
         con = sqlite3.connect(dest)
         con.executescript(sql)
@@ -318,19 +340,25 @@ class BackfillUpdatePackage(Base):
         con.close()
         if manifest:
             man = runner.manifest_path(dest)
-            m = json.loads(man.read_text(encoding="utf-8"))
-            man.write_text(json.dumps({**m, "sha256": DB.sha256_file(dest)}), encoding="utf-8")
+            m = {**json.loads(man.read_text(encoding="utf-8")), "sha256": DB.sha256_file(dest)}
+            if manifest == "both":
+                con = DB.connect(dest, readonly=True)
+                m["content_sha256"] = DB.content_sha256(con, runner.PACKAGE_CONTENT)
+                con.close()
+            man.write_text(json.dumps(m), encoding="utf-8")
 
     def test_verify_catches_each_problem(self):
         self.backfill(only=["T01", "T16"])
         end = date(2026, 9, 18)
         cases = {
-            "哈希不符": ("UPDATE bars SET close = close + 1 WHERE code = 'H00300' AND date = '2026-09-18'", False),
+            "哈希不符": ("UPDATE runs SET status = 'x'", None),                                   # 作业记录不算内容
+            "内容哈希不符": ("DROP TRIGGER bars_no_update; UPDATE bars SET close = close + 1 WHERE code = 'H00300' AND date = '2026-09-18'",
+                         "file"),
             "晚于 end": ("INSERT INTO bars VALUES ('H00300', 'raw', '2026-09-21', 1, 1, 1, 1, NULL, NULL, 'csi', 'x');"
-                         "UPDATE coverage SET rows = rows + 1 WHERE theme_id = 'T01'", True),
-            "行数不符": ("DELETE FROM bars WHERE code = '510300' AND date = '2026-09-01'", True),
-            "来源不符": ("UPDATE coverage SET route_used = 'eastmoney_index' WHERE theme_id = 'T01'", True),
-            "清单外序列": ("INSERT INTO bars VALUES ('XYZ', 'raw', '2026-09-01', 1, 1, 1, 1, NULL, NULL, 'csi', 'x')", True),
+                         "UPDATE coverage SET rows = rows + 1 WHERE theme_id = 'T01'", "both"),
+            "行数不符": ("DELETE FROM bars WHERE code = '510300' AND date = '2026-09-01'", "both"),
+            "来源不符": ("UPDATE coverage SET route_used = 'eastmoney_index' WHERE theme_id = 'T01'", "both"),
+            "清单外序列": ("INSERT INTO bars VALUES ('XYZ', 'raw', '2026-09-01', 1, 1, 1, 1, NULL, NULL, 'csi', 'x')", "both"),
         }
         for want, (sql, manifest) in cases.items():
             with self.subTest(want):
@@ -340,12 +368,60 @@ class BackfillUpdatePackage(Base):
                 problems = runner.verify(dest)
                 self.assertEqual(len(problems), 1, problems)
                 self.assertIn(want, problems[0])
+        dest = self.package(end, force=True)                                     # 索引与表不一致：只有 integrity_check 发现得了
+        self._tamper(dest, "CREATE INDEX cov_container ON coverage(container)", manifest=None)
+        con = sqlite3.connect(dest)
+        idx = con.execute("SELECT type, name, tbl_name, rootpage, sql FROM sqlite_master WHERE name = 'cov_container'").fetchone()
+        con.execute("PRAGMA writable_schema = ON")
+        con.execute("DELETE FROM sqlite_master WHERE name = 'cov_container'")
+        con.commit()
+        con.close()
+        con = sqlite3.connect(dest)
+        con.execute("UPDATE coverage SET container = container || 'x' WHERE theme_id = 'T01'")   # 表改了、索引没跟着改
+        con.execute("PRAGMA writable_schema = ON")
+        con.execute("INSERT INTO sqlite_master VALUES (?, ?, ?, ?, ?)", idx)
+        con.commit()
+        con.close()
+        self._tamper(dest, "SELECT 1")
+        problems = runner.verify(dest)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("integrity_check", problems[0])
         dest = self.package(end, force=True)
+        runner.manifest_path(dest).write_text("{not json", encoding="utf-8")
+        self.assertTrue(any("不是合法 JSON" in x for x in runner.verify(dest)))
         runner.manifest_path(dest).unlink()
         self.assertIn("缺 research-package-2026-09-18.MANIFEST.json", runner.verify(dest))
+        self.assertTrue(any("不是研究数据包" in x for x in runner.verify(self.db)))     # 对行情库本身跑 verify：报问题，不抛异常
         dest.chmod(0o644)
         dest.write_bytes(b"not a database" * 100)
         self.assertTrue(any("打不开" in x for x in runner.verify(dest)))
+
+    def test_package_marks_source_other_than_route_used(self):
+        self.backfill(only=["T01", "T16"])
+        con = DB.connect(self.db)
+        run = DB.start_run(con, "probe", end=END)
+        DB.write_coverage(con, run, [dict(read_cov(self.db)["T01"], route_used="eastmoney_index")])      # 序列来自 csi
+        con.close()
+        dest = self.package(date(2026, 9, 18))
+        pc = read_cov(dest)
+        self.assertIn("来源 csi ≠ route_used eastmoney_index", pc["T01"]["error"])
+        self.assertEqual((pc["T01"]["series_adj"], pc["T16"]["error"]), ("", ""))
+        self.assertEqual(json.loads(runner.manifest_path(dest).read_text(encoding="utf-8"))["inconsistent_with_bars"], ["T01"])
+        self.assertEqual(runner.verify(dest), [])
+
+    def test_package_refuses_missing_universe_and_leaves_no_half_file(self):
+        self.backfill(only=["T01"])
+        con = DB.connect(self.db)
+        con.execute("DELETE FROM universe")
+        con.commit()
+        con.close()
+        with self.assertRaisesRegex(SystemExit, "universe"):
+            self.package(date(2026, 9, 18))
+        self.backfill(only=["T01"])
+        with mock.patch.object(DB, "write_coverage", side_effect=RuntimeError("中途失败")), self.assertRaises(RuntimeError):
+            self.package(date(2026, 9, 18))
+        self.assertEqual(list((self.tmp / "pkg").glob("research-package-*")), [])        # 不留半截包，下次不必 --force
+        self.assertEqual(runner.verify(self.package(date(2026, 9, 18))), [])
 
     def test_package_marks_coverage_bars_mismatch_as_error(self):
         self.backfill(only=["T01", "T16"])
@@ -394,6 +470,7 @@ class BackfillUpdatePackage(Base):
 
 class Calendar(Base):
     def test_load_union_and_refusals(self):
+        DB.connect(self.db).close()                                              # 日历写进已有的库（probe 之后）
         f = self.tmp / "a.csv"
         f.write_text("\ufefftrade_date\n2026-09-29\n20260930\n2026-10-08\n", encoding="utf-8")
         self.assertEqual(runner.load_calendar(f, db=self.db, log=self.log.append), 3)
@@ -433,6 +510,8 @@ class Schema(unittest.TestCase):
                 self.ins(**{"d": "2026-09-02", **kw})
         with self.assertRaisesRegex(sqlite3.IntegrityError, "只来自一个路由"):
             self.ins(d="2026-09-02", source="tencent_etf")                        # 同一序列换来源：拒绝拼接
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "不允许 UPDATE"), self.con:
+            self.con.execute("UPDATE bars SET source = 'tencent_etf'")             # 改来源也不行（整行重写）
         self.ins(adj="hfq", source="eastmoney_etf_hfq")                           # 同一代码的后复权是另一条序列
         with self.assertRaises(store.MixError):
             store.merge(store.read(self.con, "510300", "raw"), [{"date": "2026-09-03", "close": 2.0}], "tencent_etf")

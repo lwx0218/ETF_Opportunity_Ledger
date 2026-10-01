@@ -21,6 +21,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+import tests  # noqa: E402,F401 — 置位 ETF_LEDGER_TESTING：直接当脚本跑时也只许连临时库
 
 from src.data import db as DB, runner as data_runner             # noqa: E402
 from src.indicators import build as B                           # noqa: E402
@@ -179,10 +180,12 @@ class EndToEnd(unittest.TestCase):
         self.addCleanup(clock.stop)
 
     def make_package(self, with_bench=True, calendar=None, brent_gap=None):
+        """半导体的全收益序列没有成交量、价格版本 H30184 有（I-21 借量要经过「价格序列进包」这一步）。"""
         self.db = self.tmp / "market.sqlite"
         con = open_db(self.db)
         series = {("H00300", "csi"): ohlcv(seed=1, start="2005-01-04", n=5600),
-                  ("H30184CNY010", "csi"): ohlcv(seed=2, start="2005-01-04", n=5600),
+                  ("H30184CNY010", "csi"): ohlcv(seed=2, start="2005-01-04", n=5600, volume=False),
+                  ("H30184", "csi"): ohlcv(seed=2, start="2005-01-04", n=5600),
                   ("518880", "eastmoney_etf_hfq"): ohlcv(seed=3, start="2013-07-29", n=3400),
                   ("BRENT", "eia"): ohlcv(seed=4, start="2005-01-04", n=5600, volume=False)}
         if not with_bench:
@@ -194,8 +197,10 @@ class EndToEnd(unittest.TestCase):
             if route == "eia":
                 d[["open", "high", "low"]] = np.nan
             put(con, code, d, route)
-        cov = [dict(theme_id="T01", container="沪深300", status="retained", series_code="H00300", series_adj="raw", route_used="csi", price_only="False"),
-               dict(theme_id="T06", container="半导体", status="retained", series_code="H30184CNY010", series_adj="raw", route_used="csi", price_only="False"),
+        cov = [dict(theme_id="T01", container="沪深300", status="retained", code="000300", series_code="H00300", series_adj="raw", route_used="csi",
+                    price_only="False"),
+               dict(theme_id="T06", container="半导体", status="retained", code="H30184", series_code="H30184CNY010", series_adj="raw",
+                    route_used="csi", price_only="False"),
                dict(theme_id="T15", container="原油", status="flagged", series_code="BRENT", series_adj="raw", route_used="eia", price_only="False"),
                dict(theme_id="T16", container="黄金", status="flagged", series_code="518880", series_adj="hfq", route_used="eastmoney_etf_hfq", price_only="False"),
                dict(theme_id="T36", container="纳指科技", status="flagged", error="yahoo: 404"),
@@ -225,6 +230,11 @@ class EndToEnd(unittest.TestCase):
         self.assertTrue(pd.to_datetime(panel["date"]).isin(bench["date"]).all())      # I-20：全部在 A 股日历上
         self.assertEqual(rep["containers"]["原油"]["calendar"], "overseas_d_minus_1")
         self.assertEqual(rep["containers"]["原油"]["volume_source"], "none")
+        self.assertEqual(rep["containers"]["半导体"]["volume_source"], "price_version")    # 价格版本随包走，借量照旧
+        self.assertEqual(rep["panel_content_sha256"], __import__("src.research.prereg_v1.panel", fromlist=["x"]).content_sha256(out))
+        self.assertEqual(rep["package_content_sha256"], json.loads(data_runner.manifest_path(pkg).read_text(encoding="utf-8"))["content_sha256"])
+        again = B.build(pkg, self.tmp / "panel-again.sqlite", log=lambda *_: None)
+        self.assertEqual(DB.sha256_file(again), DB.sha256_file(out))                  # 面板库逐字节只由数据包决定
         with mock.patch("builtins.print"):
             self.assertEqual(prereg_run.main(["check", "--panel", str(out), "--out", str(self.tmp / "v1")]), 0)
         con = DB.connect(pkg, readonly=True)
@@ -252,8 +262,13 @@ class EndToEnd(unittest.TestCase):
         con.commit()
         con.close()
         man = data_runner.manifest_path(pkg)
-        man.write_text(json.dumps({**json.loads(man.read_text(encoding="utf-8")), "sha256": DB.sha256_file(pkg)}), encoding="utf-8")
-        self.assertEqual(data_runner.verify(pkg), [])
+        self.assertEqual(data_runner.verify(pkg), [f"哈希不符 {pkg.name}", f"内容哈希不符 {pkg.name}"])
+        con = DB.connect(pkg, readonly=True)
+        content = DB.content_sha256(con, data_runner.PACKAGE_CONTENT)
+        con.close()
+        man.write_text(json.dumps({**json.loads(man.read_text(encoding="utf-8")), "sha256": DB.sha256_file(pkg), "content_sha256": content}),
+                       encoding="utf-8")
+        self.assertEqual(data_runner.verify(pkg), [])                                          # 清单一起改写：只剩 build 的日历检查
         with self.assertRaisesRegex(B.BuildError, "交易日历"):
             B.build(pkg, self.tmp / "panel2.sqlite", log=lambda *_: None)
 
@@ -301,6 +316,13 @@ class EndToEnd(unittest.TestCase):
         pd.testing.assert_frame_equal(from_db, validate_panel(panel), check_exact=True)
         pd.testing.assert_series_equal(validate_bench(read_table(self.tmp / "p.sqlite", "bench")),
                                        validate_bench(read_table_csv(self.tmp / "bench.csv")), check_exact=False, rtol=1e-12)
+        # 整列为空（z_month 全 NULL、rs_1m 全 NULL）：读库与读 CSV 一样是 float 的 NaN，不是 object 的 None
+        blank = panel.assign(z_month=np.nan, rs_1m=np.nan)
+        B.write_panel_db(self.tmp / "b.sqlite", blank, bench_df, {})
+        blank.to_csv(self.tmp / "blank.csv", index=False, date_format="%Y-%m-%d")
+        got = read_table(self.tmp / "b.sqlite", "panel")
+        self.assertEqual((got["z_month"].dtype, got["rs_1m"].dtype), (np.dtype(float), np.dtype(float)))
+        pd.testing.assert_frame_equal(validate_panel(got), validate_panel(read_table_csv(self.tmp / "blank.csv")), check_exact=False, rtol=1e-12)
 
     def test_missing_total_return_bench_fails(self):
         pkg = self.make_package(with_bench=False)
@@ -320,7 +342,7 @@ class EndToEnd(unittest.TestCase):
         pkg = self.make_package()
         pkg.chmod(0o644)
         con = sqlite3.connect(pkg)
-        n = con.execute("UPDATE bars SET close = close * 1.01 WHERE code = 'BRENT' AND date = '2015-06-01'").rowcount
+        n = con.execute("DELETE FROM bars WHERE code = 'BRENT' AND date = '2015-06-01'").rowcount
         con.commit()
         self.assertEqual(n, 1)
         con.close()

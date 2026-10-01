@@ -14,6 +14,7 @@ import csv
 import json
 import os
 import re
+import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -247,8 +248,12 @@ def _line(cov: dict) -> str:
 
 
 @contextmanager
-def _job(db, kind: str, *, end: date | None = None, args: dict | None = None, uni_path: Path = U.UNIVERSE):
-    """打开库 → 装入 universe seed（记 sha256）→ runs 记一行；正常结束记 ok，异常记 error 后照常抛出。"""
+def _job(db, kind: str, *, end: date | None = None, args: dict | None = None, uni_path: Path = U.UNIVERSE, create: bool = True):
+    """打开库 → 装入 universe seed（记 sha256）→ runs 记一行；正常结束记 ok，异常记 error 后照常抛出。
+    create=False（update、calendar）：库不存在就拒绝，不建空库（S1 之前的机器上留下未跟踪的库文件，之后 git pull 会冲突）。"""
+    DB.refuse_default_in_tests(db, DB.MARKET_DB)
+    if not create and not Path(db).exists():
+        raise SystemExit(f"{db} 不存在：先跑 probe / backfill")
     con = DB.connect(db)
     try:
         uni = U.load(uni_path)
@@ -329,7 +334,7 @@ def _refresh(cov: dict, con) -> None:
 def update(end: date, *, only=None, uni_path: Path = U.UNIVERSE, db: Path = DB.MARKET_DB, log=print) -> list[dict]:
     """按每条序列已有的来源增量更新；不换路由（换了就不是同一条序列）。"""
     http.LOG.clear()
-    with _job(db, "update", end=end, args={"only": only}, uni_path=uni_path) as (con, run_id, uni):
+    with _job(db, "update", end=end, args={"only": only}, uni_path=uni_path, create=False) as (con, run_id, uni):
         covs = {c["theme_id"]: c for c in DB.read_coverage(con)}
         if not covs:
             raise SystemExit("库里没有 coverage：先跑 backfill")
@@ -388,7 +393,8 @@ def load_calendar(path: Path, *, replace: bool = False, uni_path: Path = U.UNIVE
         days = read_calendar_file(path)
     except ValueError as e:
         raise SystemExit(f"交易日清单不可用，库未动：{e}")
-    with _job(db, "calendar", args={"file": str(path), "sha256": DB.sha256_file(path), "replace": replace}, uni_path=uni_path) as (con, _, _u):
+    with _job(db, "calendar", args={"file": str(path), "sha256": DB.sha256_file(path), "replace": replace}, uni_path=uni_path,
+              create=False) as (con, _, _u):
         have = [] if replace else [r[0] for r in con.execute("SELECT date FROM calendar")]
         try:
             union = check_days(list(days) + have, "交易日历（并入后）")
@@ -415,9 +421,15 @@ def manifest_path(pkg: Path) -> Path:
     return Path(pkg).with_name(Path(pkg).stem + ".MANIFEST.json")
 
 
+PACKAGE_CONTENT = {"meta": "key", "package": "key", "universe": "ord", "calendar": "date", "coverage": "theme_id",
+                   "bars": "code, adj, date"}           # content_sha256 的范围：包内 runs（作业时刻）不算内容
+
+
 def package(end: date, *, db: Path = DB.MARKET_DB, pkg_root: Path = PKG_ROOT, force: bool = False, log=print) -> Path:
     """从库复制一份截到 end 的只读库。只读源库（Cowork 在本地打包不改动入 Git 的库）；这次打包记在包内的 runs 与 package 表。
-    coverage 与 bars 必须一致（研究序列存在、有行、source = route_used），否则该容器改记 error，列进 inconsistent_with_bars。"""
+    coverage 与 bars 必须一致（研究序列存在、有行、source = route_used），否则该容器改记 error，列进 inconsistent_with_bars。
+    包内容（除作业时刻外）只由源库、end 与 git commit 决定：content_sha256 在任何机器上可复现，prereg §13 记它；
+    打包时刻只写在 MANIFEST.json。中途出错不留半截包。"""
     src_path = Path(db)
     DB.refuse_default_in_tests(src_path, DB.MARKET_DB)
     if not src_path.exists():
@@ -431,6 +443,11 @@ def package(end: date, *, db: Path = DB.MARKET_DB, pkg_root: Path = PKG_ROOT, fo
         covs = DB.read_coverage(src)
         if not covs:
             raise SystemExit("库里没有 coverage：先跑 backfill")
+        uni_rows = [(r["ord"], r["theme_id"], r["row"]) for r in src.execute("SELECT ord, theme_id, row FROM universe ORDER BY ord")]
+        uni = {tid: json.loads(row) for _, tid, row in uni_rows}
+        missing = sorted({c["theme_id"] for c in covs} - set(uni))
+        if missing:                                   # 价格版本序列（I-21 借量）靠 universe 认出；缺了会被静默漏掉
+            raise SystemExit(f"库里的 universe 表缺 {missing[:5]}：先跑一次 probe / backfill 装入 seed")
         dest = Path(pkg_root) / f"research-package-{end.isoformat()}.sqlite"
         man = manifest_path(dest)
         if dest.exists() or man.exists():
@@ -440,8 +457,6 @@ def package(end: date, *, db: Path = DB.MARKET_DB, pkg_root: Path = PKG_ROOT, fo
                 if p.exists():
                     p.chmod(0o644)
                     p.unlink()
-        uni_rows = [(r["ord"], r["theme_id"], r["row"]) for r in src.execute("SELECT ord, theme_id, row FROM universe ORDER BY ord")]
-        uni = {tid: json.loads(row) for _, tid, row in uni_rows}
         uni_sha = (src.execute("SELECT value FROM meta WHERE key = 'universe_sha256'").fetchone() or [None])[0]
         wanted, inconsistent = [], []
         for c in covs:
@@ -455,44 +470,59 @@ def package(end: date, *, db: Path = DB.MARKET_DB, pkg_root: Path = PKG_ROOT, fo
                         c[k] = ""
             wanted += [(code, adj) for _, code, adj in container_series(c, uni.get(c["theme_id"], {})) if (code, adj) not in wanted]
         Path(pkg_root).mkdir(parents=True, exist_ok=True)
-        pkg = DB.connect(dest, schema=DB.SCHEMA + DB.PACKAGE_SCHEMA)
         try:
-            n = 0
-            with pkg:
-                for code, adj in wanted:
-                    rows = src.execute("SELECT code, adj, date, open, high, low, close, volume, amount, source, fetched_at FROM bars "
-                                       "WHERE code = ? AND adj = ? AND date <= ? ORDER BY date", (code, adj, end.isoformat())).fetchall()
-                    if rows:
-                        pkg.executemany("INSERT INTO bars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [tuple(r) for r in rows])
-                        n += 1
-                pkg.executemany("INSERT INTO universe (ord, theme_id, row) VALUES (?, ?, ?)", uni_rows)
-                pkg.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('universe_sha256', ?)", (uni_sha or "",))
-                pkg.executemany("INSERT INTO calendar (date) VALUES (?)", [(r[0],) for r in src.execute("SELECT date FROM calendar ORDER BY date")])
-            for c in covs:
-                _refresh(c, pkg)
-            run_id = DB.start_run(pkg, "package", end=end, args={"source_db": _rel(src_path), "force": force}, universe_sha256=uni_sha)
-            DB.write_coverage(pkg, run_id, covs)
-            panel = [c for c in covs if c.get("status") in U.PANEL_STATUSES]
-            info = {"end": end.isoformat(), "created_at": _now(), "git_commit": DB.git_head(), "source_db": _rel(src_path),
-                    "source_db_sha256": src_sha, "source_db_matches_commit": DB.git_clean(src_path), "universe_sha256": uni_sha,
-                    "series": n, "panel_containers": len(panel), "with_series": sum(1 for c in panel if c.get("rows")),
-                    "inconsistent_with_bars": inconsistent, "price_only": sum(1 for c in panel if c.get("price_only") == "True"),
-                    "calendar_days": pkg.execute("SELECT count(*) FROM calendar").fetchone()[0]}
-            with pkg:
-                pkg.executemany("INSERT INTO package (key, value) VALUES (?, ?)",
-                                [(k, json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v) for k, v in info.items()])
-            DB.finish_run(pkg, run_id, "ok")
-            pkg.execute("VACUUM")
-        finally:
-            pkg.close()
+            n, info = _write_package(src, dest, end, covs, wanted, uni_rows, uni_sha, inconsistent,
+                                     {"source_db": _rel(src_path), "source_db_sha256": src_sha,
+                                      "source_db_matches_commit": DB.git_clean(src_path)}, force)
+        except BaseException:
+            dest.unlink(missing_ok=True)
+            raise
     finally:
         src.close()
     os.chmod(dest, 0o444)
-    meta = {"file": dest.name, "sha256": DB.sha256_file(dest), **info,
+    con = DB.connect(dest, readonly=True)
+    try:
+        content = DB.content_sha256(con, PACKAGE_CONTENT)
+    finally:
+        con.close()
+    meta = {"file": dest.name, "sha256": DB.sha256_file(dest), "content_sha256": content, "created_at": _now(), **info,
             "verify": f"python -m src.data verify {dest.name}"}
     man.write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    log(f"  研究数据包 {dest}：{n} 条序列，面板容器 {info['with_series']}/{info['panel_containers']} 有数据")
+    log(f"  研究数据包 {dest}：{n} 条序列，面板容器 {info['with_series']}/{info['panel_containers']} 有数据；content_sha256 {content[:12]}…")
     return dest
+
+
+def _write_package(src, dest: Path, end: date, covs: list[dict], wanted, uni_rows, uni_sha, inconsistent, source: dict, force: bool):
+    pkg = DB.connect(dest, schema=DB.SCHEMA + DB.PACKAGE_SCHEMA)
+    try:
+        n = 0
+        with pkg:
+            for code, adj in wanted:
+                rows = src.execute("SELECT code, adj, date, open, high, low, close, volume, amount, source, fetched_at FROM bars "
+                                   "WHERE code = ? AND adj = ? AND date <= ? ORDER BY date", (code, adj, end.isoformat())).fetchall()
+                if rows:
+                    pkg.executemany("INSERT INTO bars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [tuple(r) for r in rows])
+                    n += 1
+            pkg.executemany("INSERT INTO universe (ord, theme_id, row) VALUES (?, ?, ?)", uni_rows)
+            pkg.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('universe_sha256', ?)", (uni_sha or "",))
+            pkg.executemany("INSERT INTO calendar (date) VALUES (?)", [(r[0],) for r in src.execute("SELECT date FROM calendar ORDER BY date")])
+        for c in covs:
+            _refresh(c, pkg)
+        run_id = DB.start_run(pkg, "package", end=end, args={"source_db": source["source_db"], "force": force}, universe_sha256=uni_sha)
+        DB.write_coverage(pkg, run_id, covs)
+        panel = [c for c in covs if c.get("status") in U.PANEL_STATUSES]
+        info = {"end": end.isoformat(), "git_commit": DB.git_head(), **source, "universe_sha256": uni_sha,
+                "series": n, "panel_containers": len(panel), "with_series": sum(1 for c in panel if c.get("rows")),
+                "inconsistent_with_bars": inconsistent, "price_only": sum(1 for c in panel if c.get("price_only") == "True"),
+                "calendar_days": pkg.execute("SELECT count(*) FROM calendar").fetchone()[0]}
+        with pkg:
+            pkg.executemany("INSERT INTO package (key, value) VALUES (?, ?)",
+                            [(k, json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v) for k, v in info.items()])
+        DB.finish_run(pkg, run_id, "ok")
+        pkg.execute("VACUUM")
+    finally:
+        pkg.close()
+    return n, info
 
 
 def package_info(con) -> dict:
@@ -507,33 +537,40 @@ def package_info(con) -> dict:
 
 
 def verify(path: Path) -> list[str]:
-    """研究数据包复验；返回问题列表（空 = 通过）。
-    文件 sha256 对 MANIFEST.json、PRAGMA integrity_check、bars 行数对 coverage、无晚于 end 的行、source = route_used（执行序列对 exec_route）、
-    没有 coverage 未引用的序列。"""
+    """研究数据包复验；返回问题列表（空 = 通过），坏库与坏清单也只记问题、不抛异常。
+    文件 sha256 与内容 content_sha256 对 MANIFEST.json、PRAGMA integrity_check、bars 行数对 coverage、无晚于 end 的行、
+    source = route_used（执行序列对 exec_route）、没有 coverage 未引用的序列。
+    MANIFEST 在包旁边，连同它一起改写的篡改发现不了：可信的锚点是 prereg §13 记下的 content_sha256。"""
     path = Path(path)
     if not path.exists():
         return [f"缺文件 {path.name}"]
-    problems = []
+    problems, manifest = [], {}
     man = manifest_path(path)
     if not man.exists():
         problems.append(f"缺 {man.name}")
-    elif json.loads(man.read_text(encoding="utf-8")).get("sha256") != DB.sha256_file(path):
-        problems.append(f"哈希不符 {path.name}")
+    else:
+        try:
+            manifest = json.loads(man.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            problems.append(f"{man.name} 不是合法 JSON：{str(e)[:80]}")
+        if manifest and manifest.get("sha256") != DB.sha256_file(path):
+            problems.append(f"哈希不符 {path.name}")
     try:
         con = DB.connect(path, readonly=True)
     except Exception as e:  # noqa: BLE001 — 不是 SQLite 库 / schema 不对
         return problems + [f"打不开：{str(e)[:160]}"]
     try:
-        try:
-            ok = con.execute("PRAGMA integrity_check").fetchone()[0]
-        except Exception as e:  # noqa: BLE001
-            return problems + [f"integrity_check 失败：{str(e)[:160]}"]
+        ok = con.execute("PRAGMA integrity_check").fetchone()[0]
         if ok != "ok":
-            problems.append(f"integrity_check：{ok[:160]}")
+            return problems + [f"integrity_check：{ok[:160]}"]
+        if not con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'package'").fetchone():
+            return problems + ["没有 package 表：不是研究数据包"]
+        if manifest.get("content_sha256") and manifest["content_sha256"] != DB.content_sha256(con, PACKAGE_CONTENT):
+            problems.append(f"内容哈希不符 {path.name}")
         info = package_info(con)
         end = info.get("end")
         if not end:
-            return problems + ["缺 package 表或其中的 end"]
+            return problems + ["package 表里没有 end"]
         late = con.execute("SELECT count(*), min(code) FROM bars WHERE date > ?", (end,)).fetchone()
         if late[0]:
             problems.append(f"有 {late[0]} 行晚于 end={end}（如 {late[1]}）")
@@ -553,6 +590,8 @@ def verify(path: Path) -> list[str]:
                     problems.append(f"来源不符 {c['theme_id']} {code}/{adj}：bars {sp['source']}，coverage {route}")
         have = {(r[0], r[1]) for r in con.execute("SELECT DISTINCT code, adj FROM bars")}
         problems += [f"清单外序列 {code}/{adj}" for code, adj in sorted(have - referenced)]
+    except sqlite3.DatabaseError as e:              # 页面损坏等：integrity_check 之外的读取也可能直接报错
+        problems.append(f"读取失败：{str(e)[:160]}")
     finally:
         con.close()
     return problems

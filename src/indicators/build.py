@@ -282,7 +282,8 @@ def _build(con, package: Path, out: Path | None, log) -> Path:
         raise BuildError(f"数据包里的交易日历不可用：{e}") from e
 
     pkg_sha = DB.sha256_file(package)
-    frames, report = [], {"package": str(package), "package_sha256": pkg_sha, "end": end.isoformat(),
+    frames, report = [], {"package": str(package), "package_sha256": pkg_sha, "package_content_sha256": info_content(package),
+                          "end": end.isoformat(),
                           "source_db_sha256": info.get("source_db_sha256"), "git_commit_of_package": info.get("git_commit"),
                           "bench": {"code": BENCH_CODE, "first": str(bench.index.min().date()), "last": str(bench.index.max().date())},
                           "calendar": ({"days": len(trading_days), "first": str(trading_days[0].date()), "last": str(trading_days[-1].date())}
@@ -325,12 +326,25 @@ def _build(con, package: Path, out: Path | None, log) -> Path:
     bench_df = pd.DataFrame({"date": bench.index, "hs300": bench.to_numpy(),
                              "hs300_open": bench_open(con).reindex(bench.index).to_numpy()})
     created = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    write_panel_db(out, panel, bench_df, {"end": end.isoformat(), "package_sha256": pkg_sha, "created_at": created})
-    report["created_at"] = created
+    write_panel_db(out, panel, bench_df, {"end": end.isoformat(), "package_content_sha256": info_content(package)})
+    report["created_at"] = created                                  # 时刻只进报告，面板库逐字节只由数据包决定
     report["panel_db"], report["panel_db_sha256"] = out.name, DB.sha256_file(out)
+    report["panel_content_sha256"] = panel_content_sha256(out)
     report_path(out).write_text(json.dumps(report, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     log(f"  面板 {len(panel)} 行、{len(frames)} 个容器 → {out}")
     return out
+
+
+def info_content(package: Path) -> str | None:
+    """数据包 MANIFEST.json 里的 content_sha256（verify 已核对过它与包内容一致）。"""
+    man = data_runner.manifest_path(package)
+    return json.loads(man.read_text(encoding="utf-8")).get("content_sha256") if man.exists() else None
+
+
+def panel_content_sha256(panel_db: Path) -> str:
+    """面板库内容的规范化哈希（与 SQLite 版本、文件布局无关）；build-report 与 V1 的 OOS 锁都记它。"""
+    from src.research.prereg_v1.panel import content_sha256
+    return content_sha256(panel_db)
 
 
 def report_path(panel_db: Path) -> Path:

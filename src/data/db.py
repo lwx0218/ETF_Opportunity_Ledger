@@ -62,6 +62,12 @@ BEGIN
      WHERE (SELECT source FROM bars WHERE code = NEW.code AND adj = NEW.adj LIMIT 1) <> NEW.source;
 END;
 
+-- 行情只整行写入（backfill 先删后插、update 按日 INSERT OR REPLACE）：UPDATE 一律拒绝，免得绕过上面那条把来源改混
+CREATE TRIGGER IF NOT EXISTS bars_no_update BEFORE UPDATE ON bars
+BEGIN
+    SELECT RAISE(ABORT, 'bars 不允许 UPDATE：整行重写（同一来源）');
+END;
+
 CREATE TABLE IF NOT EXISTS coverage (
     run_id   INTEGER NOT NULL REFERENCES runs(run_id),
     theme_id TEXT NOT NULL,
@@ -182,6 +188,20 @@ def git_clean(path: Path) -> bool | None:
         return subprocess.run(["git", "-C", str(ROOT), "diff", "--quiet", "HEAD", "--", str(rel)], capture_output=True).returncode == 0
     except Exception:  # noqa: BLE001
         return None
+
+
+def content_sha256(con, tables: dict[str, str]) -> str:
+    """库内容的规范化哈希：按 {表: 排序列} 逐表逐行序列化（JSON，浮点按 repr 往返）后求 sha256。
+    与文件字节无关（SQLite 版本、页面布局、作业时刻都不影响），同一份数据在任何机器上算出同一个值——prereg §13 记它。"""
+    h = hashlib.sha256()
+    for table, order in tables.items():
+        cur = con.execute(f"SELECT * FROM {table} ORDER BY {order}")
+        cols = [d[0] for d in cur.description]
+        h.update(json.dumps([table, cols], ensure_ascii=False).encode())
+        for row in cur:
+            h.update(json.dumps(list(row), ensure_ascii=False, separators=(",", ":")).encode())
+            h.update(b"\n")
+    return h.hexdigest()
 
 
 def sha256_file(path: Path) -> str:

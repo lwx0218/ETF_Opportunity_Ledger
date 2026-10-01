@@ -17,9 +17,6 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
-# data/ goes into Git (replan §11, Owner decision 2026-10-01): market.sqlite, ledger.sqlite, universe.csv seed.
-# Legacy CSV layout from before P7 stays out (R1's data/raw/ is not recognised; S1 backfills into market.sqlite).
-/data/raw/
 # Reference import: keep market/signal data, macOS metadata and machine-local settings out of Git
 /ref/auto_filter_stock/data/
 /ref/**/.claude/settings.local.json
@@ -27,7 +24,6 @@ __pycache__/
 /outputs/
 /artifacts/
 *.sqlite
-!/data/*.sqlite
 *.sqlite3
 *.db
 *.db-wal
@@ -40,3 +36,12 @@ __pycache__/
 *.sqlite3-shm
 *.log
 .DS_Store
+
+# data/ goes into Git by whitelist (replan §11, Owner decision 2026-10-01): the two databases, the universe seed and
+# confirmed event drafts. Anything else under data/ (legacy CSV layout from before P7: raw/, calendar/, ledger/, jobs/,
+# the 09-25 kline snapshot; replay databases; temp files) stays out. Kept last so it overrides *.sqlite above.
+/data/*
+!/data/universe.csv
+!/data/market.sqlite
+!/data/ledger.sqlite
+!/data/events/

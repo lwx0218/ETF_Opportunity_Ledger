@@ -17,6 +17,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+import tests  # noqa: E402,F401 — 置位 ETF_LEDGER_TESTING：直接当脚本跑时也只许连临时库
 
 from src.jobs import rules as R                                  # noqa: E402
 from src.jobs.__main__ import main as jobs_main                  # noqa: E402
@@ -481,10 +482,17 @@ class Replay(unittest.TestCase):
         last = max(self.L.ew_rows())
         lvl = self.L.ew_rows()[last][1]
         self.now = "2026-03-31T16:00"
-        for day, ret, level in (("2026-01-15", 0.0, lvl), (last, 0.0, lvl), ("2026-03-02", 0.01, lvl * 1.02)):   # 补记更早的日子 / 重复 / 点位不连乘
+        for day, ret, level in (("2025-12-31", 0.0, lvl), ("2026-01-17", 0.0, lvl), (last, 0.0, lvl),          # 补记更早的日子（表里没有的）/ 重复
+                                ("2026-03-02", 0.01, lvl * 1.02)):                                              # 点位不连乘
             with self.subTest(day), self.assertRaises(LedgerError):
                 self.L.record_ew(day, ret, level, 3)
         self.assertEqual(dump(self.L), before)
+        fresh = Ledger(":memory:", clock=lambda: "2026-03-31T16:00", replay=True)
+        self.addCleanup(fresh.close)
+        for ret, level in ((0.0, 2.0), (0.01, 1.01)):                                   # 第一条点位必须是 1、收益 0
+            with self.subTest(level=level), self.assertRaisesRegex(LedgerError, "第一条"):
+                fresh.record_ew("2026-01-02", ret, level, 3)
+        self.assertEqual(fresh.ew_rows(), {})
 
     def test_skipped_days_or_tampered_ew_block_the_day(self):
         """漏跑（表的最后一条早于上一交易日）或有人绕过触发器改了卡片当天的点位：台账不动。"""
@@ -658,6 +666,18 @@ class Pieces(unittest.TestCase):
             L.conn.execute("DELETE FROM job_days")
         with self.assertRaises(LedgerError):
             L._tx(lambda: L._insert("job_days", {"day": "2026-02-02"}))
+        L.close()
+        from src.jobs.daily import DayReport
+        with mock.patch("src.jobs.__main__.DailyJob.run", return_value=DayReport("2026-02-04", blocked="构造的阻断")), \
+             mock.patch("builtins.print"):
+            self.assertEqual(jobs_main(base + ["--date", "2026-02-04"]), 3)                    # 台账流程被阻断：不记为已处理
+        L = Ledger(tmp / "ledger.sqlite")
+        self.assertEqual(L.processed_days(), {"2026-02-02", "2026-02-03"})
+        L.close()
+        (tmp / "ledger.sqlite").unlink()
+        with mock.patch("builtins.print"):
+            self.assertEqual(jobs_main(base + ["--date", "2026-02-07"]), 3)                    # 周六：运行前检查拦下
+        self.assertFalse((tmp / "ledger.sqlite").exists())                                    # 被拦下时不建台账库
 
     def test_replay_cli(self):
         tmp = Path(tempfile.mkdtemp())
