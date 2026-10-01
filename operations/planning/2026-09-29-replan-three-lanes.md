@@ -180,7 +180,7 @@ P6c-1 / P6c-2 已合并（PR #8、#9，main `5c0ef8b`，183 个测试通过）�
 | 留意项 | 裁定 |
 |---|---|
 | P6c-2 存储层自加的两条核对（触发收盘 = 出场日之前最近一行的收盘、出场后不能补行；失效位出场的触发收盘必须低于失效位） | **接受**，写进 v1.1-g 第 1 条。手动出场同样用触发行收盘判证伪；出场一律次日开盘成交，没有盘中或当天收盘的出场时点 |
-| 海外序列中段长断档，平盘行沿用陈旧状态 | **不只是注明，要标记并挡住开仓**（I-25）：连续 ≥ 5 个 A 股交易日没有新 K 线的平盘段 = 数据断档（真实休市最长 4 天），面板加 `data_hole` 列，V1 不在这些行上开新仓，已持仓照引擎处理；报告记 `max_stale_run` 与各断档段 |
+| 海外序列中段长断档，平盘行沿用陈旧状态 | **不只是注明，要标记并挡住开仓**（I-25）：连续 ≥ 5 个 A 股交易日没有新 K 线的平盘段 = 数据断档（真实休市最长 4 天），面板加 `data_hole` 列（10-01 修订为因果口径：第 5 行起标 1），V1 不在这些行上产生信号、不成交、不参与排名（I-25 / I-26），已持仓照引擎处理；报告记 `max_stale_run` 与各断档段 |
 | 可达状态表按面板行计数，平盘日重复计入 | 改为只按非平盘行计数（并入 P6d-1） |
 | P5 遗留：止损次日无开盘价时出场顺延，若当天收盘回到止损之上信号丢失 | **按 V1 引擎修**（v1.1-g 第 3 条）：出场信号写 write-once 记录并持久化到成交，触发收盘改为信号行的收盘，第 1 条核对随之改为对信号行。不阻塞 V1，A7 之前无正式卡片、不迁移 |
 | 远端 `-p6c1`、`-p6c2` 分支 | 删除；`claude/bold-archimedes-8mka2j*` 下其余已合并分支一并删除（先 `git branch -r --merged origin/main` 核对） |
@@ -209,9 +209,9 @@ Owner 决定：生成的数据不再用 CSV，结构化数据进 SQLite，其余
 | 测试 | serenity 的硬防线照搬：测试只许连临时库，默认库路径一律拒绝 |
 | 不动的 | `src/research/` 里 V1 之外的脚本（baseline、build_hfq、characterize、enh_engine、universe_breadth、ref_strong_check 等）与 09-25 数据快照是 results-index 第 1–11 项的复现件，**冻结不改**；清理时整体移到 `legacy/research/` 并在 results-index 注明路径 |
 
-### 顺序（改）
+### 顺序（改；P6d-1 / P6d-2 已于 10-01 先行合并，见 §12）
 
-CC：**P6d-1（I-25，小）→ P7（数据层改 SQLite）→ P6d-2（出场信号持久化）**。astra：P7 合并后拉代码做 S1，把 `market.sqlite` 提交到 main；S2 不受影响可先做。Cowork：S1 提交后 `git pull` → `package` → `build` → `run check → characterize → design`。
+CC：**P7（数据层改 SQLite）→ P6e-1 → P6e-2**（§12）。astra：P7 合并后拉代码做 S1，把 `market.sqlite` 提交到 main；S2 不受影响可先做。Cowork：S1 提交后 `git pull` → `package` → `build` → `run check → characterize → design`。
 
 ### P7 · CC：数据层改 SQLite（阻塞 S1）
 
@@ -225,3 +225,35 @@ CC：**P6d-1（I-25，小）→ P7（数据层改 SQLite）→ P6d-2（出场信
 - **时点**：放在第一次真实数据跑通 `build → check → characterize → design` 之后、`oos` 之前。理由：真实数据暴露的问题比任何审读都多，而 `oos` 只跑一次，清理要在它之前落地；设计期的结果（≤ 2015）可以在清理前后各算一次做对照，不是样本外。
 - **分工**：审读与修改分开。astra（不同模型，独立视角）做**只读审读**，产出一份按风险排序的发现清单，不改代码；CC 按清单做修改与删除，一个包。审读清单由 Cowork 事先写定（静默回退与吞异常、文档与代码口径不一致、测试没盯住的规则、重复逻辑、死代码与遗留目录 `src/rotation` / `src/home` / `ref`、`outputs` 里的陈旧产物、已合并分支），每条写文件与行号。
 - **验收门**：清理包必须在冻结的数据包上复现清理前的 `panel` 与设计期结果（数值逐行相等），作为回归测试进仓库；过不了不合并。
+
+## 12. 追加（2026-10-01 晚）· P6d 合并后的裁定、P6e、astra 任务清单
+
+P6d-1 / P6d-2 已合并（PR #10、#11，main `45573fa`，207 个测试通过；CC 当时未看到 §11，所以 P6d-2 先于 P7 做了，无妨）。两份工作日志「交 Cowork 留意」裁定如下，细节见 implementation-notes I-25（修订）/ I-26 与 schema v1.1-h。
+
+| 留意项 | 裁定 |
+|---|---|
+| `data_hole`「整段标 1」改为「第 5 行起标 1」 | **接受**，是对的：整段标用了 D+1 ~ D+4 的信息，破坏截断不变性与研究 / 每日任务一致。I-25、B 节、§10 文字已改。V1 报告列断档段以 `stale_runs` 整段为准 |
+| 断档行不占 20 日冷却 | 接受（占位拷贝不是信号） |
+| 引擎会在 `data_hole = 1` 的行上成交 | **选 (b)**：成交行断档记 skipped「数据断档」，信号不保留，与「无开盘价」同一处理（I-26） |
+| 横截面排名含断档行 | **排除**：排名前 `rs_1m.where(data_hole == 0)`，不占名次不进分母（I-26） |
+| `characterize` / `random_entry_null` / 恐慌规则仍用断档行 | **全部排除**；零模型的随机入场池必须与策略可入行同一集合（I-26） |
+| 顺延期间 MFE / MAE 照常记 | **冻结**，与引擎一致（v1.1-h 1） |
+| 不能事后补记信号 | 接受（v1.1-h 2） |
+| `跟踪期满` 写不进出场记录 | 接受，保留不用（v1.1-h 3） |
+| 同日止损信号与论点作废冲突 | **论点作废覆盖同日止损类信号**，成交日 09:30 前声明有效；别无覆盖（v1.1-h 4） |
+| 止损类信号标签的核对 | 存储层加核对：`失效位` / `移动止盈` 的信号收盘 < 前一行 `stop_now`（无前一行用锁定失效位）；激活与否由每日任务保证（v1.1-h 5） |
+
+### CC 顺序：P7 → P6e-1 → P6e-2
+
+- **P7**：§11，不变。astra 的 S1 等它。
+- **P6e-1 `src/research/prereg_v1/{engine,signals,characterize,run}.py`（I-26，V1 之前合并）**：引擎成交行 `data_hole = 1` → skipped「数据断档」；`rs_top_flags` 排名前把断档行的 `rs_1m` 置空；`characterize` 与 `random_entry_null` 的样本排除断档行；`run check` 的断档段输出改为整段（取 `build-report` 的 `stale_runs`）并注明第 5 行起挡信号。测试：断档前最后一根真 K 线的信号在断档行不成交且记 skipped；排名用 11 个容器剔一个断档容器的构造，前 20% 名单与「该容器当日不在面板」时相同；刻画与零模型在有无断档行的面板上结果相同（断档行被排除后）；变异：去掉任一处排除即失败。
+- **P6e-2 `src/ledger/` + `src/jobs/`（v1.1-h + I-26 的每日任务部分，不阻塞）**：信号后 MFE / MAE 冻结；`exit_signals` 允许同一信号日的 `论点作废` 覆盖止损类信号（成交日 09:30 前），出场引用后者；止损类信号收盘 < 前一行 `stop_now` 的核对；每日任务成交行断档则卡片作废「数据断档」，恐慌规则不看断档行；`SCHEMA_VERSION` / `TERMS_VERSION` 各升一版。测试：顺延期间收盘创新高 MFE 不变且与引擎 `mfe_R` 相等；同日先止损后论点作废 → 证伪，反向覆盖被拒；直接写一条收盘高于 `stop_now` 的「移动止盈」信号被拒；断档日立卡作废路径与引擎 skipped 对拍。
+- 每包一页工作日志 + 包末只读复核；合并后 Cowork 复核。
+
+### astra 任务清单（给 Owner 粘贴；按顺序）
+
+1. 推送 Cowork 的 bundle：`git fetch origin && git checkout main && git pull --ff-only && git fetch <bundle 文件> main:refs/heads/cowork && git merge --ff-only cowork && git push origin main && git branch -d cowork`。
+2. 删除已合并的远端分支：`git branch -r --merged origin/main | grep 'claude/bold-archimedes-8mka2j'`，确认每个都在 `--merged` 列表里后 `git push origin --delete <分支名>`（不带 `origin/` 前缀）。未合并的不删。
+3. 做 S2（replan §4：固定源 17 个 C 级 + 6 个待补时刻的 B 级，每个只核三项，结果写回 `docs/etf-fixed-sources-v1.csv`，一行一个来源，不另写日志），提交并推送。
+4. 等 Owner 通知 P7 合并后，`git pull` 再做 S1（§4 + §8 + §11）：`probe --record` → `backfill --end 2026-09-30` → 交易日历写入库 → 北京时间 05:00 之后 `package` → `verify`；全部写进 `data/market.sqlite`，提交库文件与一页工作日志，推送。不打包传文件。
+5. 不做：审读与清理（§11，等第一次真实数据跑通后另行安排）。
