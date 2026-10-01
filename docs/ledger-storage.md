@@ -7,7 +7,7 @@
 - Status: active
 - Owner: Faye
 - Last updated: 2026-10-01
-- Source of truth: `docs/etf-card-schema-v1.md`（含 v1.1 补充 a–g）；`docs/etf-fixed-sources-v1.md` §3–§5；`operations/planning/2026-09-27-astra-execution.md`（A1–A4）；replan §3 P3、§8 P6b、§9 P6c-2、§10 P6d-2、§11 P7
+- Source of truth: `docs/etf-card-schema-v1.md`（含 v1.1 补充 a–h）；`docs/etf-fixed-sources-v1.md` §3–§5；`operations/planning/2026-09-27-astra-execution.md`（A1–A4）；replan §3 P3、§8 P6b、§9 P6c-2、§10 P6d-2、§11 P7、§12 P6e-2
 
 ## 用法
 
@@ -20,7 +20,7 @@ python -m src.ledger summary   [--db …]                     # 分母、分档�
 
 **数据库时钟**：触发器用 `ledger_now()`（`Ledger` 注册，北京时间到分钟，每个事务内冻结为同一时刻）判断截止与「不能写未来」；各表的 `recorded_at` 必须等于它。没注册这个函数的连接（sqlite3 命令行、别的进程）写不进台账行与固定源版本；自己注册同名函数等于注入时钟，属于蓄意绕过，存储层不防。注入时钟只用于回放：`Ledger(回放库, clock=…, replay=True)`，不能指向正式库；库第一次打开时记下时钟模式（`ledger_meta.clock` = real / replay），之后换模式打开即拒绝——回放写出的卡进不了正式台账。
 
-**schema 版本**：`ledger_meta.schema` = `v1.1-g.1`（新库建库时写入；记账口径仍是 v1.1-g，`.1` 是 P7 把等权日收益与已处理交易日搬进库）。之前版本建的库（P3 / P5 的回放库没有 `evidence_status` 等列；P6b 的 `v1.1` 库出场记录没有触发收盘；P6c 的 `v1.1-f` 库没有出场信号表；P6d 的 `v1.1-g` 库没有 `ew_daily` / `job_days`）打开即拒绝并提示迁移；正式台账按 A7 还没有启用，所以本包不提供迁移脚本，旧回放库删掉重跑即可。
+**schema 版本**：`ledger_meta.schema` = `v1.1-h`（新库建库时写入；出场信号的五个边角，P6e-2）。之前版本建的库（P3 / P5 的回放库没有 `evidence_status` 等列；P6b 的 `v1.1` 库出场记录没有触发收盘；P6c 的 `v1.1-f` 库没有出场信号表；P6d 的 `v1.1-g` 库没有 `ew_daily` / `job_days`；P7 的 `v1.1-g.1` 库出场信号表没有 `seq`）打开即拒绝并提示迁移；正式台账按 A7 还没有启用，所以本包不提供迁移脚本，旧回放库删掉重跑即可。
 
 ## 字段落点（schema §2 → 表.列）
 
@@ -47,8 +47,8 @@ python -m src.ledger summary   [--db …]                     # 分母、分档�
 | `supersedes` | `cards.supersedes` | 只能引用已作废的卡，且新卡晚于作废时刻；一张旧卡只能被取代一次 |
 | §2.2 每日行 | `daily` 表 | 按日期严格递增追加，不晚于数据库时钟；出场后继续追加到期满；作废或期满后拒绝 |
 | 进场 | `entries` 表 | 成交不早于 `owner_score_deadline` 那次开盘（不能倒填；owner 打分时这笔交易还没发生；早盘确认的卡当天可进）、不晚于数据库时钟；进场价必须高于失效位（否则按「未进场而失效」作废）；只一次 |
-| 出场信号（v1.1-g 第 3 条） | `exit_signals(card_id, signal_date, reason, manual_reason, signal_close, recorded_at)` | write-once，每张卡至多一条；须已进场、未出场；信号日不早于进场日、不晚于数据库时钟；**信号日必须已有每日行，`signal_close` 等于它的收盘**（触发收盘是台账自己的观测，v1.1-g 第 1 条 (a)），信号日之后已有每日行时不能补记更早的信号；`失效位` 信号的收盘必须低于锁定失效位（第 1 条 (b)）；`手动` 必须写 `manual_reason`。止损信号由每日任务在跌破那天收盘后写；手动 / 论点作废由 owner 在某日收盘后声明（第 2 条） |
-| §2.3 出场 | `exits` 表 | 须先有进场；不晚于数据库时钟；`手动` 必须写 `manual_reason`；**必须有出场信号**，`exit_date` 晚于信号日（「之后第一个有开盘价的交易日成交、中间不撤销」由每日任务保证；台账不存开盘价，存储层只要求出场日晚于信号日），`exit_reason`、`manual_reason`、`exit_signal_close` 都必须等于信号里的值；`手动` / `论点作废` 信号必须在成交那天 09:30 之前记录（收盘后决定、次日开盘成交，v1.1-g 第 2 条；止损信号由每日任务写，补跑晚记不受限）；出场后不能再补出场日之前的每日行 |
+| 出场信号（v1.1-g 第 3 条、v1.1-h） | `exit_signals(card_id, seq, signal_date, reason, manual_reason, signal_close, recorded_at)`，主键 `(card_id, seq)` | write-once，每张卡一条（`seq = 1`），先写为准；**唯一例外**（v1.1-h 第 4 条）：同一信号日已有 `失效位` / `移动止盈` 时，owner 可再记一条 `论点作废`（`seq = 2`），别的覆盖（反向、手动、不同信号日、第二次覆盖）一律拒绝。须已进场、未出场；信号日不早于进场日、不晚于数据库时钟；**信号日必须已有每日行，`signal_close` 等于它的收盘**（v1.1-g 第 1 条 (a)），信号日之后已有每日行时不能补记（v1.1-h 第 2 条）；`失效位` 信号的收盘必须低于锁定失效位（第 1 条 (b)）；**`失效位` / `移动止盈` 信号的收盘必须低于当时生效的止损**——前一行每日记录的 `stop_now`，没有前一行或它没记止损时用锁定失效位（v1.1-h 第 5 条；`移动止盈` 须已激活由每日任务保证）；`手动` 必须写 `manual_reason`；原因只有失效位 / 移动止盈 / 论点作废 / 手动（`跟踪期满` 保留在出场表的枚举里但不使用，v1.1-h 第 3 条）。止损信号由每日任务在跌破那天收盘后写；手动 / 论点作废由 owner 在某日收盘后声明（第 2 条）。`Ledger.exit_signal(cid, fill_date=D)` 返回在 D 开盘成交时生效的那条 |
+| §2.3 出场 | `exits` 表 | 须先有进场；不晚于数据库时钟；`手动` 必须写 `manual_reason`；**必须有出场信号**，`exit_date` 晚于信号日（「之后第一个有开盘价的交易日成交、中间不撤销」由每日任务保证；台账不存开盘价，存储层只要求出场日晚于信号日），`exit_reason`、`manual_reason`、`exit_signal_close` 都必须等于**生效的**信号里的值（成交日 09:30 前记录的覆盖优先，否则第一条；v1.1-h 第 4 条）；第一条（`seq = 1`）是 `手动` / `论点作废` 时必须在成交那天 09:30 之前记录（收盘后决定、次日开盘成交，v1.1-g 第 2 条；止损信号由每日任务写，补跑晚记不受限）——晚了就只能按更晚的开盘成交（每日任务顺延）；覆盖（`seq = 2`）晚于成交日 09:30 记录不报错、只是不生效，出场引用第一条；出场后不能再补出场日之前的每日行 |
 | §2.4 跟踪期满 | `finals` 表 | 出场后的每日行满 `tracking_days` 行才能写；`final_score` 必须等于机械结果（触发器重算，v1.1-f）：先判证伪——`exit_signal_close` < 锁定的 `invalidation_price`（不论出场原因标签）或 `exit_reason = 论点作废`（哪怕 R > 0）；未证伪的卡按锁定菜单分档：第 1 项按 `realized_excess_pct` 对 `target_excess_pct`，第 2 项按 `realized_r`（含成本）：≥ 2 达标、> 0 部分、≤ 0 未达（没有 −1 下限） |
 | 作废 | `voids` 表 | 只有未进场的候选能作废；已进场的卡按「论点作废 / 手动」出场 |
 | 等权日收益（v1.1-e） | `ew_daily(date, ew_return, ew_level, n_containers, recorded_at)` | replan §11：原「库旁文件」`ew_daily.csv` 改为库内表，台账与它天然成对（文件丢失、截断、换成别的面板的文件这几种失配不再可能）。只追加，日期严格递增、不晚于数据库时钟；第一条点位 1、收益 0，之后点位 = 上一条点位 ×（1 + 当日收益）（触发器核对）；卡片的 `cf_ew_level` 取创建当日这一行。每日任务另核对卡片的 `cf_ew_level` 与表、以及表是否漏了上一交易日（防绕过触发器的改动与漏跑） |

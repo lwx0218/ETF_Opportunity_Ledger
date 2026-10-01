@@ -95,12 +95,16 @@ class Base(unittest.TestCase):
         self.rejects(f"REPLACE INTO {table} {sql}", *r.values(), msg="已")
 
     def run_to_exit(self, reason="移动止盈", r=1.8, excess=6.0, manual=None, signal=None, rule=False):
-        """进场 → 两行每日记录（第二行是触发出场的那根收盘）→ 出场。signal 默认：失效位出场 9.0（< 失效位 9.2），其余 10.8。"""
+        """进场 → 每日记录（最后一行是触发出场的那根收盘）→ 出场。signal 默认：失效位出场 9.0（< 失效位 9.2），其余 10.8。
+        移动止盈：信号前一行记着已上移的止损（触发收盘 + 0.2），v1.1-h 第 5 条要求触发收盘低于它。"""
         self.t = T0
         cid = self.make_rule_card() if rule else self.make()
         signal = signal if signal is not None else (9.0 if reason == "失效位" else 10.8)
         self.at("2026-10-12T09:35").L.enter(cid, "2026-10-12", 10.05, 6.25)
         self.at("2026-10-12T16:00").L.append_daily(cid, dict(date="2026-10-12", close=10.2, state="TREND_UP", r_current=0.19, stop_now=9.2))
+        if reason == "移动止盈":
+            self.at("2026-11-18T16:00").L.append_daily(cid, dict(date="2026-11-18", close=round(signal + 0.5, 6), state="NEUTRAL",
+                                                                 stop_now=round(signal + 0.2, 6)))
         self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=signal, state="NEUTRAL"))
         self.L.signal_exit(cid, "2026-11-19", reason, signal, manual)                 # v1.1-g：信号日收盘后记出场信号
         self.at("2026-11-20T09:35").L.exit(cid, exit_date="2026-11-20", exit_price=11.5, exit_reason=reason, manual_reason=manual,
@@ -291,6 +295,13 @@ class SchemaV11(Base):
             with self.assertRaisesRegex(LedgerError, "schema 是 v1.1-f，"):
                 Ledger(v11f, clock=lambda: T0, replay=True)
             self.assertEqual(v11f.read_bytes(), before)
+            v11g1 = Path(d) / "v11g1.sqlite"                                       # P7 的 v1.1-g.1 库：出场信号表没有 seq
+            L = Ledger(v11g1, clock=lambda: T0, replay=True)
+            L.conn.execute("DROP TRIGGER ledger_meta_no_update")
+            L.conn.execute("UPDATE ledger_meta SET value = 'v1.1-g.1' WHERE key = 'schema'")
+            L.close()
+            with self.assertRaisesRegex(LedgerError, "schema 是 v1.1-g.1，"):
+                Ledger(v11g1, clock=lambda: T0, replay=True)
             v11g = Path(d) / "v11g.sqlite"                                         # P6d 的 v1.1-g 库：没有 ew_daily / job_days
             L = Ledger(v11g, clock=lambda: T0, replay=True)
             L.conn.execute("DROP TRIGGER ledger_meta_no_update")
@@ -434,6 +445,89 @@ class FalsificationV11f(Base):
         self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=9.2, state="NEUTRAL"))
         with self.assertRaisesRegex(LedgerError, "低于锁定的失效位"):
             self.L.signal_exit(cid, "2026-11-19", "失效位", 9.2)
+
+
+class ExitSignalEdgesV11h(Base):
+    """schema v1.1-h：同日论点作废覆盖止损类信号（成交日 09:30 前）；止损类信号收盘必须低于当时生效的止损；跟踪期满不是信号原因。"""
+    EXIT = dict(exit_price=11.5, realized_r=1.8, realized_excess_pct=6.0, holding_days=28)
+    entered = FalsificationV11f.entered
+
+    def trailing(self):
+        """进场 → 11-18 止损已上移到 11.0 → 11-19 收盘 10.8 跌破 → 每日任务写「移动止盈」信号（R > 0、未破锁定失效位 9.2）。"""
+        cid = self.entered()
+        self.at("2026-11-18T16:00").L.append_daily(cid, dict(date="2026-11-18", close=11.4, state="NEUTRAL", stop_now=11.0))
+        self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=10.8, state="NEUTRAL", stop_now=11.0),
+                                                    signal={"reason": "移动止盈", "signal_close": 10.8})
+        return cid
+
+    def test_same_day_thesis_void_overrides_a_stop_signal(self):
+        for when, effective, score in (("2026-11-19T21:00", "论点作废", "证伪"), ("2026-11-20T09:29", "论点作废", "证伪"),
+                                        ("2026-11-20T09:30", "移动止盈", "达标")):          # 成交日 09:30 起声明的不生效：按止损出场，不证伪
+            with self.subTest(when):
+                cid = self.trailing()
+                self.at(when).L.signal_exit(cid, "2026-11-19", "论点作废", 10.8)
+                self.assertEqual([r["reason"] for r in self.L.conn.execute("SELECT reason FROM exit_signals WHERE card_id = ? ORDER BY seq", (cid,))],
+                                 ["移动止盈", "论点作废"])
+                self.assertEqual(self.L.exit_signal(cid, fill_date="2026-11-20")["reason"], effective)
+                self.at("2026-11-20T16:00")
+                other = "移动止盈" if effective == "论点作废" else "论点作废"
+                with self.assertRaisesRegex(LedgerError, "取自出场信号"):                    # 出场必须引用生效的那条
+                    self.L.exit(cid, exit_date="2026-11-20", exit_reason=other, exit_signal_close=10.8, **self.EXIT)
+                self.L.exit(cid, exit_date="2026-11-20", exit_reason=effective, exit_signal_close=10.8, **self.EXIT)
+                self.assertEqual(self.L.status(cid), "过去")
+                self.track(cid)
+                self.assertEqual(mechanical_score(self.L.card(cid), self.cols("exits", cid)), score)   # 论点作废 R > 0 也证伪
+                self.L.finalize(cid, final_score=score, **FalsificationV11f.KW)
+                with self.assertRaisesRegex(LedgerError, "已出场|别无覆盖"):
+                    self.L.signal_exit(cid, "2026-11-19", "论点作废", 10.8)
+
+    def test_no_other_override(self):
+        cid = self.trailing()
+        for reason, manual in (("手动", "改主意"), ("移动止盈", None), ("失效位", None)):            # 只有论点作废能覆盖
+            with self.subTest(reason), self.assertRaisesRegex(LedgerError, "别无覆盖|低于"):
+                self.L.signal_exit(cid, "2026-11-19", reason, 10.8, manual)
+        self.L.signal_exit(cid, "2026-11-19", "论点作废", 10.8)
+        with self.assertRaisesRegex(LedgerError, "别无覆盖"):                                # 覆盖只有一次
+            self.L.signal_exit(cid, "2026-11-19", "论点作废", 10.8)
+        rev = self.entered()                                                                 # 反向：止损不能覆盖论点作废
+        self.at("2026-11-19T16:00").L.append_daily(rev, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))
+        self.L.signal_exit(rev, "2026-11-19", "论点作废", 9.0)
+        with self.assertRaisesRegex(LedgerError, "别无覆盖"):
+            self.L.signal_exit(rev, "2026-11-19", "失效位", 9.0)
+        for first, manual in (("手动", "改主意"), ("论点作废", None)):                          # 论点作废只覆盖止损类信号
+            other = self.entered()
+            self.at("2026-11-19T16:00").L.append_daily(other, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))
+            self.L.signal_exit(other, "2026-11-19", first, 9.0, manual)
+            with self.subTest(first), self.assertRaisesRegex(LedgerError, "别无覆盖"):
+                self.L.signal_exit(other, "2026-11-19", "论点作废", 9.0)
+        late = self.trailing()                                                               # 不同信号日 / 之后已有每日行：都不行
+        self.at("2026-11-20T16:00").L.append_daily(late, dict(date="2026-11-20", close=11.0, state="NEUTRAL", stop_now=11.0))
+        with self.assertRaisesRegex(LedgerError, "别无覆盖"):
+            self.L.signal_exit(late, "2026-11-20", "论点作废", 11.0)
+        with self.assertRaisesRegex(LedgerError, "不能补记更早的出场信号"):
+            self.L.signal_exit(late, "2026-11-19", "论点作废", 10.8)
+        self.rejects("UPDATE exit_signals SET reason = '论点作废' WHERE card_id = ?", cid)
+        self.rejects("DELETE FROM exit_signals WHERE card_id = ? AND seq = 2", cid)
+
+    def test_stop_signal_close_must_be_below_the_stop_in_force(self):
+        cid = self.entered()
+        self.at("2026-11-18T16:00").L.append_daily(cid, dict(date="2026-11-18", close=11.4, state="NEUTRAL", stop_now=11.0))
+        self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=11.0, state="NEUTRAL", stop_now=11.0))
+        with self.assertRaisesRegex(LedgerError, "低于当时生效的止损"):                         # 等于前一行 stop_now 不算跌破
+            self.L.signal_exit(cid, "2026-11-19", "移动止盈", 11.0)
+        self.L.signal_exit(cid, "2026-11-19", "手动", 11.0, "收盘后决定")                       # 手动 / 论点作废不核对止损
+        first = self.entered()                                                               # 没有前一行：对锁定失效位 9.2
+        self.at("2026-10-12T16:00").L.append_daily(first, dict(date="2026-10-12", close=9.5, state="NEUTRAL"))
+        with self.assertRaisesRegex(LedgerError, "低于当时生效的止损"):
+            self.L.signal_exit(first, "2026-10-12", "移动止盈", 9.5)
+        self.at("2026-10-13T16:00").L.append_daily(first, dict(date="2026-10-13", close=9.1, state="NEUTRAL"))   # 前一行没记止损：同样对 9.2
+        self.L.signal_exit(first, "2026-10-13", "移动止盈", 9.1)
+
+    def test_tracking_expiry_is_not_a_signal_reason(self):
+        cid = self.entered()
+        self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))
+        with self.assertRaisesRegex(LedgerError, "CHECK"):
+            self.L.signal_exit(cid, "2026-11-19", "跟踪期满", 9.0)
 
 
 class Section25(Base):
@@ -636,6 +730,7 @@ class Statistics(Base):
         ids = [self.make() for _ in range(4)]
         self.at("2026-10-12T09:31").L.void(ids[0], "未进场而失效")
         self.at("2026-10-12T09:35").L.enter(ids[1], "2026-10-12", 10.0, 5)
+        self.at("2026-11-06T16:00").L.append_daily(ids[1], dict(date="2026-11-06", close=11.4, state="NEUTRAL", stop_now=11.0))
         self.at("2026-11-09T16:00").L.append_daily(ids[1], dict(date="2026-11-09", close=10.9, state="NEUTRAL"))
         self.L.signal_exit(ids[1], "2026-11-09", "移动止盈", 10.9)
         self.at("2026-11-10T16:00").L.exit(ids[1], exit_date="2026-11-10", exit_price=11, exit_reason="移动止盈",

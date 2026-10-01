@@ -1,14 +1,16 @@
 """收盘后的每日流程骨架（replan §3 P5）。一个交易日 D 依次：
 
-  1. 开盘离场：有未成交出场信号的卡按 D 开盘成交；D 无开盘价则顺延，信号不撤销（v1.1-g 第 3 条，与 V1 引擎的 exit_flag 一致）
-  2. 开盘进场：上一交易日立的候选卡按 D 开盘成交；开盘不高于失效位、持仓已满、已持有该容器、错过次日开盘 → 作废（A4：留在分母）
+  1. 开盘离场：有未成交出场信号的卡按 D 开盘成交；D 无开盘价则顺延，信号不撤销（v1.1-g 第 3 条，与 V1 引擎的 exit_flag 一致）；
+     同一信号日的「论点作废」在 D 09:30 前声明则覆盖止损类信号（v1.1-h 第 4 条）
+  2. 开盘进场：上一交易日立的候选卡按 D 开盘成交；开盘不高于失效位、持仓已满、已持有该容器、D 是数据断档（I-26）、错过次日开盘 → 作废
+     （A4：留在分母）
   3. 收盘每日行：在场卡与跟踪期内的卡各追加一行（收盘、状态、z、排名、R、MFE / MAE、止损）；止损按 §4 只上不下；
-     收盘跌破当时生效的止损 → 写出场信号（write-once），此后止损不再更新，直到成交
+     收盘跌破当时生效的止损 → 写出场信号（write-once），此后止损不再更新、MFE / MAE 冻结（v1.1-h 第 1 条），直到成交
   4. 跟踪期满：出场后满 tracking_days 行 → 写期满记录，final_score 由存储层按 v1.1-f 机械核对（先判证伪，再按菜单分档）
   5. 触发候选：只接「恐慌下轨」与「事件驱动」（A7），立卡即锁死
 
 幂等：每一步都先查台账已有的记录，同一天重跑不产生任何新行。所有价格都在卡片的研究序列上（后复权 / 全收益点位）。
-只验流程，不产出任何研究结论；记账口径按 schema v1.1-e、v1.1-f、v1.1-g（docs/jobs-daily.md，jobs-daily-v3）。
+只验流程，不产出任何研究结论；记账口径按 schema v1.1-e ~ v1.1-h 与 I-26（docs/jobs-daily.md，jobs-daily-v4）。
 """
 from __future__ import annotations
 
@@ -72,6 +74,14 @@ def next_weekday_open(d: str, trading_days=None) -> str:
     return f"{nxt.isoformat()}T09:30"
 
 
+def check_panel(panel: pd.DataFrame) -> None:
+    """I-25 / I-26：面板必须带 data_hole 列且只有 0 / 1——缺列或空值不默认 0（默认 0 等于把断档当行情）。"""
+    if "data_hole" not in panel:
+        raise ValueError("面板缺 data_hole 列（I-25）：用 research_frame / build 产出的面板")
+    if not panel["data_hole"].isin([0, 1]).all():
+        raise ValueError("面板的 data_hole 只能是 0 / 1（I-25），不能为空")
+
+
 def _num(x):
     return None if x is None or (isinstance(x, float) and not np.isfinite(x)) else float(x)
 
@@ -81,6 +91,7 @@ class DailyJob:
                  events_dir=None, scorer: Callable[[R.Candidate], dict | None] = default_scorer, p: Params = Params(),
                  bench_open: pd.Series | None = None, trading_days=None):
         self.L, self.p, self.rules, self.instruments, self.events_dir, self.scorer = ledger, p, rules, instruments, events_dir, scorer
+        check_panel(panel)
         self.panel = panel.assign(date=pd.to_datetime(panel["date"])).sort_values(["date", "container"])
         self.bench = bench.sort_index()
         self.bench_open = bench_open.sort_index() if bench_open is not None else None
@@ -160,10 +171,15 @@ class DailyJob:
                                      f"核对「{c['thesis_inval_statement']}」，成立则按「论点作废」出场")
 
     def _exits(self, D, rep):
-        """v1.1-g 第 3 条：出场信号在之后第一个有开盘价的交易日按开盘成交；原因与触发收盘取自信号。"""
+        """v1.1-g 第 3 条：出场信号在之后第一个有开盘价的交易日按开盘成交；原因与触发收盘取自信号。
+        v1.1-h 第 4 条：同一信号日在 D 09:30 前声明的「论点作废」覆盖止损类信号，出场引用它。"""
         for cid in self.L.cards_in("当下"):
-            sig = self.L.exit_signal(cid)
+            sig = self.L.exit_signal(cid, fill_date=D.date().isoformat())
             if sig is None or sig["signal_date"] >= D.date().isoformat():
+                continue
+            if sig["reason"] in ("手动", "论点作废") and sig["recorded_at"] >= f"{D.date()}T09:30":
+                # v1.1-g 第 2 条：声明晚于 D 09:30，不能按 D 的开盘成交（存储层也会拒绝）；顺延到之后第一个开盘，不中断当天流程
+                rep.skipped.append(f"{cid}：{sig['reason']}信号 {sig['recorded_at']} 才记录，晚于 {D.date()} 09:30，顺延到下一个开盘")
                 continue
             card = self.L.card(cid)
             r = self._row(card["container"], D)
@@ -203,13 +219,15 @@ class DailyJob:
             r = self._row(card["container"], D)
             live = [self.L.card(x) | {"entry": self._entry(x)} for x in self.L.cards_in("当下")]
             held = {c["container"] for c in live}
-            why = None                                   # 判定顺序与 V1 引擎一致：已持有 → 持仓已满 → 无开盘价 → 开盘在失效位下方 → 额度
+            why = None                                   # 判定顺序与 V1 引擎一致：已持有 → 持仓已满 → 数据断档 → 无开盘价 → 开盘在失效位下方 → 额度
             if prev is None or card["close_date"] < prev.date().isoformat():
                 why = "未在次一交易日开盘成交"
             elif card["container"] in held:
                 why = "已持有该容器（不加仓，I-09）"
             elif len(held) >= self.p.max_positions:
                 why = "持仓已满"
+            elif r is not None and r.data_hole == 1:             # I-26：断档行的开盘是陈旧收盘的拷贝，按它成交是虚构价格
+                why = "数据断档"
             elif r is None or not np.isfinite(r.open):
                 why = "次一交易日无开盘价"
             elif r.open <= card["invalidation_price"]:
@@ -252,12 +270,15 @@ class DailyJob:
             prev_mae = rows[-1]["mae"] if rows else None
             if exited:
                 mfe, mae, stop_now = prev_mfe, prev_mae, None
+            elif pending:                                        # v1.1-h 第 1 条：信号之后 MFE / MAE 冻结、止损不更新，直到成交
+                stop_eff = rows[-1]["stop_now"]                  # （与引擎在 exit_flag 之后不再更新 hi_close 一致）
+                mfe, mae, stop_now = prev_mfe, prev_mae, stop_eff
             else:
                 mfe = max(r_cur, prev_mfe) if prev_mfe is not None else r_cur
                 mae = min(r_cur, prev_mae) if prev_mae is not None else r_cur
                 stop_eff = rows[-1]["stop_now"] if rows else card["invalidation_price"]
-                if pending or close < stop_eff:
-                    stop_now = stop_eff                          # 跌破或已有出场信号：止损不再更新，直到成交
+                if close < stop_eff:
+                    stop_now = stop_eff                          # 跌破：止损不再更新，当天收盘后写出场信号
                 else:
                     closes = [x["close"] for x in rows] + [close]
                     activated = max(closes) >= entry["entry_price"] + self.p.activate_at_r * r_unit

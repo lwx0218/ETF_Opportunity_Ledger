@@ -4,10 +4,10 @@
 
 - Project: ETF_Opportunity-Ledger
 - Document type: reference
-- Status: active（骨架：只验流程；记账口径 `jobs-daily-v3` = schema v1.1-e + v1.1-f + v1.1-g；规则按 A7 全部关闭，形态突破待 V1 通过）
+- Status: active（骨架：只验流程；记账口径 `jobs-daily-v4` = schema v1.1-e ~ v1.1-h + I-26；规则按 A7 全部关闭，形态突破待 V1 通过）
 - Owner: Faye
 - Last updated: 2026-10-01
-- Source of truth: replan §3 P5、§8 P6b、§9 P6c-2、§10 P6d-2、§11 P7；A4、A5、A7；prereg-v1 §3.2、§4、§5；`docs/etf-card-schema-v1.md`（含 v1.1 补充）；`docs/ledger-storage.md`
+- Source of truth: replan §3 P5、§8 P6b、§9 P6c-2、§10 P6d-2、§11 P7、§12 P6e-2；implementation-notes I-26；A4、A5、A7；prereg-v1 §3.2、§4、§5；`docs/etf-card-schema-v1.md`（含 v1.1 补充）；`docs/ledger-storage.md`
 
 ## 用法
 
@@ -23,7 +23,7 @@ python -m src.jobs replay --panel outputs/panel-2026-09-30.sqlite \
 `daily` = P1 `update`（写 `market.sqlite`）→ 用 P2 的函数从库现算面板（只读打开；`live_panel` 与研究数据包共用 `research_frame`）→ 运行前检查 → 本包的台账流程。`replay` 读 `build` 产出的面板库（`panel`、`bench` 两表）；`--calendar` 默认 `data/market.sqlite`，也可给研究数据包。
 
 - **默认日期**：A 股已收盘的最近日期。面板按 I-20 对齐 A 股日历，海外容器在 D 日用本地 D−1 的 K 线（北京 D 日凌晨已收盘），不必等到次晨。
-- **规则配置** `config/ledger-rules.json`（入 Git）：值已按 schema v1.1-c 写好——恐慌下轨用评分菜单第 2 项 `{scoring_rule: schema-v1.1-R, horizon_days: null, target_excess_pct: null, target_r: 2, benchmark: 等权组合}`；事件驱动用菜单第 1 项，预期由起草人逐卡写在草稿里。规则只有在 `confirmed_terms` 等于 `src/jobs/rules.py` 的 `TERMS_VERSION`（`jobs-daily-v3`，表示 Cowork 已复核本文件「记账口径」，含 v1.1-f 证伪判定与 v1.1-g 出场信号持久化；之前填的 `jobs-daily-v1` / `v2` 不再算数）**且**该规则 `enabled` 为 `true` 时才启用。恐慌规则的值不是菜单第 2 项时也不启用。规则请求启用（`enabled: true`）却被拒时，原因打到 stderr 并写进当天报告，不静默关掉。仓库里的配置 `confirmed_terms: null`、两条规则 `enabled: false`（A7：V1 结论前全部关闭）；一条规则都没启用时命令直接退出（退出码 2）。
+- **规则配置** `config/ledger-rules.json`（入 Git）：值已按 schema v1.1-c 写好——恐慌下轨用评分菜单第 2 项 `{scoring_rule: schema-v1.1-R, horizon_days: null, target_excess_pct: null, target_r: 2, benchmark: 等权组合}`；事件驱动用菜单第 1 项，预期由起草人逐卡写在草稿里。规则只有在 `confirmed_terms` 等于 `src/jobs/rules.py` 的 `TERMS_VERSION`（`jobs-daily-v4`，表示 Cowork 已复核本文件「记账口径」，含 v1.1-f 证伪判定、v1.1-g 出场信号持久化、v1.1-h 出场信号边角与 I-26 断档处理；之前填的 `jobs-daily-v1` ~ `v3` 不再算数）**且**该规则 `enabled` 为 `true` 时才启用。恐慌规则的值不是菜单第 2 项时也不启用。规则请求启用（`enabled: true`）却被拒时，原因打到 stderr 并写进当天报告，不静默关掉。仓库里的配置 `confirmed_terms: null`、两条规则 `enabled: false`（A7：V1 结论前全部关闭）；一条规则都没启用时命令直接退出（退出码 2）。
 - **交易日历**：`market.sqlite` 的 `calendar` 表（v1.1-e；astra 生成清单后用 `python -m src.data calendar` 写入，见 `docs/data-layer.md`）：有就用于月末判定与 owner 评分截止；表空时退回工作日规则，`daily` 报告里会写明。表里中间缺一段（相邻两天间隔超过 14 天）时报错退出（退出码 1，台账未动），不静默退回。
 - **等权日收益**：台账库内的 `ew_daily` 表（v1.1-e；replan §11 起由「库旁文件」改为库内表）。每个台账库（正式库、回放库）各有自己的一张，天然成对。
 
@@ -36,11 +36,11 @@ python -m src.jobs replay --panel outputs/panel-2026-09-30.sqlite \
 ## 一个交易日 D 的顺序
 
 0. **等权日收益**：先把 D 的等权收益与累计点位追加进 `ew_daily` 表（已记过就跳过；只能向后追加，不补记更早的日子）。
-1. **开盘离场**：有未成交出场信号（信号日 < D）的卡按 D 开盘成交，原因与触发收盘取自信号；D 没有开盘价就顺延到下一个有开盘价的交易日，**信号不撤销**——即使顺延期间收盘回到止损之上（v1.1-g 第 3 条，与 V1 引擎的 `exit_flag` 同一时序，prereg-v1 §4）。
-2. **开盘进场**：上一交易日立的候选卡按 D 开盘成交，仓位按 I-06 用实际开盘价重算，再受总风险 4%（§5）和「在场仓位合计不超过 100%」（I-08 的近似，台账不做净值记账）约束，缩到 1% 以下就放弃。以下情况作废，记入分母（A4），判定顺序与 V1 引擎一致：错过次一交易日开盘 → 已持有该容器（不加仓，I-09）→ 持仓已满（8 个）→ 次一交易日无开盘价 → 开盘不高于失效位 → 现金或风险额度不足。同日多张候选按 I-07 排序：恐慌按 z 从低到高；事件排在恐慌之后（I-07 的扩展，v1.1-e 已接受）。
-3. **收盘每日行**：在场卡和跟踪期内的卡各追加一行，内容为收盘、状态、z、rs_1m 横截面排名、R、MFE / MAE、止损、沪深300 点位。止损规则：满 +1R 后启用移动止盈，止损 = max(原止损, 最高收盘 − 3 × ATR20)，只上不下。收盘跌破当时生效的止损 → 当天收盘后写出场信号（启用过移动止盈记「移动止盈」，否则「失效位」；与当天的每日行同一事务写入，中途崩溃不会只留下一半），此后止损不再更新，直到成交；MFE / MAE 照常按收盘记。owner 声明的手动 / 论点作废出场同样是某日收盘后写信号（`Ledger.signal_exit`），次日开盘由本任务成交。
+1. **开盘离场**：有未成交出场信号（信号日 < D）的卡按 D 开盘成交，原因与触发收盘取自信号；D 没有开盘价就顺延到下一个有开盘价的交易日，**信号不撤销**——即使顺延期间收盘回到止损之上（v1.1-g 第 3 条，与 V1 引擎的 `exit_flag` 同一时序，prereg-v1 §4）。同一信号日 owner 在 D 09:30 前声明的「论点作废」覆盖止损类信号，出场引用它、评分证伪；09:30 起声明的不生效，照止损出场（v1.1-h 第 4 条）。顺延时，覆盖还须在第一条顺延行写入之前声明（信号日之后已有每日行即拒绝补记，v1.1-h 第 2 条）。owner 的手动 / 论点作废信号若在 D 09:30 之后才记，不能按 D 开盘成交：报告里记一条并顺延到下一个开盘（存储层同样拒绝按 D 成交）。
+2. **开盘进场**：上一交易日立的候选卡按 D 开盘成交，仓位按 I-06 用实际开盘价重算，再受总风险 4%（§5）和「在场仓位合计不超过 100%」（I-08 的近似，台账不做净值记账）约束，缩到 1% 以下就放弃。以下情况作废，记入分母（A4），判定顺序与 V1 引擎一致：错过次一交易日开盘 → 已持有该容器（不加仓，I-09）→ 持仓已满（8 个）→ **成交日是数据断档**（`data_hole = 1`，开盘是陈旧收盘的拷贝；作废原因「数据断档」，与引擎 skipped 同一处理，I-26）→ 次一交易日无开盘价 → 开盘不高于失效位 → 现金或风险额度不足。面板必须带 `data_hole` 列，缺了报错、不默认 0。同日多张候选按 I-07 排序：恐慌按 z 从低到高；事件排在恐慌之后（I-07 的扩展，v1.1-e 已接受）。
+3. **收盘每日行**：在场卡和跟踪期内的卡各追加一行，内容为收盘、状态、z、rs_1m 横截面排名、R、MFE / MAE、止损、沪深300 点位。止损规则：满 +1R 后启用移动止盈，止损 = max(原止损, 最高收盘 − 3 × ATR20)，只上不下。收盘跌破当时生效的止损 → 当天收盘后写出场信号（启用过移动止盈记「移动止盈」，否则「失效位」；与当天的每日行同一事务写入，中途崩溃不会只留下一半），此后止损不再更新、**MFE / MAE 冻结**（顺延期间的每日行仍记收盘与 R，与引擎在 `exit_flag` 之后不再更新最高收盘一致，v1.1-h 第 1 条），直到成交。止损类信号的收盘必须低于前一行的止损（存储层核对，v1.1-h 第 5 条）。owner 声明的手动 / 论点作废出场同样是某日收盘后写信号（`Ledger.signal_exit`），次日开盘由本任务成交。
 4. **跟踪期满**：出场后满 20 行，写期满记录；`final_score` 由存储层机械核对（v1.1-f）：先判证伪——触发出场的那根收盘（出场记录的 `exit_signal_close`）低于锁定失效位，或论点作废；未证伪的卡按锁定菜单分档：第 1 项按超额对 target，第 2 项按 `realized_r`：≥ 2 达标、(0, 2) 部分、≤ 0 未达。
-5. **触发候选**：只接「恐慌下轨」（月末 z ≤ −2）与「事件驱动」（`<events-dir>/<D>.json`，人确认后的草稿）（A7）。立卡即锁死：
+5. **触发候选**：只接「恐慌下轨」（月末 z ≤ −2；断档行上的 z 不看，I-26）与「事件驱动」（`<events-dir>/<D>.json`，人确认后的草稿）（A7）。立卡即锁死：
    - 失效位 = 收盘 − 2 × ATR20；1R = 收盘 − 失效位；计划仓位按 I-06，1R = 0.5% 净值，上限 25%；
    - owner 截止 = 下一交易日 09:30：有交易日历按日历；没有或日历没覆盖到时取下一个工作日（遇节假日偏早、更严）；
    - **恐慌卡**（v1.1-a / v1.1-c）：`evidence_status = 未检索`，`evidence = []`，**不写 agent 分**（为空，不是 0）；预期取配置里的菜单第 2 项；
@@ -51,7 +51,7 @@ python -m src.jobs replay --panel outputs/panel-2026-09-30.sqlite \
 
 **幂等**：每一步都先查台账已有的记录（立卡靠 `scan_key = 日期|容器|触发类型`），同一天重跑不产生新行，等权表也不追加。所有价格都在卡片的研究序列上。
 
-## 记账口径 `jobs-daily-v3`（= schema v1.1-e + v1.1-f + v1.1-g）
+## 记账口径 `jobs-daily-v4`（= schema v1.1-e ~ v1.1-h + I-26 的每日任务部分）
 
 | 字段 | 口径 |
 |---|---|
@@ -63,7 +63,7 @@ python -m src.jobs replay --panel outputs/panel-2026-09-30.sqlite \
 | `post_exit_return_pct` / `post_exit_r` | 出场后第 20 行收盘相对出场价的涨跌；若继续持有，这一天是多少 R |
 | `missed_r` | max(0, 跟踪期内最高 R − realized_r) |
 | `stop_quality` | 跟踪期内最高 R − realized_r ≥ 1 记 1（= 砍早了） |
-| `trail_quality` | 仅移动止盈出场：realized_r ≥ 0.7 × 出场前 MFE 记 1 |
+| `trail_quality` | 仅移动止盈出场：realized_r ≥ 0.7 × 出场前 MFE 记 1（MFE 在出场信号之后冻结，即信号时的 MFE，v1.1-h 第 1 条；移动止盈出场必已激活，此时与引擎 `mfe_R` 相同——引擎从进场价起算，只在全部收盘低于进场价时两者不同） |
 | `benchmark_beat` | 同期基准上涨记 1（与 `realized_excess_pct` 同一窗口） |
 | 等权日收益 | 当日与上一个已记录日都有收盘的容器的收益均值（I-10 口径），第一天点位 1；只追加，容器集合以后变化时旧点位不重算，冻结的 `cf_ew_level` 始终可复现 |
 | 月末 | 有交易日历时看日历里的下一交易日是否进入新月份；否则看下一个工作日（P2 `month_end_flags`） |
