@@ -287,7 +287,19 @@ class EndToEnd(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             self.assertEqual(prereg_run.main(["check", "--panel", str(out), "--out", str(self.tmp / "v1")]), 0)
         self.assertIn("数据断档", buf.getvalue())
-        self.assertIn("原油", buf.getvalue().split("数据断档")[1])
+        out_text = buf.getvalue().split("数据断档")[1]
+        self.assertIn("原油", out_text)
+        seg = rep["stale_runs"][0]                                           # I-26：按整段列出（起点是第 1 行平盘，不是第 5 行）
+        self.assertIn(f"{seg['first']} {seg['last']}", " ".join(out_text.split()))
+        self.assertIn("第 5 行起 data_hole = 1", out_text)
+        self.assertNotIn("对不上", out_text)
+        bare = self.tmp / "bare.sqlite"                                       # 面板旁边没有 build-report：退回第 5 行起的段并提示
+        bare.write_bytes(out.read_bytes())
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(prereg_run.main(["check", "--panel", str(bare), "--out", str(self.tmp / "v1")]), 0)
+        self.assertIn("没有 build-report", buf.getvalue())
+        self.assertIn("原油", buf.getvalue().split("没有 build-report")[1])
 
     def test_panel_db_reads_like_the_old_csv(self):
         """replan §11 迁移对照：同一份构造的面板写进库（write_panel_db）与按旧口径写 CSV，经 panel.py 两种读法逐行相等；

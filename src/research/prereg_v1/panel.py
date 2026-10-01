@@ -9,7 +9,8 @@
     rs_1m       近 1 月相对强弱：21 日收益 − 基准 21 日收益（R3 实现；横截面排名只看相对大小）
     atr20       ATR20 = 真实波幅的 20 日简单均值（与 etf_probe.py ATR14 同一算法，见 reference_atr）
     z_month     仅在该容器每月最后一个交易日有值：(月末收盘 − 前 20 个已完成月末收盘均值) / 其标准差
-    data_hole   0 / 1；1 = 海外容器连续平盘数到第 5 行起（连续 ≥ 5 个 A 股交易日没有新 K 线，I-25），这些行不产生入场信号。
+    data_hole   0 / 1；1 = 海外容器连续平盘数到第 5 行起（连续 ≥ 5 个 A 股交易日没有新 K 线，I-25）。这些行上一律不做决策：
+                不产生入场信号、不成交、不参与横截面排名、不进刻画与零模型（I-26）。
                 缺这一列直接报错，不默认 0：默认 0 等于把断档当行情
 
 基准另给一张表：date, hs300（I-18：沪深300 全收益指数 H00300，与策略的后复权口径一致）。
@@ -111,7 +112,8 @@ def reference_atr(df: pd.DataFrame, n: int = 20) -> pd.Series:
 
 
 def hole_runs(panel: pd.DataFrame) -> pd.DataFrame:
-    """各容器 data_hole = 1 的连续段（起止日期、行数），供 check 打印与 V1 报告列出（I-25）。"""
+    """各容器 data_hole = 1 的连续段（起止日期、行数；起点是连续平盘的第 5 行）。check 在面板旁边没有 build-report 时退回打印它；
+    V1 报告按整段列出断档，以 build-report 的 stale_runs 为准（I-25）。"""
     rows = []
     for c, g in panel.sort_values("date").groupby("container"):
         h = g["data_hole"].to_numpy()

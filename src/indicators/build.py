@@ -315,7 +315,7 @@ def _build(con, package: Path, out: Path | None, log) -> Path:
                  "缺收盘丢弃": rep["dropped_missing_close"], "重复日期": rep["dropped_duplicate_dates"],
                  "不在 A 股日历丢弃": rep.get("dropped_off_calendar", 0), "日历内缺日": rep.get("missing_on_calendar", 0),
                  "平盘": rep.get("stale_days", 0),
-                 "长假并入最后一根": rep.get("multi_bar_days", 0), "数据断档（不产生入场信号）": rep.get("data_hole_rows", 0)}
+                 "长假并入最后一根": rep.get("multi_bar_days", 0), "数据断档（V1 不做决策）": rep.get("data_hole_rows", 0)}
         log(f"  ok  {name}: {rep['aligned_rows']} 行 {rep['first']}→{rep['last']}；成交量 {rep['volume_source']}"
             + "".join(f"；{k} {v} 行" for k, v in flags.items() if v)
             + (f"；⚠ 末尾连续平盘 {rep['trailing_stale_days']} 行（序列可能停更）" if rep.get("trailing_stale_days", 0) > 3 else "")

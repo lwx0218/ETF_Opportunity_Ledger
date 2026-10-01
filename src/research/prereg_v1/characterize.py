@@ -4,6 +4,9 @@ I-14：只在设计期（≤ 2015-12-31）上做，避免在冻结样本外跑�
 I-15：前向窗口 20 个交易日，用「对当日等权的超额」；区分度判据 = 可进态均值 − 非可进态均值，
       按自然季度做块自助（bootstrap；20 日窗口会跨月，按月分块会低估相关、区间偏窄），
       95% 区间下界 > 0 才算「分得开」。
+I-26：断档行（data_hole = 1）不是行情，按缺数据处理：不作样本、不作别的样本的前向终点、不进当日等权——
+      结果与把这些行从面板里删掉完全相同（只要某天不是所有容器都断档——A 股容器 data_hole 恒 0，不会发生）。
+      副作用：断档前终点落进断档的样本（每段至多 horizon 个）一并去掉；其他容器在断档日的超额按少一个容器的等权算。
 """
 import numpy as np
 import pandas as pd
@@ -23,6 +26,8 @@ def state_class(s: str) -> str:
 
 def forward_excess(panel: pd.DataFrame, horizon: int) -> pd.DataFrame:
     close = panel.pivot(index="date", columns="container", values="close").sort_index()
+    hole = panel.pivot(index="date", columns="container", values="data_hole").reindex_like(close)
+    close = close.where(hole.eq(0))                          # I-26：断档行按缺数据处理
     fwd = close.shift(-horizon) / close - 1
     ex = fwd.sub(fwd.mean(axis=1), axis=0)
     long = ex.stack().rename("fwd_excess").reset_index()

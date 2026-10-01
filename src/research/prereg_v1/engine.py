@@ -5,6 +5,8 @@
   收盘：对每个持仓先用「昨日生效的止损」判断收盘是否跌破（跌破则标记 t+1 开盘离场），
         再用今日收盘更新最高收盘、启用与上移移动止盈（只上不下）；然后按净值记账；再生成 t 日信号。
 价格一律用面板里的后复权点位；成本每边 cost_per_side。
+成交行 data_hole = 1（I-26：数据断档上的平盘占位，开盘是陈旧收盘的拷贝）不入场，记入 skipped「数据断档」，信号不保留——
+与「无开盘价」同一处理；D 日开盘时 D−1 有没有海外 K 线已知，不用未来信息。
 """
 from dataclasses import dataclass, field
 
@@ -53,6 +55,7 @@ def simulate(panel: pd.DataFrame, p: Params, start, end, signals: pd.DataFrame =
     cols = list(C.columns)
     ci = {c: i for i, c in enumerate(cols)}
     Oa, Ca, Aa = O.to_numpy(), C.to_numpy(), A.to_numpy()
+    Ha = wide(panel, "data_hole").reindex(index=C.index, columns=cols).to_numpy()
     di = {d: i for i, d in enumerate(C.index)}
 
     sig = all_signals(panel, p, start, end) if signals is None else signals
@@ -102,6 +105,8 @@ def simulate(panel: pd.DataFrame, p: Params, start, end, signals: pd.DataFrame =
                     why = "已持有"
                 elif len(positions) >= p.max_positions:
                     why = "持仓已满"
+                elif Ha[k, ci[c]] == 1:
+                    why = "数据断档"
                 elif not np.isfinite(px):
                     why = "无开盘价"
                 elif px <= s.stop_level:
@@ -163,9 +168,11 @@ def simulate(panel: pd.DataFrame, p: Params, start, end, signals: pd.DataFrame =
 
 
 def random_entry_null(panel: pd.DataFrame, p: Params, start, end, n_signals: int, reps: int, seed: int = 0) -> np.ndarray:
-    """I-17 零模型：同样的离场与仓位规则，随机容器 × 随机日期，信号数与 v1 相同；返回每次的期望 R。"""
+    """I-17 零模型：同样的离场与仓位规则，随机容器 × 随机日期，信号数与 v1 相同；返回每次的期望 R。
+    随机入场池与策略的可入行同一集合：断档行（data_hole = 1）不进池（I-26）。"""
     start, end = pd.Timestamp(start), pd.Timestamp(end)
-    pool = panel[(panel["date"] >= start) & (panel["date"] < end) & panel["atr20"].gt(0) & panel["close"].notna()]
+    pool = panel[(panel["date"] >= start) & (panel["date"] < end) & panel["atr20"].gt(0) & panel["close"].notna()
+                 & panel["data_hole"].eq(0)]
     pool = pool[["date", "container", "close", "atr20"]].reset_index(drop=True)
     rng = np.random.default_rng(seed)
     out = []
