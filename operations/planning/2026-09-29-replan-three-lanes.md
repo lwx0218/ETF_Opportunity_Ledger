@@ -190,3 +190,38 @@ P6c-1 / P6c-2 已合并（PR #8、#9，main `5c0ef8b`，183 个测试通过）�
 - **P6d-1 `src/indicators/build.py` + `src/research/prereg_v1/{signals,run}.py` + `docs/indicators-layer.md`（I-25）**：`align_to_calendar` 对平盘段标 `data_hole`（连续 ≥ 5 行的中段或末尾平盘段整段为 1，≤ 4 行为 0），报告加 `max_stale_run`（中段最长连续平盘）与 `stale_runs`（≥ 5 的各段起止日期与行数）；`container_panel` 输出 `data_hole` 列（A 股容器恒 0）；`states` 可达状态表只按非平盘行计数。`signals.py` 的 `breakout_signals` 与 `panic_signals` 都排除 `data_hole = 1` 的行；`run.py check` 校验该列存在并打印各容器断档段；引擎不改。实现 `panel.py` 读取时若缺该列报错，不默认 0。测试：构造一段 30 行断档，断档内无信号、断档前后信号与无断档时相同；4 行休市段不标；末尾 ≥ 5 行标；已持仓的卡在断档内不出场、断档结束后第一根真 K 线按正常规则判；可达状态表不计平盘行；截断测试仍逐行相等。
 - **P6d-2 `src/ledger/` + `src/jobs/`（v1.1-g 第 3 条）**：出场信号 write-once 记录（卡片、信号日、原因、信号日收盘），每日任务先处理未成交的信号，在第一个有开盘价的交易日成交，中间不撤销、不更新移动止盈；`exits` 引用信号，触发收盘 = 信号行收盘，核对 (a) 改为对信号行；`SCHEMA_VERSION` 与 `TERMS_VERSION` 各升一版，旧库拒绝、不迁移；`docs/ledger-storage.md`、`docs/jobs-daily.md` 同步。测试：止损次日无开盘价、第二天收盘回到止损之上，第三天仍出场且触发收盘是跌破那一行；顺延期间移动止盈不更新；手动与论点作废走同一条路径；与 V1 引擎用同一组构造数据比对出场日与价格。
 - 每包仍是一页工作日志 + 包末一次复核；合并后 Cowork 做研究逻辑复核（只读）。
+
+## 11. 追加（2026-10-01）· 数据层改 SQLite、数据入 Git、清理计划（Owner 决定，Claude 展开）
+
+Owner 决定：生成的数据不再用 CSV，结构化数据进 SQLite，其余用 JSON 与 Markdown；`data/` 放行入 Git，云端直接拿到数据；参照 `serenity_quant_research`（physical-first）的做法（单库、标准库 `sqlite3`、schema 写在代码里、`ingest_runs` 记每次作业、JSON seed → 库、笔记用 Markdown、测试只许连临时库）。astra 的 S1 等这一包合并后再做。另：项目已开发多轮，做一次精细化瘦身与清理，避免长尾 bug。
+
+### 展开后的口径
+
+| 项 | 决定 |
+|---|---|
+| 行情库 | `data/market.sqlite`，一个库：`bars(code, adj ∈ {raw, hfq}, date, open, high, low, close, volume, amount, source, fetched_at)` 主键 (code, adj, date)，取代 `data/raw/*.csv`；`coverage`（每容器一行，带 `run_id`，保留历史）；`requests`（取代三个 `*-requests.jsonl`）；`runs`（probe / backfill / update / package 的起止、`end`、git commit）；`calendar(date)`（取代 `sse-trading-days.csv`，仍由 astra 用深交所接口生成后写入）；`universe`（每次运行从 `data/universe.csv` 装入，记 seed 的 sha256）；`meta`（schema 版本） |
+| 手工维护的清单 | `data/universe.csv` 与 `docs/etf-fixed-sources-v1.csv` 是人手编辑的 seed，不是生成数据，**保留 CSV**，运行时装入库表（serenity 的 seed → 库）。AGENTS.md 与多份文档引用 `universe.csv` v1，不改名 |
+| 研究数据包 | `package --end D` 从库复制一份截到 D 的只读库 `outputs/research-package-D.sqlite`（bars / coverage / calendar / universe / meta + `package` 表：D、生成时刻、源库 sha256、git commit），旁边 `MANIFEST.json` 记文件 sha256；`verify` 做 `PRAGMA integrity_check`、行数对 coverage、无晚于 D 的行、`source = route_used`。库已在 Git 里，**不再需要传包**：Cowork `git pull` 后自己 `package` + `build`，包的 sha256 与源库 commit 写进 prereg §13 |
+| 面板 | `build` 输出 `outputs/panel-D.sqlite`（`panel`、`bench` 两表，含 `data_hole` 与 `hs300_open`），`build-report.json` 照旧；`prereg_v1/panel.py` 改读库，其余研究代码不动 |
+| 台账 | `data/ledger.sqlite` 入 Git；`ew_daily.csv` 改为台账库内的 `ew_daily` 表（v1.1-e 的「库旁文件」改为「库内表」，成对约束自然满足）；schema 版本升 |
+| 每日任务 | 读写 `market.sqlite`，`update` 写库；`live_panel` 共用 `research_frame` 不变 |
+| Git | `.gitignore`：`data/` 放行（仍排除 `*.sqlite-wal` / `-shm`、`.env`）、`outputs/` 继续忽略。入 Git 的库用 `journal_mode = DELETE`，提交前 checkpoint，只在检查点 `VACUUM`。提交节奏：backfill / package 后提交；每日 `update` 由 astra 每周提交一次。库约 20–30 MB、每日增量几百 KB，一年内不需要 LFS；超过再议 |
+| 测试 | serenity 的硬防线照搬：测试只许连临时库，默认库路径一律拒绝 |
+| 不动的 | `src/research/` 里 V1 之外的脚本（baseline、build_hfq、characterize、enh_engine、universe_breadth、ref_strong_check 等）与 09-25 数据快照是 results-index 第 1–11 项的复现件，**冻结不改**；清理时整体移到 `legacy/research/` 并在 results-index 注明路径 |
+
+### 顺序（改）
+
+CC：**P6d-1（I-25，小）→ P7（数据层改 SQLite）→ P6d-2（出场信号持久化）**。astra：P7 合并后拉代码做 S1，把 `market.sqlite` 提交到 main；S2 不受影响可先做。Cowork：S1 提交后 `git pull` → `package` → `build` → `run check → characterize → design`。
+
+### P7 · CC：数据层改 SQLite（阻塞 S1）
+
+- 范围：`src/data/{store,runner,universe}.py`、`src/indicators/{build,calendar}.py` 的读写、`src/research/prereg_v1/panel.py`、`src/ledger/store.py` + `schema.sql`（`ew_daily` 表、版本）、`src/jobs/`、`.gitignore`、`docs/{data-layer,indicators-layer,ledger-storage,jobs-daily}.md`。取数函数（`sources.py`）与指标、信号、引擎逻辑不改。
+- 一次性迁移：没有历史 CSV 需要迁（服务器上 R1 的 `data/raw/` 是 astra 旧流程的产物，不认；S1 重新全量回填）。
+- 测试：现有 183 个全部改到库口径后仍过；新增：库表约束（主键、`adj` 取值、`source = route_used`）、`package` 截断与 `verify` 四项、测试连默认库路径即报错、`panel.py` 读库与读旧 CSV 在同一构造数据上逐行相等（迁移期间保留一个只读 CSV 读法用于这条对照，合并后删）。
+- 一页工作日志 + 包末复核；合并后 Cowork 复核。
+
+### 清理 · 时点与分工
+
+- **时点**：放在第一次真实数据跑通 `build → check → characterize → design` 之后、`oos` 之前。理由：真实数据暴露的问题比任何审读都多，而 `oos` 只跑一次，清理要在它之前落地；设计期的结果（≤ 2015）可以在清理前后各算一次做对照，不是样本外。
+- **分工**：审读与修改分开。astra（不同模型，独立视角）做**只读审读**，产出一份按风险排序的发现清单，不改代码；CC 按清单做修改与删除，一个包。审读清单由 Cowork 事先写定（静默回退与吞异常、文档与代码口径不一致、测试没盯住的规则、重复逻辑、死代码与遗留目录 `src/rotation` / `src/home` / `ref`、`outputs` 里的陈旧产物、已合并分支），每条写文件与行号。
+- **验收门**：清理包必须在冻结的数据包上复现清理前的 `panel` 与设计期结果（数值逐行相等），作为回归测试进仓库；过不了不合并。
