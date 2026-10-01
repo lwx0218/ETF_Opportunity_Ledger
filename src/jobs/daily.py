@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from pathlib import Path
 from typing import Callable
 
 import numpy as np
@@ -80,13 +79,13 @@ def _num(x):
 class DailyJob:
     def __init__(self, ledger: Ledger, panel: pd.DataFrame, bench: pd.Series, *, rules: dict, instruments: dict,
                  events_dir=None, scorer: Callable[[R.Candidate], dict | None] = default_scorer, p: Params = Params(),
-                 ew_path: Path | None = None, bench_open: pd.Series | None = None, trading_days=None):
+                 bench_open: pd.Series | None = None, trading_days=None):
         self.L, self.p, self.rules, self.instruments, self.events_dir, self.scorer = ledger, p, rules, instruments, events_dir, scorer
         self.panel = panel.assign(date=pd.to_datetime(panel["date"])).sort_values(["date", "container"])
         self.bench = bench.sort_index()
         self.bench_open = bench_open.sort_index() if bench_open is not None else None
         self.trading_days = trading_days
-        self.ew_store = EwStore(ew_path)          # 等权日收益持久化（v1.1-e）；正式文件由 CLI 传入，None = 只在内存
+        self.ew_store = EwStore(ledger)           # 等权日收益持久化（v1.1-e）：台账库内的 ew_daily 表
 
     # ------------------------------------------------------------ 取数（一律截到 D）
     def _row(self, container: str, d: pd.Timestamp):
@@ -125,7 +124,7 @@ class DailyJob:
         if rep.blocked:
             return rep
         if self.ew_store.ensure(self.panel[self.panel["date"] <= D], D) is None:
-            rep.skipped.append(f"等权日收益文件已记到更晚的日期，{day} 不能补记（只追加）；本日反事实等权点位取最近一条")
+            rep.skipped.append(f"等权日收益已记到更晚的日期，{day} 不能补记（只追加）；本日反事实等权点位取最近一条")
         self._exits(D, rep)
         self._entries(D, rep)
         self._daily(D, today, rep)
@@ -135,22 +134,21 @@ class DailyJob:
         return rep
 
     def _ew_problem(self, D) -> str:
-        """等权文件与台账必须是一对（v1.1-e）：文件丢了、末尾少了几行、或换成了别的面板算的文件，基准收益都会静默偏移，
-        而出场记录一旦写入就改不了——发现就不动台账。"""
+        """等权日收益与卡片必须是一对（v1.1-e）。表在台账库内、只追加，正常流程下总是一对；这里防的是绕过每日任务写进来的卡
+        （cf_ew_level 不是本表的点位）与漏跑（表的最后一条早于上一交易日）——基准收益会静默偏移，而出场记录一旦写入就改不了，
+        发现就不动台账。"""
         rows = self.ew_store.rows
         cards = self.L.conn.execute("SELECT id, close_date, cf_ew_level FROM cards ORDER BY close_date, id").fetchall()
-        if cards and not rows:
-            return f"等权日收益文件不存在，台账已有卡片（最早 {cards[0]['close_date']}）；台账未动，先恢复该文件"
         for c in cards:
             got = rows.get(c["close_date"])
             if got is None or abs(got[1] - c["cf_ew_level"]) > 1e-12 * max(1.0, abs(c["cf_ew_level"])):
-                return (f"等权日收益文件与 {c['id']} 冻结的 cf_ew_level 对不上（{c['close_date']}：文件 "
-                        f"{'无此日' if got is None else got[1]}，卡片 {c['cf_ew_level']}）；台账未动，先恢复与台账配对的文件")
+                return (f"等权日收益表与 {c['id']} 冻结的 cf_ew_level 对不上（{c['close_date']}：表里 "
+                        f"{'无此日' if got is None else got[1]}，卡片 {c['cf_ew_level']}）；台账未动")
         key = D.date().isoformat()
         earlier = self.panel.loc[self.panel["date"] < D, "date"]
         if rows and key not in rows and len(earlier) and max(rows) < earlier.max().date().isoformat():
-            return (f"等权日收益文件最后一条是 {max(rows)}，早于上一交易日 {earlier.max().date()}：文件末尾少了行或漏跑；"
-                    f"台账未动，先恢复该文件或按顺序补跑")
+            return (f"等权日收益表最后一条是 {max(rows)}，早于上一交易日 {earlier.max().date()}：漏跑；"
+                    f"台账未动，先按顺序补跑")
         return ""
 
     def _reminders(self, D, rep):

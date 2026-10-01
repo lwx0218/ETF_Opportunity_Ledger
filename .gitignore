@@ -17,9 +17,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
-# Bulk data and generated output; explicitly allow reviewed small samples later
-/data/*
-!/data/universe.csv
+# data/ goes into Git (replan §11, Owner decision 2026-10-01): market.sqlite, ledger.sqlite, universe.csv seed.
+# Legacy CSV layout from before P7 stays out (R1's data/raw/ is not recognised; S1 backfills into market.sqlite).
+/data/raw/
 # Reference import: keep market/signal data, macOS metadata and machine-local settings out of Git
 /ref/auto_filter_stock/data/
 /ref/**/.claude/settings.local.json
@@ -27,12 +27,15 @@ __pycache__/
 /outputs/
 /artifacts/
 *.sqlite
+!/data/*.sqlite
 *.sqlite3
 *.db
 *.db-wal
 *.db-shm
+*.db-journal
 *.sqlite-wal
 *.sqlite-shm
+*.sqlite-journal
 *.sqlite3-wal
 *.sqlite3-shm
 *.log

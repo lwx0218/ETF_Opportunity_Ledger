@@ -18,17 +18,17 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from src.data import runner as data_runner, store                # noqa: E402
 from src.jobs import rules as R                                  # noqa: E402
 from src.jobs.__main__ import main as jobs_main                  # noqa: E402
 from src.jobs.daily import DailyJob, next_weekday_open           # noqa: E402
 from src.jobs.ew import EwStore                                  # noqa: E402
 from src.jobs.guard import preflight                             # noqa: E402
 from src.jobs.live import live_panel                             # noqa: E402
-from src.indicators.build import container_panel                 # noqa: E402
-from src.ledger.store import Ledger                              # noqa: E402
+from src.indicators.build import container_panel, write_panel_db  # noqa: E402
+from src.ledger.store import Ledger, LedgerError                 # noqa: E402
 from src.research.prereg_v1.engine import simulate              # noqa: E402
 from src.research.prereg_v1.config import Params                 # noqa: E402
+from tests.marketdb import open_db, put, put_coverage             # noqa: E402
 
 DAYS = [d.date().isoformat() for d in pd.bdate_range("2026-01-02", "2026-04-30")]
 SIGNAL = "2026-01-30"                      # 月末
@@ -76,7 +76,7 @@ def make_panel(extra: dict | None = None, semis: list[float] | None = None, semi
 
 
 def dump(L: Ledger) -> dict:
-    tables = ("cards", "evidence", "strength_scores", "entries", "daily", "exit_signals", "exits", "finals", "voids")
+    tables = ("cards", "evidence", "strength_scores", "entries", "daily", "exit_signals", "exits", "finals", "voids", "ew_daily")
     return {t: [tuple(r) for r in L.conn.execute(f"SELECT * FROM {t} ORDER BY 1, 2")] for t in tables}
 
 
@@ -88,24 +88,22 @@ class Replay(unittest.TestCase):
         self.new_ledger()
 
     def new_ledger(self):
-        """台账库与等权日收益文件成对新建（正式运行里两者也是一对）。"""
+        """新建台账库（等权日收益在库内的 ew_daily 表，与台账天然成对）。"""
         if getattr(self, "L", None):
             self.L.close()
         self.L = Ledger(":memory:", clock=lambda: self.now, replay=True)
-        self.ew = self.tmp / f"ew-{len(list(self.tmp.iterdir()))}.csv"
         self.addCleanup(self.L.close)
 
     def replay(self, panel, bench, days=DAYS, truncate=False, p=Params(), events_dir=None, **kw):
         reps = []
-        job = None if truncate else DailyJob(self.L, panel, bench, rules=RULES, instruments=INST, p=p, events_dir=events_dir,
-                                             ew_path=self.ew, **kw)
+        job = None if truncate else DailyJob(self.L, panel, bench, rules=RULES, instruments=INST, p=p, events_dir=events_dir, **kw)
         for d in days:
             self.now = f"{d}T16:00"
             if truncate:                     # 每天只给当天及以前的数据（沪深300 开盘价也截断）
                 cut = pd.Timestamp(d)
                 kw_cut = {**kw, **({"bench_open": kw["bench_open"][kw["bench_open"].index <= cut]} if "bench_open" in kw else {})}
                 job = DailyJob(self.L, panel[panel["date"] <= cut], bench[bench.index <= cut], rules=RULES, instruments=INST, p=p,
-                               events_dir=events_dir, ew_path=self.ew, **kw_cut)
+                               events_dir=events_dir, **kw_cut)
             reps.append(job.run(d))
         return reps
 
@@ -137,7 +135,7 @@ class Replay(unittest.TestCase):
         self.assertEqual(stops, sorted(stops))                          # 止损只上不下
         self.assertAlmostEqual(max(stops), 104.0)
         # v1.1-e：超额 = 含成本的持有收益 − 等权基准同窗口（等权没有开盘点位 → 前一日收盘到前一日收盘）
-        ew = EwStore(self.ew).series()
+        ew = EwStore(self.L).series()
         self.assertAlmostEqual(card["cf_ew_level"], ew[pd.Timestamp(SIGNAL)])
         prev_exit = DAYS[DAYS.index(x["exit_date"]) - 1]
         held = 103.5 * (1 - 0.0005) / (100.5 * (1 + 0.0005)) - 1
@@ -223,20 +221,19 @@ class Replay(unittest.TestCase):
         """顺延路径上：同日重跑不变；逐日只给 ≤ D 的数据回放，与全量逐表相同（含出场信号表）。"""
         (panel, bench), b = self.deferred_path([100.5, 101.0, 100.0, 95.5], [97.0, 97.5], {1: np.nan, 2: 97.2})
         self.replay(panel, bench)
-        full, ew_full = dump(self.L), self.ew.read_text()
+        full = dump(self.L)
         self.assertTrue(full["exit_signals"])
         again = self.replay(panel, bench)
         self.assertFalse(any(r.changed() for r in again))
         self.assertEqual(dump(self.L), full)
         self.new_ledger()
         self.replay(panel, bench, truncate=True)
-        self.assertEqual(dump(self.L), full)
-        self.assertEqual(self.ew.read_text(), ew_full)
+        self.assertEqual(dump(self.L), full)                             # 含 ew_daily：等权日收益逐日追加，与一次给全数据相同
 
     def test_crash_between_daily_row_and_signal_loses_nothing(self):
         """每日行与出场信号同一事务：写信号时崩溃 → 两者都没写；同一天重跑补齐，次日照常出场（与引擎一致）。"""
         (panel, bench), b = self.deferred_path([100.5, 101.0, 100.0, 95.5], [97.0, 97.5], {})
-        job = DailyJob(self.L, panel, bench, rules=RULES, instruments=INST, ew_path=self.ew)
+        job = DailyJob(self.L, panel, bench, rules=RULES, instruments=INST, )
         orig = Ledger._insert
 
         def boom(L, table, row, stamp=True):
@@ -286,7 +283,7 @@ class Replay(unittest.TestCase):
             with self.subTest(reason):
                 self.new_ledger()
                 panel, bench = make_panel()
-                job = DailyJob(self.L, panel, bench, rules=RULES, instruments=INST, ew_path=self.ew)
+                job = DailyJob(self.L, panel, bench, rules=RULES, instruments=INST, )
                 decide = DAYS[DAYS.index(SIGNAL) + 5]                                   # 进场后第 5 天收盘后决定
                 for d in DAYS:
                     self.now = f"{d}T16:00"
@@ -313,11 +310,11 @@ class Replay(unittest.TestCase):
     def test_no_lookahead(self):
         panel, bench = make_panel()
         self.replay(panel, bench)
-        full, ew_full = dump(self.L), self.ew.read_text()
+        full = dump(self.L)
+        self.assertEqual(len(full["ew_daily"]), len(DAYS))
         self.new_ledger()
         self.replay(panel, bench, truncate=True)
-        self.assertEqual(dump(self.L), full)
-        self.assertEqual(self.ew.read_text(), ew_full)                   # 等权文件逐日追加，与一次给全数据相同
+        self.assertEqual(dump(self.L), full)                             # 含 ew_daily：等权日收益逐日追加，与一次给全数据相同
 
     def test_voids_count_in_denominator(self):
         # 黄金 02-27 月末 z ≤ −2，次日开盘远低于失效位 → 未进场而失效
@@ -359,7 +356,7 @@ class Replay(unittest.TestCase):
             from src.indicators.metrics import month_end_flags
             me = live.groupby("container", group_keys=False).apply(lambda g: month_end_flags(g["date"], cut.date()))
             live.loc[~me.reindex(live.index).fillna(False).astype(bool), "z_month"] = np.nan
-            DailyJob(self.L, live, b, rules=RULES, instruments=INST, ew_path=self.ew).run(d)
+            DailyJob(self.L, live, b, rules=RULES, instruments=INST, ).run(d)
         self.assertEqual(dump(self.L), full)
 
     def test_cash_and_risk_limits(self):
@@ -460,11 +457,10 @@ class Replay(unittest.TestCase):
             held = x["exit_price"] * (1 - 0.0005) / (e["entry_price"] * (1 + 0.0005)) - 1
             results[label] = (held, e, x)
             if label == "open":                                                                      # 开盘价路径也无未来
-                full, ew_full = dump(self.L), self.ew.read_text()
+                full = dump(self.L)
                 self.new_ledger()
                 self.replay(panel, bench, days=DAYS[: DAYS.index(SIGNAL) + 20], events_dir=d, truncate=True, **kw)
                 self.assertEqual(dump(self.L), full)
-                self.assertEqual(self.ew.read_text(), ew_full)
         held, e, x = results["open"]
         b = bench_open[pd.Timestamp(x["exit_date"])] / bench_open[pd.Timestamp(e["entry_date"])] - 1
         self.assertAlmostEqual(x["realized_excess_pct"], (held - b) * 100, places=5)
@@ -473,29 +469,35 @@ class Replay(unittest.TestCase):
         b = bench[pd.Timestamp(prev(x["exit_date"]))] / bench[pd.Timestamp(prev(e["entry_date"]))] - 1
         self.assertAlmostEqual(x["realized_excess_pct"], (held - b) * 100, places=5)
 
-    def test_missing_ew_file_blocks_the_day(self):
+    def test_ew_rows_are_append_only(self):
+        """等权日收益在台账库内（replan §11）：文件丢失、末尾截断、换成别的面板的文件这几种情况不再可能——存储层拒绝删改与乱序。"""
+        panel, bench = make_panel()
+        self.replay(panel, bench, days=DAYS[: DAYS.index(SIGNAL) + 5])
+        before = dump(self.L)
+        for sql in ("DELETE FROM ew_daily WHERE date = '2026-01-05'", "UPDATE ew_daily SET ew_level = 1.5 WHERE date = '2026-01-30'",
+                    "INSERT OR REPLACE INTO ew_daily VALUES ('2026-01-30', 0, 1.5, 3, '2026-02-06T16:00')"):
+            with self.subTest(sql), self.assertRaises(sqlite3.DatabaseError):
+                self.L.conn.execute(sql)
+        last = max(self.L.ew_rows())
+        lvl = self.L.ew_rows()[last][1]
+        self.now = "2026-03-31T16:00"
+        for day, ret, level in (("2026-01-15", 0.0, lvl), (last, 0.0, lvl), ("2026-03-02", 0.01, lvl * 1.02)):   # 补记更早的日子 / 重复 / 点位不连乘
+            with self.subTest(day), self.assertRaises(LedgerError):
+                self.L.record_ew(day, ret, level, 3)
+        self.assertEqual(dump(self.L), before)
+
+    def test_skipped_days_or_tampered_ew_block_the_day(self):
+        """漏跑（表的最后一条早于上一交易日）或有人绕过触发器改了卡片当天的点位：台账不动。"""
         panel, bench = make_panel()
         self.replay(panel, bench, days=DAYS[: DAYS.index(SIGNAL) + 3])
         before = dump(self.L)
-        self.ew.unlink()                                                   # 等权文件丢了：基准会凭空变 0
+        rep = self.replay(panel, bench, days=[DAYS[DAYS.index(SIGNAL) + 6]])[0]
+        self.assertIn("漏跑", rep.blocked)
+        self.L.conn.execute("DROP TRIGGER ew_daily_no_update")                    # 蓄意篡改（存储层防不了，任务层兜底）
+        self.L.conn.execute("UPDATE ew_daily SET ew_level = 1.5 WHERE date = ?", (SIGNAL,))
         rep = self.replay(panel, bench, days=[DAYS[DAYS.index(SIGNAL) + 3]])[0]
-        self.assertIn("等权日收益文件不存在", rep.blocked)
-        self.assertEqual(dump(self.L), before)
-        self.assertFalse(self.ew.exists())
-
-    def test_truncated_or_foreign_ew_file_blocks_the_day(self):
-        panel, bench = make_panel()
-        self.replay(panel, bench, days=DAYS[: DAYS.index(SIGNAL) + 5])
-        before, text = dump(self.L), self.ew.read_text()
-        lines = text.splitlines(keepends=True)
-        self.ew.write_text("".join(lines[:-3]))                           # 从旧备份恢复：末尾少了 3 天
-        rep = self.replay(panel, bench, days=[DAYS[DAYS.index(SIGNAL) + 5]])[0]
-        self.assertIn("早于上一交易日", rep.blocked)
-        foreign = [x if not x.startswith(SIGNAL) else ",".join(x.split(",")[:2] + ["1.5"] + x.split(",")[3:]) for x in lines]
-        self.ew.write_text("".join(foreign))                              # 别的面板算的：信号日点位与卡片冻结值不同
-        rep = self.replay(panel, bench, days=[DAYS[DAYS.index(SIGNAL) + 5]])[0]
         self.assertIn("对不上", rep.blocked)
-        self.assertEqual(dump(self.L), before)
+        self.assertEqual({k: v for k, v in dump(self.L).items() if k != "ew_daily"}, {k: v for k, v in before.items() if k != "ew_daily"})
 
 
 class Pieces(unittest.TestCase):
@@ -541,19 +543,19 @@ class Pieces(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
         panel, bench = make_panel()
-        cov = [dict(theme_id="T01", container="沪深300", status="retained", series_file="H00300.csv", route_used="csi"),
-               dict(theme_id="T06", container="半导体", status="retained", series_file="x.csv", route_used="csi"),
-               dict(theme_id="T35", container="纳指100", status="retained", series_file="NDX.csv", route_used="yahoo")]
-        data_runner.write_coverage(tmp / "cov.csv", cov, ["T01", "T06", "T35"])
-        blocking, notes = preflight(panel, bench, "2026-02-03", tmp / "cov.csv", set())          # 首次运行
+        cov = [dict(theme_id="T01", container="沪深300", status="retained", series_code="H00300", series_adj="raw", route_used="csi"),
+               dict(theme_id="T06", container="半导体", status="retained", series_code="X", series_adj="raw", route_used="csi"),
+               dict(theme_id="T35", container="纳指100", status="retained", series_code="NDX", series_adj="raw", route_used="yahoo"),
+               dict(theme_id="T15", container="原油", status="flagged", series_code="", series_adj="", error="eia: 403")]
+        blocking, notes = preflight(panel, bench, "2026-02-03", cov, set())                     # 首次运行
         self.assertEqual(blocking, [])
         self.assertTrue(notes and "纳指100" in notes[0])                                    # 海外缺行只提示
-        blocking, _ = preflight(panel, bench, "2026-02-04", tmp / "cov.csv", {"2026-02-02"})   # 漏跑 02-03
+        blocking, _ = preflight(panel, bench, "2026-02-04", cov, {"2026-02-02"})               # 漏跑 02-03
         self.assertIn("漏跑 2026-02-03", blocking[0])
         late = panel[~((panel["container"] == "半导体") & (panel["date"] == pd.Timestamp("2026-02-03")))]
-        blocking, _ = preflight(late, bench, "2026-02-03", tmp / "cov.csv", {"2026-02-02"})
+        blocking, _ = preflight(late, bench, "2026-02-03", cov, {"2026-02-02"})
         self.assertIn("半导体", blocking[0])                                                 # A 股指数缺行 = 数据未到
-        blocking, _ = preflight(panel, bench, "2026-02-07", tmp / "cov.csv", set())            # 周六
+        blocking, _ = preflight(panel, bench, "2026-02-07", cov, set())                        # 周六
         self.assertIn("不是基准交易日", blocking[0])
 
     def test_next_weekday_open(self):
@@ -565,45 +567,46 @@ class Pieces(unittest.TestCase):
         self.assertEqual(next_weekday_open("2026-10-30", cal), "2026-11-02T09:30")            # 日历没覆盖到：退回工作日
 
     def test_ew_store(self):
-        tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, tmp)
+        L = Ledger(":memory:", clock=lambda: "2026-03-10T16:00", replay=True)
+        self.addCleanup(L.close)
         p = pd.DataFrame({"date": pd.to_datetime(["2026-03-02"] * 2 + ["2026-03-03"] * 3 + ["2026-03-04"] * 3),
                           "container": ["a", "b", "a", "b", "c", "a", "b", "c"],
                           "close": [100.0, 50.0, 110.0, 50.0, 7.0, 110.0, 55.0, 7.7]})
-        s = EwStore(tmp / "ew.csv")
+        s = EwStore(L)
         self.assertEqual(s.ensure(p, pd.Timestamp("2026-03-02")), 1.0)                         # 第一天点位 1
         self.assertAlmostEqual(s.ensure(p, pd.Timestamp("2026-03-03")), 1.05)                  # (10% + 0%) / 2；c 新加入当天不计
         self.assertAlmostEqual(s.ensure(p, pd.Timestamp("2026-03-04")), 1.05 * 1.0 + 1.05 * (0 + 0.1 + 0.1) / 3)
-        text = (tmp / "ew.csv").read_text()
-        again = EwStore(tmp / "ew.csv")                                                        # 重读文件；重跑不追加
+        rows = L.ew_rows()
+        self.assertEqual((sorted(rows), [rows[d][2] for d in sorted(rows)]), (["2026-03-02", "2026-03-03", "2026-03-04"], [2, 2, 3]))
+        again = EwStore(L)                                                                     # 重读库；重跑不追加
         self.assertAlmostEqual(again.ensure(p, pd.Timestamp("2026-03-03")), 1.05)
-        self.assertEqual((tmp / "ew.csv").read_text(), text)
-        self.assertEqual(text.splitlines()[0], "date,ew_return,ew_level,n_containers")
+        self.assertEqual(L.ew_rows(), rows)
         # 容器集合以后变化：旧点位不重算（只追加）
         p2 = p[p["container"] != "b"]
-        self.assertAlmostEqual(EwStore(tmp / "ew.csv").ensure(p2, pd.Timestamp("2026-03-03")), 1.05)
-        self.assertIsNone(EwStore(tmp / "ew.csv").ensure(p, pd.Timestamp("2026-03-01")))       # 不补记更早的日子
-        self.assertEqual((tmp / "ew.csv").read_text(), text)
-        mem = EwStore(None)
-        mem.ensure(p, pd.Timestamp("2026-03-02"))
-        self.assertEqual(len(list(tmp.iterdir())), 1)                                          # 内存模式不写文件
+        self.assertAlmostEqual(EwStore(L).ensure(p2, pd.Timestamp("2026-03-03")), 1.05)
+        self.assertIsNone(EwStore(L).ensure(p, pd.Timestamp("2026-03-01")))                    # 不补记更早的日子
+        self.assertEqual(L.ew_rows(), rows)
+        self.assertEqual(L.conn.execute("SELECT recorded_at FROM ew_daily").fetchall()[0][0], "2026-03-10T16:00")   # 数据库时钟
 
-    def test_live_panel_from_raw(self):
+    def test_live_panel_from_db(self):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
         panel, _ = make_panel()
-        for name, fname, route in (("沪深300", "H00300.csv", "csi"), ("半导体", "H30184CNY010.csv", "csi"), ("黄金", "NDX.csv", "yahoo")):
+        db = tmp / "market.sqlite"
+        con = open_db(db)
+        for name, code, route in (("沪深300", "H00300", "csi"), ("半导体", "H30184CNY010", "csi"), ("黄金", "NDX", "yahoo")):
             g = panel[panel["container"] == name]
             if route == "yahoo":
                 g = g[g["date"] <= pd.Timestamp("2026-03-13")]              # 海外序列 03-13 之后停更
-            store.write(tmp / "raw" / fname, [dict(date=d.date().isoformat(), open=o, high=h, low=l, close=c, volume=1000.0, source=route)
-                                               for d, o, h, l, c in zip(g["date"], g["open"], g["high"], g["low"], g["close"])])
-        cov = [dict(theme_id="T01", container="沪深300", status="retained", series_file="H00300.csv", route_used="csi"),
-               dict(theme_id="T06", container="半导体", status="retained", series_file="H30184CNY010.csv", route_used="csi"),
-               dict(theme_id="T15", container="原油", status="flagged", error="eia: 403"),
-               dict(theme_id="T35", container="纳指100", status="retained", series_file="NDX.csv", route_used="yahoo")]
-        data_runner.write_coverage(tmp / "coverage.csv", cov, ["T01", "T06", "T15", "T35"])
-        p, b, bo, problems = live_panel(tmp / "raw", tmp / "coverage.csv", date(2026, 3, 31))
+            put(con, code, g[["date", "open", "high", "low", "close"]].assign(volume=1000.0), route)
+        put_coverage(con, [dict(theme_id="T01", container="沪深300", status="retained", series_code="H00300", series_adj="raw", route_used="csi"),
+                           dict(theme_id="T06", container="半导体", status="retained", series_code="H30184CNY010", series_adj="raw", route_used="csi"),
+                           dict(theme_id="T15", container="原油", status="flagged", error="eia: 403"),
+                           dict(theme_id="T35", container="纳指100", status="retained", series_code="NDX", series_adj="raw", route_used="yahoo")])
+        con.close()
+        sha = __import__("src.data.db", fromlist=["sha256_file"]).sha256_file(db)
+        p, b, bo, problems = live_panel(db, date(2026, 3, 31))
+        self.assertEqual(__import__("src.data.db", fromlist=["sha256_file"]).sha256_file(db), sha)        # 只读打开
         self.assertEqual(set(p["container"]), {"沪深300", "半导体", "纳指100"})
         self.assertEqual(p["date"].max(), pd.Timestamp("2026-03-31"))
         self.assertTrue(problems and "原油" in problems[0])
@@ -612,7 +615,7 @@ class Pieces(unittest.TestCase):
         self.assertEqual(len(stale), 1)
         self.assertIn("2026-03-13", stale[0])
         self.assertIn("可能停更", stale[0])
-        _, _, _, problems = live_panel(tmp / "raw", tmp / "coverage.csv", date(2026, 3, 13))
+        _, _, _, problems = live_panel(db, date(2026, 3, 13))
         self.assertFalse(any("纳指100" in x for x in problems))           # 03-13 用 03-12 的 K 线，不是平盘
         hs = panel[panel["container"] == "沪深300"].set_index("date")
         self.assertTrue(bo.index.equals(b.index))
@@ -620,36 +623,65 @@ class Pieces(unittest.TestCase):
         cal = pd.DatetimeIndex(pd.bdate_range("2026-01-01", "2026-06-30"))
         import src.jobs.live as live_mod
         with mock.patch.object(live_mod, "container_panel", wraps=live_mod.container_panel) as cp:
-            live_panel(tmp / "raw", tmp / "coverage.csv", date(2026, 3, 30), cal)
+            live_panel(db, date(2026, 3, 30), cal)
         self.assertTrue(all(c.args[3] is cal for c in cp.call_args_list))                          # 交易日历传到月末判定
+        self.assertEqual(live_mod.instruments(covs=live_mod.coverage(db))["半导体"]["research_code"], "H30184CNY010")
+
+    def test_daily_cli_on_market_db(self):
+        """daily 的接线（P7）：只读行情库现算面板，已处理交易日与等权日收益都记在台账库；漏跑一天即拒绝，台账不动。"""
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        panel, _ = make_panel()
+        market = tmp / "market.sqlite"
+        con = open_db(market)
+        for name, code, route in (("沪深300", "H00300", "csi"), ("半导体", "H30184CNY010", "csi"), ("黄金", "518880", "eastmoney_etf_hfq")):
+            put(con, code, panel[panel["container"] == name][["date", "open", "high", "low", "close"]].assign(volume=1000.0), route)
+        put_coverage(con, [dict(theme_id="T01", container="沪深300", status="retained", series_code="H00300", series_adj="raw", route_used="csi"),
+                           dict(theme_id="T06", container="半导体", status="retained", series_code="H30184CNY010", series_adj="raw", route_used="csi"),
+                           dict(theme_id="T16", container="黄金", status="flagged", series_code="518880", series_adj="hfq",
+                                route_used="eastmoney_etf_hfq")])
+        con.close()
+        sha = __import__("src.data.db", fromlist=["sha256_file"]).sha256_file(market)
+        (tmp / "rules.json").write_text(json.dumps(CONFIG, ensure_ascii=False), encoding="utf-8")
+        base = ["daily", "--no-update", "--market", str(market), "--db", str(tmp / "ledger.sqlite"), "--rules", str(tmp / "rules.json")]
+        with mock.patch("builtins.print"):
+            for d in ("2026-02-02", "2026-02-03", "2026-02-03"):                              # 同一天重跑无妨
+                self.assertEqual(jobs_main(base + ["--date", d]), 0)
+            self.assertEqual(jobs_main(base + ["--date", "2026-02-05"]), 3)                    # 漏跑 02-04
+        L = Ledger(tmp / "ledger.sqlite")
+        self.addCleanup(L.close)
+        self.assertEqual(L.processed_days(), {"2026-02-02", "2026-02-03"})
+        self.assertEqual(sorted(L.ew_rows()), ["2026-02-02", "2026-02-03"])
+        self.assertEqual(__import__("src.data.db", fromlist=["sha256_file"]).sha256_file(market), sha)    # --no-update：行情库没被写
+        L.mark_processed("2026-02-03")                                                         # 已记过：不重复
+        with self.assertRaises(sqlite3.DatabaseError):
+            L.conn.execute("DELETE FROM job_days")
+        with self.assertRaises(LedgerError):
+            L._tx(lambda: L._insert("job_days", {"day": "2026-02-02"}))
 
     def test_replay_cli(self):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
         panel, bench = make_panel()
-        panel.to_csv(tmp / "panel.csv", index=False, date_format="%Y-%m-%d")
-        pd.DataFrame({"date": bench.index, "hs300": bench.values, "hs300_open": bench.values - 1}).to_csv(
-            tmp / "bench.csv", index=False, date_format="%Y-%m-%d")
+        write_panel_db(tmp / "panel.sqlite", panel.assign(data_hole=0),
+                       pd.DataFrame({"date": bench.index, "hs300": bench.values, "hs300_open": bench.values - 1}), {"end": "2026-04-30"})
         (tmp / "rules.json").write_text(json.dumps(CONFIG, ensure_ascii=False), encoding="utf-8")
-        args = ["replay", "--panel", str(tmp / "panel.csv"), "--bench", str(tmp / "bench.csv"), "--from", "2026-01-02",
-                "--to", "2026-03-31", "--rules", str(tmp / "rules.json"), "--db", str(tmp / "replay.sqlite"),
-                "--calendar", str(tmp / "no-such-calendar.csv")]
+        args = ["replay", "--panel", str(tmp / "panel.sqlite"), "--from", "2026-01-02", "--to", "2026-03-31",
+                "--rules", str(tmp / "rules.json"), "--db", str(tmp / "replay.sqlite"), "--calendar", str(tmp / "no-such-market.sqlite")]
         with mock.patch("builtins.print"):
             self.assertEqual(jobs_main(args), 0)
         L = sqlite3.connect(tmp / "replay.sqlite")
         self.assertEqual(L.execute("SELECT value FROM ledger_meta WHERE key = 'clock'").fetchone()[0], "replay")
-        self.assertEqual(L.execute("SELECT value FROM ledger_meta WHERE key = 'schema'").fetchone()[0], "v1.1-g")
+        self.assertEqual(L.execute("SELECT value FROM ledger_meta WHERE key = 'schema'").fetchone()[0], "v1.1-g.1")
         self.assertEqual(L.execute("SELECT count(*) FROM cards").fetchone()[0], 1)
+        ew = L.execute("SELECT min(date), max(date), (SELECT ew_level FROM ew_daily ORDER BY date LIMIT 1) FROM ew_daily").fetchone()
+        self.assertEqual(ew, ("2026-01-02", "2026-03-31", 1.0))                                 # 回放的等权日收益记在回放库里
+        self.assertEqual(L.execute("PRAGMA journal_mode").fetchone()[0], "delete")
         L.close()
-        ew = pd.read_csv(tmp / "replay.ew_daily.csv")                                           # 回放的等权文件跟着回放库
-        self.assertEqual((ew["date"].iloc[0], ew["date"].iloc[-1], ew["ew_level"].iloc[0]), ("2026-01-02", "2026-03-31", 1.0))
-        (tmp / "replay.sqlite").unlink()                                                        # 删了库、留着旧等权文件：拒绝
-        with mock.patch("builtins.print"):
-            self.assertEqual(jobs_main(args), 3)
-        self.assertFalse((tmp / "replay.sqlite").exists())
+        self.assertFalse(any(tmp.glob("replay.sqlite-*")))
         # 规则全关（仓库里的配置）：直接退出，不建库
         with mock.patch("builtins.print"):
-            self.assertEqual(jobs_main([*args[:9], "--rules", str(ROOT / "config" / "ledger-rules.json"), "--db", str(tmp / "b.sqlite")]), 2)
+            self.assertEqual(jobs_main([*args[:7], "--rules", str(ROOT / "config" / "ledger-rules.json"), "--db", str(tmp / "b.sqlite")]), 2)
         self.assertFalse((tmp / "b.sqlite").exists())
 
 

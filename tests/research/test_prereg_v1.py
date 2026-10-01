@@ -2,6 +2,7 @@
 
 运行：python -m unittest discover -s tests -v
 """
+import json
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from src.indicators.build import write_panel_db                             # noqa: E402
 from src.research.prereg_v1 import run as runner                          # noqa: E402
 from src.research.prereg_v1.characterize import characterize               # noqa: E402
 from src.research.prereg_v1.config import Params                           # noqa: E402
@@ -368,9 +370,9 @@ class RunnerTests(unittest.TestCase):
             df = pd.DataFrame(rows)
             df["high"] = df[["open", "high", "close"]].max(axis=1)
             df["low"] = df[["open", "low", "close"]].min(axis=1)
-            df.to_csv(td / "panel.csv", index=False)
-            pd.DataFrame({"date": dates, "hs300": np.linspace(3000, 3300, len(dates))}).to_csv(td / "bench.csv", index=False)
-            args = ["--panel", str(td / "panel.csv"), "--bench", str(td / "bench.csv"), "--out", str(td / "out")]
+            hs = np.linspace(3000, 3300, len(dates))
+            write_panel_db(td / "panel.sqlite", df, pd.DataFrame({"date": dates, "hs300": hs, "hs300_open": hs}), {})
+            args = ["--panel", str(td / "panel.sqlite"), "--out", str(td / "out")]           # --bench 默认同一个库
             self.assertEqual(runner.main(["oos"] + args), 2)                # 没刻画不许跑
             self.assertEqual(runner.main(["characterize"] + args), 0)
             if (td / "out" / "STOP").exists():
@@ -381,6 +383,8 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(runner.main(["oos"] + args), 0)
             self.assertEqual(runner.main(["oos"] + args), 3)                # 第二次被锁拒绝
             self.assertTrue((td / "out" / "OOS_LOCK.json").exists())
+            lock = json.loads((td / "out" / "OOS_LOCK.json").read_text())
+            self.assertEqual(lock["panel_sha256"], lock["bench_sha256"])
 
 
 if __name__ == "__main__":

@@ -6,24 +6,27 @@
 - Document type: reference
 - Status: active（只在构造数据上验证；真实数据包到达后跑 `legacy-check` 与 `run check`）
 - Owner: Faye
-- Last updated: 2026-10-01
-- Source of truth: replan §3 P2、§8 P6a、§9 P6c-1、§10 P6d-1；implementation-notes E 节 I-20、I-21、I-24、I-25；`operations/planning/2026-09-27-prereg-v1-implementation-notes.md`（I-02、I-18、B 节）；`docs/etf-rotation-framework-v0.md` §3.1
+- Last updated: 2026-10-01（P7：输入输出改为 SQLite 库）
+- Source of truth: replan §3 P2、§8 P6a、§9 P6c-1、§10 P6d-1、§11 P7；implementation-notes E 节 I-20、I-21、I-24、I-25；`operations/planning/2026-09-27-prereg-v1-implementation-notes.md`（I-02、I-18、B 节）；`docs/etf-rotation-framework-v0.md` §3.1
 
 ## 用法
 
 ```bash
-python -m src.indicators build --package outputs/research-package-2026-09-30/     # → outputs/panel-2026-09-30/
-python -m src.research.prereg_v1.run check --panel outputs/panel-2026-09-30/panel.csv --bench outputs/panel-2026-09-30/bench.csv
+python -m src.indicators build --package outputs/research-package-2026-09-30.sqlite   # → outputs/panel-2026-09-30.sqlite
+python -m src.research.prereg_v1.run check --panel outputs/panel-2026-09-30.sqlite     # --bench 默认同一个库
 python -m src.indicators legacy-check [--data data/]      # 与 09-25 快照 data/panel_daily.csv 逐日比对（state、ext、rs_1m）
 ```
 
-build 先按 MANIFEST 复验数据包，不通过就拒绝；基准必须是数据包里的 `H00300`（沪深300 全收益，I-18），缺了就拒绝，不用价格指数顶替。
+build 先用 `python -m src.data verify` 的同一套检查复验数据包（文件 sha256 对 MANIFEST、integrity_check、行数、截断、来源），不通过就拒绝；基准必须是数据包里的 `H00300`（沪深300 全收益，I-18），缺了就拒绝，不用价格指数顶替。
 
 ## 输出
 
-- `panel.csv`：`date, container, open, high, low, close, state, rs_1m, atr20, z_month, data_hole`（implementation-notes §B）。`container` 为 universe 的主题名；全部容器在 A 股日历（H00300 交易日）上（I-20）。海外容器的 `high` / `low` 是该 A 股日所用那根 K 线的值（长假多根只取最后一根、平盘行 = 前收），**V1 不用**：引擎只用 `open`（次日成交）与 `close`（止损按收盘判），高低点只进指标，而指标在原生序列上算（I-24）。
-- `bench.csv`：`date, hs300, hs300_open`（H00300 收盘与原始开盘；开盘缺失时为空，不用收盘补。`hs300_open` 供每日任务的基准窗口「开盘到开盘」用，schema v1.1-e；V1 只读 `hs300`）。
-- `build-report.json`：数据包 MANIFEST 的 sha256；每个容器的原始行数与对齐后行数、起止、路由、`price_only`、`volume_source`、各状态天数（可达状态表，只数非平盘行）、`z_month` 个数、补值 / 扩高低计数、原始无成交量行数、`volume_zero_after_align`（对齐后成交量为 0 的行，含平盘）、`calendar`（`a_share` / `overseas_d_minus_1`）；A 股路由另有 `dropped_off_calendar` / `missing_on_calendar`，海外路由另有 `stale_days` / `multi_bar_days` / `trailing_stale_days` / `last_bar_date`，以及 I-25 的 `max_stale_run`（中段最长连续平盘，不含末尾那段）、`stale_runs`（≥ 5 行的各段：`first`、`last`、`rows`、`trailing`、`hole_rows`）、`data_hole_rows`；跳过的容器与原因。
+一个库 `outputs/panel-D.sqlite`（`--out` 可换；不入 Git），旁边 `panel-D.build-report.json`。V1 用 `src/research/prereg_v1/panel.py` 的 `read_table(库, "panel" | "bench")` 读（NULL 读成 NaN）。
+
+- `panel` 表：`date, container, open, high, low, close, state, rs_1m, atr20, z_month, data_hole`，主键 `(date, container)`，`data_hole` 只能是 0 / 1（implementation-notes §B）。`container` 为 universe 的主题名；全部容器在 A 股日历（H00300 交易日）上（I-20）。海外容器的 `high` / `low` 是该 A 股日所用那根 K 线的值（长假多根只取最后一根、平盘行 = 前收），**V1 不用**：引擎只用 `open`（次日成交）与 `close`（止损按收盘判），高低点只进指标，而指标在原生序列上算（I-24）。
+- `bench` 表：`date, hs300, hs300_open`（H00300 收盘与原始开盘；开盘缺失时为空，不用收盘补。`hs300_open` 供每日任务的基准窗口「开盘到开盘」用，schema v1.1-e；V1 只读 `hs300`）。
+- `meta` 表：`schema`（`panel-v1`）、`end`、数据包 sha256、生成时刻。
+- `build-report.json`：数据包文件的 sha256、源库 sha256 与打包时的 git commit、面板库的 sha256、交易日历（`calendar`：天数与起止，没有则为 null）；每个容器的原始行数与对齐后行数、起止、路由、`price_only`、`volume_source`、各状态天数（可达状态表，只数非平盘行）、`z_month` 个数、补值 / 扩高低计数、原始无成交量行数、`volume_zero_after_align`（对齐后成交量为 0 的行，含平盘）、`calendar`（`a_share` / `overseas_d_minus_1`）；A 股路由另有 `dropped_off_calendar` / `missing_on_calendar`，海外路由另有 `stale_days` / `multi_bar_days` / `trailing_stale_days` / `last_bar_date`，以及 I-25 的 `max_stale_run`（中段最长连续平盘，不含末尾那段）、`stale_runs`（≥ 5 行的各段：`first`、`last`、`rows`、`trailing`、`hole_rows`）、`data_hole_rows`；跳过的容器与原因。
 
 ## 口径
 
@@ -34,7 +37,7 @@ build 先按 MANIFEST 复验数据包，不通过就拒绝；基准必须是数�
 | `rs_1m` | 容器 21 日收益 − 基准 21 日收益；基准取容器交易日当天或之前最近的收盘 | B 节；容器与基准同日历时与 `etf_probe.build_panel` 相同 |
 | `z_month` | 仅在每月最后一个交易日有值：(月末收盘 − 前 20 个已完成月末收盘均值) / 其样本标准差 | B 节；与 `src/research/characterize.py` 同口径 |
 
-- **月末判定**：下一行在新月份即为月末。最后一行：数据包里有交易日历 `calendar/sse-trading-days.csv`（schema v1.1-e）且覆盖到它之后时，看日历里的下一个交易日是否进入新月份，节假日跨月也能当天认出；没有日历或日历没覆盖到时，看下一个工作日是否进入新月份（月末落在周末当天能认出；月底最后一个工作日恰逢节假日的少数月份，要等下一行出现后才被认作月末）。两种情况下停更的序列都不会在月中冒出 z。`build-report.json` 的 `calendar_file` 记日历文件的 sha256（没有则为 null）；日历文件格式不对时 `build` 拒绝（见 `docs/data-layer.md`）。
+- **月末判定**：下一行在新月份即为月末。最后一行：数据包的 `calendar` 表（schema v1.1-e）有日历且覆盖到它之后时，看日历里的下一个交易日是否进入新月份，节假日跨月也能当天认出；没有日历或日历没覆盖到时，看下一个工作日是否进入新月份（月末落在周末当天能认出；月底最后一个工作日恰逢节假日的少数月份，要等下一行出现后才被认作月末）。两种情况下停更的序列都不会在月中冒出 z。`build-report.json` 的 `calendar` 记日历的天数与起止（没有则为 null）；日历中间缺一段时 `build` 拒绝（见 `docs/data-layer.md`）。
 - **只用过去**：全部指标只用 t 日及以前的数据；截断测试证明删掉 t 之后的数据，t 及以前每个值都不变。
 
 ## 日历对齐与成交量来源（I-20、I-21、I-24，implementation-notes E 节）

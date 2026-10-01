@@ -1,4 +1,4 @@
-"""从 data/raw + outputs/data/coverage.csv 现算面板（每日任务用；研究数据包之外的实时版本，不做 MANIFEST 复验）。"""
+"""从 data/market.sqlite 现算面板（每日任务用；研究数据包之外的实时版本，不做数据包复验）。只读打开库。"""
 from __future__ import annotations
 
 from datetime import date
@@ -6,33 +6,51 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.data import db as DB
 from src.data import universe as U
-from src.data.runner import read_coverage
 from src.indicators.build import BENCH_CODE, bench_open, container_panel, load_series, research_frame
 
 
-def live_panel(raw_dir: Path, coverage_csv: Path, end: date, trading_days: pd.DatetimeIndex | None = None
+def coverage(db: Path = DB.MARKET_DB) -> list[dict]:
+    """库里的当前 coverage（每容器最近一次作业那一行）。"""
+    con = DB.connect(db, readonly=True)
+    try:
+        return DB.read_coverage(con)
+    finally:
+        con.close()
+
+
+def live_panel(db: Path, end: date, trading_days: pd.DatetimeIndex | None = None
                ) -> tuple[pd.DataFrame, pd.Series, pd.Series, list[str]]:
     """返回 (面板, 沪深300 全收益收盘, 沪深300 全收益开盘, 问题)。开盘价供基准窗口「开盘到开盘」用（v1.1-e）；
-    trading_days 是交易日历文件（没有时 None，月末判定退回工作日规则）。"""
-    raw_dir = Path(raw_dir)
-    bpath = raw_dir / f"{BENCH_CODE}.csv"
-    if not bpath.exists():
-        raise SystemExit(f"{bpath} 不存在：没有沪深300 全收益基准，不跑每日任务")
-    bdf, _ = load_series(bpath)
+    trading_days 是交易日历（库里没有时 None，月末判定退回工作日规则）。"""
+    try:
+        con = DB.connect(db, readonly=True)
+    except DB.DbError as e:
+        raise SystemExit(f"行情库不可用，不跑每日任务：{e}")
+    try:
+        return _live_panel(con, end, trading_days)
+    finally:
+        con.close()
+
+
+def _live_panel(con, end: date, trading_days):
+    bdf, _ = load_series(con, BENCH_CODE, "raw")
+    if bdf.empty:
+        raise SystemExit(f"库里没有 {BENCH_CODE}：没有沪深300 全收益基准，不跑每日任务")
     bdf = bdf[bdf["date"] <= pd.Timestamp(end)]
     bench = bdf.set_index("date")["close"]
-    bopen = bench_open(bpath).reindex(bench.index)
+    bopen = bench_open(con).reindex(bench.index)
     cal = bench.index
     frames, problems = [], []
-    for c in read_coverage(Path(coverage_csv)):
+    for c in DB.read_coverage(con):
         if c.get("status") not in U.PANEL_STATUSES:
             continue
-        f = raw_dir / (c.get("series_file") or "")
-        if not c.get("series_file") or not f.exists():
+        if not c.get("series_adj") or not con.execute("SELECT 1 FROM bars WHERE code = ? AND adj = ? LIMIT 1",
+                                                      (c["series_code"], c["series_adj"])).fetchone():
             problems.append(f"{c['container']}：无研究序列（{(c.get('error') or '')[:60]}）")
             continue
-        df, rep = research_frame(raw_dir, c, cal)          # 与研究数据包同一口径：I-21 成交量、I-20 A 股日历对齐
+        df, rep = research_frame(con, c, cal)          # 与研究数据包同一口径：I-21 成交量、I-20 A 股日历对齐
         df = df[df["date"] <= pd.Timestamp(end)].reset_index(drop=True)
         if df.empty:
             problems.append(f"{c['container']}：对齐 A 股日历后没有行")
@@ -49,9 +67,9 @@ def live_panel(raw_dir: Path, coverage_csv: Path, end: date, trading_days: pd.Da
     return pd.concat(frames, ignore_index=True), bench, bopen, problems
 
 
-def instruments(uni_path: Path = U.UNIVERSE, coverage_csv: Path | None = None) -> dict:
+def instruments(uni_path: Path = U.UNIVERSE, covs: list[dict] | None = None) -> dict:
     """容器名 → 执行标的与研究序列代码。"""
-    cov = {c["theme_id"]: c for c in read_coverage(coverage_csv)} if coverage_csv and Path(coverage_csv).exists() else {}
+    cov = {c["theme_id"]: c for c in covs or []}
     out = {}
     for r in U.load(uni_path):
         if r.get("execution_fund_code") and U.in_panel(r):

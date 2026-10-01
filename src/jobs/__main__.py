@@ -1,10 +1,11 @@
-"""python -m src.jobs daily  --rules config/ledger-rules.json [--date D] [--db data/ledger.sqlite] [--events-dir data/events] [--no-update]
+"""python -m src.jobs daily  --rules config/ledger-rules.json [--date D] [--db data/ledger.sqlite] [--market data/market.sqlite]
+                            [--events-dir data/events] [--no-update]
                                                              （北京时间 15:30 之后运行：A 股 D 日已收盘；海外容器按 I-20 用 D−1 的 K 线，也已收盘）
-python -m src.jobs replay --panel P --bench B --from D1 --to D2 --rules R --db 回放库.sqlite [--events-dir …] [--calendar 日历文件]
+python -m src.jobs replay --panel panel-D.sqlite --from D1 --to D2 --rules R --db 回放库.sqlite [--events-dir …] [--calendar 库]
 
-daily：P1 update → 从 raw 现算面板（P2）→ 台账流程（本包）。定时与无人值守运行交 astra（replan §4 S3）。
-replay：用历史面板逐日回放，只验流程（冒烟），不产出研究结论；回放库与正式台账分开，等权日收益也记在回放库旁边的文件里。
-交易日历：data/calendar/sse-trading-days.csv（v1.1-e；没有时月末与评分截止退回工作日规则）。
+daily：P1 update（写 market.sqlite）→ 从库现算面板（P2）→ 台账流程（本包）。定时与无人值守运行交 astra（replan §4 S3）。
+replay：用 build 产出的面板库逐日回放，只验流程（冒烟），不产出研究结论；回放库与正式台账分开，等权日收益记在回放库自己的 ew_daily 表。
+交易日历：market.sqlite 的 calendar 表（v1.1-e；表空时月末与评分截止退回工作日规则）。
 """
 from __future__ import annotations
 
@@ -17,14 +18,15 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.data import db as DB
 from src.data import runner as data_runner
-from src.indicators.calendar import CALENDAR, load_trading_days
+from src.indicators.calendar import load_trading_days
 from src.ledger.store import DEFAULT_DB, Ledger
+from src.research.prereg_v1.panel import read_table
 from . import rules as R
 from .daily import DailyJob
-from .ew import EW_PATH
-from .guard import mark_processed, preflight, processed_days
-from .live import instruments, live_panel
+from .guard import preflight
+from .live import coverage, instruments, live_panel
 
 
 def default_day() -> date:
@@ -32,26 +34,11 @@ def default_day() -> date:
     return data_runner.last_complete("csi")
 
 
-def ew_path_for(db: Path) -> Path:
-    """正式台账用 data/ledger/ew_daily.csv（v1.1-e）；其他库各用自己旁边的文件，互不污染。"""
-    if Path(db).resolve() == DEFAULT_DB.resolve():
-        return EW_PATH
-    return Path(db).with_name(Path(db).stem + ".ew_daily.csv")
-
-
-def unpaired(db: Path) -> str:
-    """新库配旧等权文件 = 冻结的 cf_ew_level 来自别的面板（v1.1-e 要求两者是一对）。"""
-    ew = ew_path_for(db)
-    if not Path(db).exists() and ew.exists():
-        return f"{db} 是新库，但等权日收益文件 {ew} 已存在（来自之前的库或面板）：确认后删掉或移走它再跑"
-    return ""
-
-
-def calendar_or_exit(path: Path):
+def calendar_or_exit(db: Path):
     try:
-        return load_trading_days(path)
+        return load_trading_days(db)
     except ValueError as e:
-        raise SystemExit(f"交易日历文件不可用，台账未动：{e}")
+        raise SystemExit(f"交易日历不可用，台账未动：{e}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -59,13 +46,15 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("daily")
     d.add_argument("--date", type=date.fromisoformat, default=None, help="默认：A 股已收盘的最近日期")
-    d.add_argument("--no-update", action="store_true", help="不先跑数据增量（raw 已是最新时用）")
+    d.add_argument("--no-update", action="store_true", help="不先跑数据增量（库已是最新时用）")
+    d.add_argument("--market", type=Path, default=DB.MARKET_DB, help="行情库")
     r = sub.add_parser("replay")
-    r.add_argument("--panel", type=Path, required=True)
-    r.add_argument("--bench", type=Path, required=True)
+    r.add_argument("--panel", type=Path, required=True, help="build 产出的面板库 panel-D.sqlite")
+    r.add_argument("--bench", type=Path, default=None, help="默认与 --panel 同一个库")
     r.add_argument("--from", dest="start", type=date.fromisoformat, required=True)
     r.add_argument("--to", dest="end", type=date.fromisoformat, required=True)
-    r.add_argument("--calendar", type=Path, default=CALENDAR, help="交易日历文件（只影响评分截止；面板的月末已在建面板时定好）")
+    r.add_argument("--calendar", type=Path, default=DB.MARKET_DB,
+                   help="带交易日历的库（market.sqlite 或研究数据包；只影响评分截止，面板的月末已在建面板时定好）")
     for p in (d, r):
         p.add_argument("--rules", type=Path, required=True)
         p.add_argument("--db", type=Path, default=DEFAULT_DB if p is d else None, required=p is r)
@@ -83,43 +72,40 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "daily":
         day = a.date or default_day()
         if not a.no_update:
-            failed = [r for r in data_runner.update(day) if not r.get("ok")]
+            failed = [r for r in data_runner.update(day, db=a.market) if not r.get("ok")]
             for r in failed:
-                print(f"update 失败：{r.get('theme_id')} {r.get('file')}：{r.get('error', '')[:120]}", file=sys.stderr)
-        cov = data_runner.OUT_DIR / "coverage.csv"
-        trading_days = calendar_or_exit(CALENDAR)
-        panel, bench, bench_open, problems = live_panel(data_runner.RAW_DIR, cov, day, trading_days)
-        blocking, notes = preflight(panel, bench, day.isoformat(), cov, processed_days())
-        if blocking:
-            print("\n".join(["运行前检查未通过，台账未动："] + blocking), file=sys.stderr)
-            return 3
-        if unpaired(a.db):
-            print(f"台账未动：{unpaired(a.db)}", file=sys.stderr)
-            return 3
+                print(f"update 失败：{r.get('theme_id')} {r.get('code')}/{r.get('adj')}：{(r.get('error') or '')[:120]}", file=sys.stderr)
+        trading_days = calendar_or_exit(a.market)
+        panel, bench, bench_open, problems = live_panel(a.market, day, trading_days)
+        covs = coverage(a.market)
         L = Ledger(a.db)
-        job = DailyJob(L, panel, bench, rules=rules, instruments=instruments(coverage_csv=data_runner.OUT_DIR / "coverage.csv"),
-                       events_dir=a.events_dir, ew_path=ew_path_for(a.db), bench_open=bench_open, trading_days=trading_days)
-        rep = job.run(day.isoformat())
-        L.close()
-        if rep.blocked:
-            print(f"台账未动：{rep.blocked}", file=sys.stderr)
-            return 3
-        rep.skipped += rule_problems + problems + notes + ([] if trading_days is not None else [f"没有交易日历文件 {CALENDAR}：月末与评分截止按工作日规则"])
+        try:
+            blocking, notes = preflight(panel, bench, day.isoformat(), covs, L.processed_days())
+            if blocking:
+                print("\n".join(["运行前检查未通过，台账未动："] + blocking), file=sys.stderr)
+                return 3
+            job = DailyJob(L, panel, bench, rules=rules, instruments=instruments(covs=covs), events_dir=a.events_dir,
+                           bench_open=bench_open, trading_days=trading_days)
+            rep = job.run(day.isoformat())
+            if rep.blocked:
+                print(f"台账未动：{rep.blocked}", file=sys.stderr)
+                return 3
+            L.mark_processed(day.isoformat())
+        finally:
+            L.close()
+        rep.skipped += rule_problems + problems + notes + ([] if trading_days is not None else [f"{a.market} 里没有交易日历：月末与评分截止按工作日规则"])
         print(json.dumps(asdict(rep), ensure_ascii=False, indent=1))
-        mark_processed(day.isoformat())
         return 0
 
-    panel = pd.read_csv(a.panel, parse_dates=["date"])
-    b = pd.read_csv(a.bench, parse_dates=["date"]).set_index("date")
+    panel = read_table(a.panel, "panel").assign(date=lambda x: pd.to_datetime(x["date"]))
+    b = read_table(a.bench or a.panel, "bench").assign(date=lambda x: pd.to_datetime(x["date"])).set_index("date")
     bench = b["hs300"]
     bench_open = b["hs300_open"] if "hs300_open" in b else None
-    if unpaired(a.db):
-        print(f"台账未动：{unpaired(a.db)}", file=sys.stderr)
-        return 3
+    trading_days = calendar_or_exit(a.calendar)
     state = {"now": ""}
     L = Ledger(a.db, clock=lambda: state["now"], replay=True)        # 正式台账库会被拒绝；回放库记为 replay 模式
-    job = DailyJob(L, panel, bench, rules=rules, instruments=instruments(), events_dir=a.events_dir, ew_path=ew_path_for(a.db),
-                   bench_open=bench_open, trading_days=calendar_or_exit(a.calendar))
+    job = DailyJob(L, panel, bench, rules=rules, instruments=instruments(), events_dir=a.events_dir,
+                   bench_open=bench_open, trading_days=trading_days)
     days = sorted(d for d in panel["date"].dt.date.unique() if a.start <= d <= a.end)
     for day in days:
         state["now"] = f"{day.isoformat()}T16:00"

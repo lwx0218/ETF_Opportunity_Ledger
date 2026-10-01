@@ -1,6 +1,6 @@
 """data/universe.csv → 各路由的抓取函数。
 
-路由名（写进 coverage.route_used 与 raw 文件的 source 列）：
+路由名（写进 coverage.route_used 与 bars 表的 source 列）：
   csi                 中证官网指数行情
   eastmoney_index     东财指数 K 线（沪 1.000xxx / 深 0.399xxx）
   tencent_index       腾讯指数日线（不复权）

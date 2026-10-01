@@ -7,7 +7,7 @@
 - Status: active
 - Owner: Faye
 - Last updated: 2026-10-01
-- Source of truth: `docs/etf-card-schema-v1.md`（含 v1.1 补充 a–g）；`docs/etf-fixed-sources-v1.md` §3–§5；`operations/planning/2026-09-27-astra-execution.md`（A1–A4）；replan §3 P3、§8 P6b、§9 P6c-2、§10 P6d-2
+- Source of truth: `docs/etf-card-schema-v1.md`（含 v1.1 补充 a–g）；`docs/etf-fixed-sources-v1.md` §3–§5；`operations/planning/2026-09-27-astra-execution.md`（A1–A4）；replan §3 P3、§8 P6b、§9 P6c-2、§10 P6d-2、§11 P7
 
 ## 用法
 
@@ -16,11 +16,11 @@ python -m src.ledger init      [--db data/ledger.sqlite]    # 建库并同步 do
 python -m src.ledger summary   [--db …]                     # 分母、分档、手动出场占比、校准分桶
 ```
 
-代码里用 `src.ledger.store.Ledger`：`create_card(card, evidence, agent_score)` → `owner_score` → `enter` → `append_daily` → `exit` → `finalize`；`void` 作废。数据库文件不入 Git。时间一律北京时间 `YYYY-MM-DDTHH:MM`，百分数存数值（12.5 = 12.5%）。卡片上的所有价格（失效位、进场、出场、每日收盘、止损）都在该卡的研究序列上，与信号同一口径；执行 ETF 的真实成交不在本层。
+代码里用 `src.ledger.store.Ledger`：`create_card(card, evidence, agent_score)` → `owner_score` → `enter` → `append_daily` → `exit` → `finalize`；`void` 作废。正式台账 `data/ledger.sqlite` 入 Git（replan §11）：`journal_mode = DELETE`，提交时不留 `-journal` / `-wal`；测试只许连临时库（`ETF_LEDGER_TESTING` 置位时连默认库即报错）。时间一律北京时间 `YYYY-MM-DDTHH:MM`，百分数存数值（12.5 = 12.5%）。卡片上的所有价格（失效位、进场、出场、每日收盘、止损）都在该卡的研究序列上，与信号同一口径；执行 ETF 的真实成交不在本层。
 
 **数据库时钟**：触发器用 `ledger_now()`（`Ledger` 注册，北京时间到分钟，每个事务内冻结为同一时刻）判断截止与「不能写未来」；各表的 `recorded_at` 必须等于它。没注册这个函数的连接（sqlite3 命令行、别的进程）写不进台账行与固定源版本；自己注册同名函数等于注入时钟，属于蓄意绕过，存储层不防。注入时钟只用于回放：`Ledger(回放库, clock=…, replay=True)`，不能指向正式库；库第一次打开时记下时钟模式（`ledger_meta.clock` = real / replay），之后换模式打开即拒绝——回放写出的卡进不了正式台账。
 
-**schema 版本**：`ledger_meta.schema` = `v1.1-g`（新库建库时写入）。之前版本建的库（P3 / P5 的回放库没有 `evidence_status` 等列；P6b 的 `v1.1` 库出场记录没有触发收盘；P6c 的 `v1.1-f` 库没有出场信号表）打开即拒绝并提示迁移；正式台账按 A7 还没有启用，所以本包不提供迁移脚本，旧回放库删掉重跑即可。
+**schema 版本**：`ledger_meta.schema` = `v1.1-g.1`（新库建库时写入；记账口径仍是 v1.1-g，`.1` 是 P7 把等权日收益与已处理交易日搬进库）。之前版本建的库（P3 / P5 的回放库没有 `evidence_status` 等列；P6b 的 `v1.1` 库出场记录没有触发收盘；P6c 的 `v1.1-f` 库没有出场信号表；P6d 的 `v1.1-g` 库没有 `ew_daily` / `job_days`）打开即拒绝并提示迁移；正式台账按 A7 还没有启用，所以本包不提供迁移脚本，旧回放库删掉重跑即可。
 
 ## 字段落点（schema §2 → 表.列）
 
@@ -51,6 +51,8 @@ python -m src.ledger summary   [--db …]                     # 分母、分档�
 | §2.3 出场 | `exits` 表 | 须先有进场；不晚于数据库时钟；`手动` 必须写 `manual_reason`；**必须有出场信号**，`exit_date` 晚于信号日（「之后第一个有开盘价的交易日成交、中间不撤销」由每日任务保证；台账不存开盘价，存储层只要求出场日晚于信号日），`exit_reason`、`manual_reason`、`exit_signal_close` 都必须等于信号里的值；`手动` / `论点作废` 信号必须在成交那天 09:30 之前记录（收盘后决定、次日开盘成交，v1.1-g 第 2 条；止损信号由每日任务写，补跑晚记不受限）；出场后不能再补出场日之前的每日行 |
 | §2.4 跟踪期满 | `finals` 表 | 出场后的每日行满 `tracking_days` 行才能写；`final_score` 必须等于机械结果（触发器重算，v1.1-f）：先判证伪——`exit_signal_close` < 锁定的 `invalidation_price`（不论出场原因标签）或 `exit_reason = 论点作废`（哪怕 R > 0）；未证伪的卡按锁定菜单分档：第 1 项按 `realized_excess_pct` 对 `target_excess_pct`，第 2 项按 `realized_r`（含成本）：≥ 2 达标、> 0 部分、≤ 0 未达（没有 −1 下限） |
 | 作废 | `voids` 表 | 只有未进场的候选能作废；已进场的卡按「论点作废 / 手动」出场 |
+| 等权日收益（v1.1-e） | `ew_daily(date, ew_return, ew_level, n_containers, recorded_at)` | replan §11：原「库旁文件」`ew_daily.csv` 改为库内表，台账与它天然成对（文件丢失、截断、换成别的面板的文件这几种失配不再可能）。只追加，日期严格递增、不晚于数据库时钟；第一条点位 1、收益 0，之后点位 = 上一条点位 ×（1 + 当日收益）（触发器核对）；卡片的 `cf_ew_level` 取创建当日这一行。每日任务另核对卡片的 `cf_ew_level` 与表、以及表是否漏了上一交易日（防绕过触发器的改动与漏跑） |
+| 已处理交易日 | `job_days(day, recorded_at)` | 取代 `data/jobs/processed-days.txt`：每日任务跑完一天（台账流程未被阻断）记一行，漏跑检查用；只追加 |
 
 生命周期由视图 `card_status` 推出：作废 / 已结 / 过去 / 当下 / 候选。所有表拒绝 DELETE；除 `cards.sealed` 在创建事务内 0→1 外（封存触发器核对数据库时钟等于卡片的 `recorded_at` 且未过 `owner_score_deadline`：不能先插一批未封存的卡、看完行情只封存赢家；未封存的卡不进分母），所有表拒绝 UPDATE；每张表的插入触发器在同键行已存在时拒绝，`INSERT OR REPLACE` / `REPLACE INTO` 的隐式删除因此也改不了任何行；表都是 `WITHOUT ROWID`，显式写 rowid 的 REPLACE 直接报错；`Ledger` 连接另开 `recursive_triggers` 作第二道防线。数值列校验类型并拒绝无穷大（`typeof` + `abs(x) < 1e15`），日期与时刻做往返校验（`2026-02-31`、空格分隔一律拒绝）。
 

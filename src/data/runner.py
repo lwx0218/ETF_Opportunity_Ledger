@@ -1,29 +1,29 @@
-"""probe / backfill / update / package / verify / compare。
+"""probe / backfill / update / calendar / package / verify / compare，读写 data/market.sqlite（replan §11）。
 
-probe     对 universe 每一行试路由，写 outputs/data/coverage.csv（数据源可用性的最小验证，也是 R0「核实」的最终形式）。
-backfill  全量拉到 data/raw/（不入 Git），同时写 coverage。
-update    按已有文件的来源增量拉取，往回多拉 OVERLAP_DAYS 天覆盖修正。
-package   导出 outputs/research-package-<end>/：raw（截到 end）+ coverage + universe + MANIFEST（sha256）。
+probe     对 universe 每一行试路由，coverage 写进库（数据源可用性的最小验证，也是 R0「核实」的最终形式）。
+backfill  全量拉进 bars 表，同时写 coverage。
+update    按库里每条序列已有的来源增量拉取，往回多拉 OVERLAP_DAYS 天覆盖修正；每条序列的结果记 update_results。
+calendar  校验 astra 生成的交易日清单，写进 calendar 表。
+package   从库复制一份截到 end 的只读库 outputs/research-package-<end>.sqlite（+ 同名 .MANIFEST.json 记 sha256）；只读源库。
+probe / backfill / update / calendar 每次在 runs 记一行（起止、end、参数、git commit、universe seed 的 sha256），请求记录进 requests。
 拿不到的容器只记一行 error 跳过，不阻塞其他容器（replan §6.4）。
 """
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
+import os
 import re
-import shutil
-import subprocess
+from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from . import db as DB
 from . import http, store
 from . import universe as U
 
 ROOT = U.ROOT
-RAW_DIR = ROOT / "data" / "raw"
-OUT_DIR = ROOT / "outputs" / "data"
 PKG_ROOT = ROOT / "outputs"
 DEFAULT_START = date(2000, 1, 1)
 PROBE_WINDOW_DAYS = 45       # 全收益候选与执行 ETF 只看最近一段：确认存在与名称
@@ -39,12 +39,7 @@ A_SHARE_ROUTES = {"csi", "eastmoney_index", "tencent_index", "eastmoney_etf_hfq"
 STRICT_ROUTES = {"eastmoney_etf_hfq"}   # 后复权：重叠区被改写 = 复权基准变了，不能拼接
 NOT_ATTEMPTED = {"518880": "上海金 Au99.99 未尝试：固定源与 replan 均未给出接口"}
 
-COVERAGE_COLUMNS = [
-    "container", "code", "route_used", "first_date", "last_date", "rows", "tr_code_used", "price_only", "error",
-    "theme_id", "status", "series_code", "series_file", "series_name",
-    "max_gap_days", "price_first_date", "ohlc_missing_rows", "volume_missing_rows",
-    "exec_code", "exec_route", "exec_first_date", "exec_last_date", "exec_rows", "exec_error", "checked_at", "notes",
-]
+COVERAGE_COLUMNS = DB.COVERAGE_COLUMNS
 _TR_MARK = re.compile(r"全收益|财富|total\s*return|\bN?TR\b", re.I)
 
 
@@ -58,7 +53,7 @@ def _utcnow() -> datetime:
 
 def last_complete(route: str, now: datetime | None = None) -> date:
     """该路由最近一根已收盘日线的日期：A 股按北京时间 15:30，海外按纽约时间 17:00（亚洲海外指数更早收盘，按纽约算只会更保守）。
-    抓取时比它新的 K 线是盘中实时值，一律丢弃，不进 raw、更不进数据包。"""
+    抓取时比它新的 K 线是盘中实时值，一律丢弃，不进库、更不进数据包。"""
     now = now or _utcnow()
     if route in A_SHARE_ROUTES:
         t, cut = now.astimezone(BEIJING), time(15, 30)
@@ -134,7 +129,7 @@ def _missing(rows: list[dict], cols) -> int:
 
 
 def collect(row: dict, start: date, end: date, *, full: bool, exec_start: date | None = None) -> tuple[dict, list[tuple[str, str, list[dict]]]]:
-    """一个容器 → (coverage 行, 要落盘的序列 [(code, route, rows)])。
+    """一个容器 → (coverage 行, 要落库的序列 [(code, route, rows)])。
     full=False（probe）：执行 ETF 只查最近一段，价格序列在已有全收益时不再拉；full=True（backfill）：全部全量。"""
     cov = {k: "" for k in COVERAGE_COLUMNS}
     cov.update(container=row["theme"], code=row.get("research_index_code", ""), theme_id=row["theme_id"],
@@ -178,7 +173,7 @@ def collect(row: dict, start: date, end: date, *, full: bool, exec_start: date |
                 used = price
             if used:
                 ucode, uroute, got, price_only = used
-                cov.update(route_used=uroute, series_code=ucode, series_file=store.file_name(ucode, uroute),
+                cov.update(route_used=uroute, series_code=ucode, series_adj=store.adj_of(uroute),
                            series_name=got.name or "", first_date=got.rows[0]["date"], last_date=got.rows[-1]["date"],
                            rows=len(got.rows), price_only=price_only, max_gap_days=max_gap(got.rows)[0],
                            ohlc_missing_rows=_missing(got.rows, ("open", "high", "low")),
@@ -231,27 +226,7 @@ def collect(row: dict, start: date, end: date, *, full: bool, exec_start: date |
     return cov, series
 
 
-# ------------------------------------------------------------------ coverage 文件
-def read_coverage(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    with open(path, encoding="utf-8", newline="") as f:
-        return list(csv.DictReader(f))
-
-
-def write_coverage(path: Path, rows: list[dict], order: list[str]) -> None:
-    """按 universe 顺序写；只跑了部分容器（--only）时保留其余容器的旧行。"""
-    by = {r["theme_id"]: r for r in read_coverage(path)}
-    by.update({r["theme_id"]: r for r in rows})
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=COVERAGE_COLUMNS, extrasaction="ignore", lineterminator="\n")
-        w.writeheader()
-        for tid in order + sorted(set(by) - set(order)):
-            if tid in by:
-                w.writerow(by[tid])
-
-
+# ------------------------------------------------------------------ 作业
 def _select(uni: list[dict], only: list[str] | None) -> list[dict]:
     if not only:
         return uni
@@ -271,234 +246,333 @@ def _line(cov: dict) -> str:
     return f"  --  {cov['theme_id']} {cov['container']}: {cov['notes'][:100]}"
 
 
-def _write_requests(out_dir: Path, name: str) -> None:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    with open(out_dir / name, "w", encoding="utf-8") as f:
-        for ent in http.LOG:
-            f.write(json.dumps(ent, ensure_ascii=False) + "\n")
+@contextmanager
+def _job(db, kind: str, *, end: date | None = None, args: dict | None = None, uni_path: Path = U.UNIVERSE):
+    """打开库 → 装入 universe seed（记 sha256）→ runs 记一行；正常结束记 ok，异常记 error 后照常抛出。"""
+    con = DB.connect(db)
+    try:
+        uni = U.load(uni_path)
+        sha = DB.sha256_file(uni_path)
+        DB.load_universe(con, uni, sha)
+        run_id = DB.start_run(con, kind, end=end, args=args, universe_sha256=sha)
+        try:
+            yield con, run_id, uni
+        except BaseException as e:
+            con.rollback()
+            DB.finish_run(con, run_id, f"error: {type(e).__name__}: {str(e)[:200]}")
+            raise
+        DB.finish_run(con, run_id, "ok")
+    finally:
+        con.close()
 
 
-# ------------------------------------------------------------------ 命令
 def probe(end: date, *, start: date = DEFAULT_START, only=None, uni_path: Path = U.UNIVERSE,
-          out_dir: Path = OUT_DIR, record: Path | None = None, log=print) -> list[dict]:
-    uni = U.load(uni_path)
+          db: Path = DB.MARKET_DB, record: Path | None = None, log=print) -> list[dict]:
     http.LOG.clear()
     http.RECORD_DIR = record
-    covs = []
-    for row in _select(uni, only):
-        cov, _ = collect(row, start, end, full=False)
-        covs.append(cov)
-        log(_line(cov))
-    write_coverage(out_dir / "coverage.csv", covs, [r["theme_id"] for r in uni])
-    _write_requests(out_dir, "probe-requests.jsonl")
+    with _job(db, "probe", end=end, args={"start": start, "only": only, "record": record}, uni_path=uni_path) as (con, run_id, uni):
+        covs = []
+        for row in _select(uni, only):
+            cov, _ = collect(row, start, end, full=False)
+            covs.append(cov)
+            log(_line(cov))
+        DB.write_coverage(con, run_id, covs)
+        DB.write_requests(con, run_id, http.LOG)
     return covs
 
 
 def backfill(end: date, *, start: date = DEFAULT_START, exec_start: date | None = None, only=None, uni_path: Path = U.UNIVERSE,
-             raw_dir: Path = RAW_DIR, out_dir: Path = OUT_DIR, log=print) -> list[dict]:
-    """exec_start 只缩短执行 ETF 的起点（减少东财上市前的空段请求）；研究序列始终从 start 拉，不丢设计期。"""
-    uni = U.load(uni_path)
+             db: Path = DB.MARKET_DB, log=print) -> list[dict]:
+    """exec_start 只缩短执行 ETF 的起点（减少东财上市前的空段请求）；研究序列始终从 start 拉，不丢设计期。
+    每条拉到的序列整条替换库里的同一序列（code, adj）。"""
     http.LOG.clear()
-    covs = []
-    for row in _select(uni, only):
-        cov, series = collect(row, start, end, full=True, exec_start=exec_start)
-        for code, route, rows in series:
-            store.write(raw_dir / store.file_name(code, route), [{**r, "source": route} for r in rows])
-        covs.append(cov)
-        log(_line(cov))
-    write_coverage(out_dir / "coverage.csv", covs, [r["theme_id"] for r in uni])
-    _write_requests(out_dir, "backfill-requests.jsonl")
+    with _job(db, "backfill", end=end, args={"start": start, "exec_start": exec_start, "only": only}, uni_path=uni_path) as (con, run_id, uni):
+        covs = []
+        for row in _select(uni, only):
+            cov, series = collect(row, start, end, full=True, exec_start=exec_start)
+            at = _now()
+            for code, route, rows in series:
+                store.replace(con, code, route, rows, at)
+            covs.append(cov)
+            log(_line(cov))
+        DB.write_coverage(con, run_id, covs)
+        DB.write_requests(con, run_id, http.LOG)
     return covs
 
 
-def _container_files(cov: dict, row: dict) -> list[tuple[str, str, str]]:
-    """(kind, code, file)：研究序列、价格序列（若另有）、执行序列。"""
+def container_series(cov: dict, row: dict) -> list[tuple[str, str, str]]:
+    """(kind, code, adj)：研究序列、价格序列（若另有）、执行序列。"""
     out = []
-    if cov.get("series_file"):
-        out.append(("research", cov["series_code"], cov["series_file"]))
+    if cov.get("series_code") and cov.get("series_adj"):
+        out.append(("research", cov["series_code"], cov["series_adj"]))
     chain = U.RESEARCH_CHAIN.get(row.get("research_route") or "")
     code = row.get("research_index_code") or ""
     if chain and code and code != cov.get("series_code"):
-        out.append(("price", code, store.file_name(code, chain[0])))
+        out.append(("price", code, store.adj_of(chain[0])))
     if cov.get("exec_code"):
-        out.append(("exec", cov["exec_code"], store.file_name(cov["exec_code"], "eastmoney_etf")))
+        out.append(("exec", cov["exec_code"], "raw"))
     return out
 
 
-def _refresh(cov: dict, raw_dir: Path) -> None:
-    """按 raw_dir 里的文件重算起止日期与行数；文件不存在则清空（不留与文件不符的旧值）。"""
-    exec_file = store.file_name(cov["exec_code"], "eastmoney_etf") if cov.get("exec_code") else ""
-    for prefix, fname in (("", cov.get("series_file")), ("exec_", exec_file)):
-        if not fname:
+def _refresh(cov: dict, con) -> None:
+    """按库里的序列重算起止日期与行数；序列不在则清空（不留与库不符的旧值）。"""
+    for prefix, code, adj in (("", cov.get("series_code"), cov.get("series_adj")), ("exec_", cov.get("exec_code"), "raw")):
+        if not code or not adj:
             continue
-        rows = store.read(raw_dir / fname)
-        cov.update({f"{prefix}first_date": rows[0]["date"] if rows else "", f"{prefix}last_date": rows[-1]["date"] if rows else "",
-                    f"{prefix}rows": len(rows) if rows else ""})
-        if prefix and rows:
-            cov["exec_route"] = store.source_of(rows) or cov.get("exec_route", "")
+        sp = store.span(con, code, adj)
+        cov.update({f"{prefix}first_date": sp["first"] or "", f"{prefix}last_date": sp["last"] or "",
+                    f"{prefix}rows": sp["rows"] or ""})
+        if prefix and sp["rows"]:
+            cov["exec_route"] = sp["source"]
 
 
-def update(end: date, *, only=None, uni_path: Path = U.UNIVERSE, raw_dir: Path = RAW_DIR,
-           out_dir: Path = OUT_DIR, log=print) -> list[dict]:
-    """按每个文件已有的来源增量更新；不换路由（换了就不是同一条序列）。"""
-    uni = U.load(uni_path)
-    covs = {c["theme_id"]: c for c in read_coverage(out_dir / "coverage.csv")}
-    if not covs:
-        raise SystemExit("没有 outputs/data/coverage.csv：先跑 backfill")
+def update(end: date, *, only=None, uni_path: Path = U.UNIVERSE, db: Path = DB.MARKET_DB, log=print) -> list[dict]:
+    """按每条序列已有的来源增量更新；不换路由（换了就不是同一条序列）。"""
     http.LOG.clear()
-    report = []
-    for row in _select(uni, only):
-        cov = covs.get(row["theme_id"])
-        if not cov:
-            continue
-        seen = set()
-        for kind, code, fname in _container_files(cov, row):
-            path = raw_dir / fname
-            if fname in seen:
+    with _job(db, "update", end=end, args={"only": only}, uni_path=uni_path) as (con, run_id, uni):
+        covs = {c["theme_id"]: c for c in DB.read_coverage(con)}
+        if not covs:
+            raise SystemExit("库里没有 coverage：先跑 backfill")
+        report, touched = [], []
+        for row in _select(uni, only):
+            cov = covs.get(row["theme_id"])
+            if not cov:
                 continue
-            seen.add(fname)
-            if not path.exists():
-                if kind == "research":        # coverage 指向的研究序列不在：多半是 backfill 之后又跑了 probe
-                    report.append({"at": _now(), "theme_id": row["theme_id"], "kind": kind, "file": fname, "ok": False,
-                                   "error": "coverage 指向的研究序列文件不存在：重跑 backfill"})
-                    log(f"  ERR {row['theme_id']} {fname}: 文件不存在，重跑 backfill")
-                continue
-            old = store.read(path)
-            route = store.source_of(old)
-            ent = {"at": _now(), "theme_id": row["theme_id"], "kind": kind, "file": fname, "route": route}
-            fn = U.route_fn(route or "", code)
-            since = date.fromisoformat(old[-1]["date"]) - timedelta(days=OVERLAP_DAYS) if old else DEFAULT_START
-            try:
-                if fn is None:
-                    raise http.FetchError(f"无 {code} 在 {route} 的代码映射")
-                got = fn(since, end)
-                cutoff = last_complete(route).isoformat()
-                merged, added, revised = store.merge(old, [r for r in got.rows if r["date"] <= cutoff], route)
-                strict = route in STRICT_ROUTES or (kind == "research" and code == cov.get("tr_code_used"))
-                if strict and revised:
-                    raise store.MixError(f"重叠区 {revised} 行被改写：后复权 / 全收益序列的基准可能变了，不拼接，需重新全量 backfill")
-                store.write(path, merged)
-                ent.update(ok=True, since=since.isoformat(), added=added, revised=revised, last_date=merged[-1]["date"])
-                log(f"  ok  {row['theme_id']} {fname}: +{added} 行，修正 {revised} 行，至 {merged[-1]['date']}")
-            except Exception as e:  # noqa: BLE001
-                ent.update(ok=False, error=str(e)[:300])
-                log(f"  ERR {row['theme_id']} {fname}: {str(e)[:120]}")
-            report.append(ent)
-        _refresh(cov, raw_dir)
-        cov["checked_at"] = _now()
-    write_coverage(out_dir / "coverage.csv", list(covs.values()), [r["theme_id"] for r in uni])
-    out_dir.mkdir(parents=True, exist_ok=True)
-    with open(out_dir / "update-log.jsonl", "a", encoding="utf-8") as f:
-        for ent in report:
-            f.write(json.dumps(ent, ensure_ascii=False) + "\n")
-    with open(out_dir / "update-requests.jsonl", "a", encoding="utf-8") as f:
-        for ent in http.LOG:
-            f.write(json.dumps(ent, ensure_ascii=False) + "\n")
+            seen = set()
+            for kind, code, adj in container_series(cov, row):
+                if (code, adj) in seen:
+                    continue
+                seen.add((code, adj))
+                old = store.read(con, code, adj)
+                if not old:
+                    if kind == "research":        # coverage 指向的研究序列不在：多半是 backfill 之后又跑了 probe
+                        report.append({"theme_id": row["theme_id"], "kind": kind, "code": code, "adj": adj, "ok": False,
+                                       "error": "coverage 指向的研究序列不在库里：重跑 backfill"})
+                        log(f"  ERR {row['theme_id']} {code}/{adj}: 序列不在库里，重跑 backfill")
+                    continue
+                route = store.source_of(old)
+                ent = {"theme_id": row["theme_id"], "kind": kind, "code": code, "adj": adj, "route": route}
+                fn = U.route_fn(route or "", code)
+                since = date.fromisoformat(old[-1]["date"]) - timedelta(days=OVERLAP_DAYS)
+                try:
+                    if fn is None:
+                        raise http.FetchError(f"无 {code} 在 {route} 的代码映射")
+                    got = fn(since, end)
+                    cutoff = last_complete(route).isoformat()
+                    new = [r for r in got.rows if r["date"] <= cutoff]
+                    merged, added, revised = store.merge(old, new, route)
+                    strict = route in STRICT_ROUTES or (kind == "research" and code == cov.get("tr_code_used"))
+                    if strict and revised:
+                        raise store.MixError(f"重叠区 {revised} 行被改写：后复权 / 全收益序列的基准可能变了，不拼接，需重新全量 backfill")
+                    store.upsert(con, code, route, new, _now())
+                    ent.update(ok=True, since=since.isoformat(), added=added, revised=revised, last_date=merged[-1]["date"])
+                    log(f"  ok  {row['theme_id']} {code}/{adj}: +{added} 行，修正 {revised} 行，至 {merged[-1]['date']}")
+                except Exception as e:  # noqa: BLE001
+                    ent.update(ok=False, error=str(e)[:300])
+                    log(f"  ERR {row['theme_id']} {code}/{adj}: {str(e)[:120]}")
+                report.append(ent)
+            _refresh(cov, con)
+            cov["checked_at"] = _now()
+            touched.append(cov)
+        DB.write_coverage(con, run_id, touched)
+        DB.write_update_results(con, run_id, report)
+        DB.write_requests(con, run_id, http.LOG)
     return report
 
 
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _git_head() -> str | None:
+def load_calendar(path: Path, *, replace: bool = False, uni_path: Path = U.UNIVERSE, db: Path = DB.MARKET_DB, log=print) -> int:
+    """astra 生成的交易日清单 → calendar 表。默认与库里已有的日子取并集（每年补一次）；replace=True 整表换成该文件。
+    文件或并集不像交易日历（一行多列、非日期行、周末、中间缺一段）就拒绝，库不动。返回表里的交易日数。"""
+    from src.indicators.calendar import check_days, read_calendar_file      # 指标层依赖数据层，这里按需引入免得循环
     try:
-        return subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-    except Exception:  # noqa: BLE001
-        return None
+        days = read_calendar_file(path)
+    except ValueError as e:
+        raise SystemExit(f"交易日清单不可用，库未动：{e}")
+    with _job(db, "calendar", args={"file": str(path), "sha256": DB.sha256_file(path), "replace": replace}, uni_path=uni_path) as (con, _, _u):
+        have = [] if replace else [r[0] for r in con.execute("SELECT date FROM calendar")]
+        try:
+            union = check_days(list(days) + have, "交易日历（并入后）")
+        except ValueError as e:
+            raise SystemExit(f"并入后不像交易日历，库未动：{e}")
+        with con:
+            if replace:
+                con.execute("DELETE FROM calendar")
+            con.executemany("INSERT OR IGNORE INTO calendar (date) VALUES (?)", [(d.date().isoformat(),) for d in union])
+        n = con.execute("SELECT count(*) FROM calendar").fetchone()[0]
+    log(f"  交易日历 {n} 天：{union[0].date()} → {union[-1].date()}")
+    return n
 
 
-CALENDAR_FILE = ROOT / "data" / "calendar" / "sse-trading-days.csv"      # astra 生成（replan §8 S1），有就随包交付
+# ------------------------------------------------------------------ 研究数据包
+def _rel(path: Path) -> str:
+    try:
+        return Path(path).resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(path)
 
 
-def package(end: date, *, uni_path: Path = U.UNIVERSE, raw_dir: Path = RAW_DIR, out_dir: Path = OUT_DIR,
-            pkg_root: Path = PKG_ROOT, force: bool = False, calendar: Path | None = CALENDAR_FILE, log=print) -> Path:
-    covs = read_coverage(out_dir / "coverage.csv")
-    if not covs:
-        raise SystemExit("没有 outputs/data/coverage.csv：先跑 backfill")
+def manifest_path(pkg: Path) -> Path:
+    return Path(pkg).with_name(Path(pkg).stem + ".MANIFEST.json")
+
+
+def package(end: date, *, db: Path = DB.MARKET_DB, pkg_root: Path = PKG_ROOT, force: bool = False, log=print) -> Path:
+    """从库复制一份截到 end 的只读库。只读源库（Cowork 在本地打包不改动入 Git 的库）；这次打包记在包内的 runs 与 package 表。
+    coverage 与 bars 必须一致（研究序列存在、有行、source = route_used），否则该容器改记 error，列进 inconsistent_with_bars。"""
+    src_path = Path(db)
+    DB.refuse_default_in_tests(src_path, DB.MARKET_DB)
+    if not src_path.exists():
+        raise SystemExit(f"{src_path} 不存在：先跑 backfill")
     safe = min(last_complete("csi"), last_complete("yahoo"))
     if end > safe:
         raise SystemExit(f"end={end} 尚未全部收盘（A 股与海外都收盘后的最近日期是 {safe}）；等收盘后再打包")
-    dest = pkg_root / f"research-package-{end.isoformat()}"
-    if dest.exists():
-        if not force:
-            raise SystemExit(f"{dest} 已存在；确需重建加 --force")
-        shutil.rmtree(dest)
-    (dest / "raw").mkdir(parents=True)
-    uni = {r["theme_id"]: r for r in U.load(uni_path)}
-    wanted, inconsistent = set(), []
-    for c in covs:
-        if c.get("series_file"):                  # coverage 与 raw 必须一致，否则这一行按 error 处理
-            rows = store.read(raw_dir / c["series_file"])
-            src = store.source_of(rows) if rows else None
-            if not rows or src != c.get("route_used"):
-                inconsistent.append(c["theme_id"])
-                why = "缺失" if not rows else f"来源 {src} ≠ route_used {c.get('route_used')}"
-                c["error"] = f"package: {c['series_file']} {why}（coverage 与 raw 不一致，重跑 backfill）"
-                for k in ("route_used", "series_code", "series_file", "tr_code_used", "price_only", "first_date", "last_date", "rows"):
-                    c[k] = ""
-        wanted |= {f for _, _, f in _container_files(c, uni.get(c["theme_id"], {}))}
-    n = 0
-    for fname in sorted(wanted):
-        rows = [r for r in store.read(raw_dir / fname) if r["date"] <= end.isoformat()]
-        if rows:
-            store.write(dest / "raw" / fname, rows)
-            n += 1
-    for c in covs:
-        _refresh(c, dest / "raw")
-    write_coverage(dest / "coverage.csv", covs, [c["theme_id"] for c in covs])
-    shutil.copyfile(uni_path, dest / "universe.csv")
-    if calendar is not None and Path(calendar).exists():
-        (dest / "calendar").mkdir()
-        shutil.copyfile(calendar, dest / "calendar" / Path(calendar).name)
-    files = sorted(p for p in dest.rglob("*") if p.is_file())
-    with open(dest / "MANIFEST.sha256", "w", encoding="utf-8", newline="\n") as f:
-        for p in files:
-            f.write(f"{_sha256(p)}  {p.relative_to(dest).as_posix()}\n")
-    panel = [c for c in covs if c.get("status") in U.PANEL_STATUSES]
-    meta = {"end": end.isoformat(), "created_at": _now(), "git_head": _git_head(), "raw_files": n,
-            "universe_sha256": _sha256(dest / "universe.csv"),
-            "panel_containers": len(panel), "with_series": sum(1 for c in panel if c.get("rows")),
-            "inconsistent_with_raw": inconsistent,
-            "price_only": sum(1 for c in panel if c.get("price_only") == "True"),
-            "calendar_file": (dest / "calendar").exists(),
-            "verify": "python -m src.data verify <本目录>  或  sha256sum -c MANIFEST.sha256"}
-    (dest / "MANIFEST.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    log(f"  研究数据包 {dest}：{n} 个序列文件，面板容器 {meta['with_series']}/{meta['panel_containers']} 有数据")
+    src_sha = DB.sha256_file(src_path)
+    src = DB.connect(src_path, readonly=True)
+    try:
+        covs = DB.read_coverage(src)
+        if not covs:
+            raise SystemExit("库里没有 coverage：先跑 backfill")
+        dest = Path(pkg_root) / f"research-package-{end.isoformat()}.sqlite"
+        man = manifest_path(dest)
+        if dest.exists() or man.exists():
+            if not force:
+                raise SystemExit(f"{dest} 已存在；确需重建加 --force")
+            for p in (dest, man):
+                if p.exists():
+                    p.chmod(0o644)
+                    p.unlink()
+        uni_rows = [(r["ord"], r["theme_id"], r["row"]) for r in src.execute("SELECT ord, theme_id, row FROM universe ORDER BY ord")]
+        uni = {tid: json.loads(row) for _, tid, row in uni_rows}
+        uni_sha = (src.execute("SELECT value FROM meta WHERE key = 'universe_sha256'").fetchone() or [None])[0]
+        wanted, inconsistent = [], []
+        for c in covs:
+            if c.get("series_adj"):                   # coverage 与 bars 必须一致，否则这一行按 error 处理
+                sp = store.span(src, c["series_code"], c["series_adj"])
+                if not sp["rows"] or sp["sources"] != 1 or sp["source"] != c.get("route_used"):
+                    inconsistent.append(c["theme_id"])
+                    why = "不在库里" if not sp["rows"] else f"来源 {sp['source']} ≠ route_used {c.get('route_used')}"
+                    c["error"] = f"package: {c['series_code']}/{c['series_adj']} {why}（coverage 与 bars 不一致，重跑 backfill）"
+                    for k in ("route_used", "series_code", "series_adj", "tr_code_used", "price_only", "first_date", "last_date", "rows"):
+                        c[k] = ""
+            wanted += [(code, adj) for _, code, adj in container_series(c, uni.get(c["theme_id"], {})) if (code, adj) not in wanted]
+        Path(pkg_root).mkdir(parents=True, exist_ok=True)
+        pkg = DB.connect(dest, schema=DB.SCHEMA + DB.PACKAGE_SCHEMA)
+        try:
+            n = 0
+            with pkg:
+                for code, adj in wanted:
+                    rows = src.execute("SELECT code, adj, date, open, high, low, close, volume, amount, source, fetched_at FROM bars "
+                                       "WHERE code = ? AND adj = ? AND date <= ? ORDER BY date", (code, adj, end.isoformat())).fetchall()
+                    if rows:
+                        pkg.executemany("INSERT INTO bars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [tuple(r) for r in rows])
+                        n += 1
+                pkg.executemany("INSERT INTO universe (ord, theme_id, row) VALUES (?, ?, ?)", uni_rows)
+                pkg.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('universe_sha256', ?)", (uni_sha or "",))
+                pkg.executemany("INSERT INTO calendar (date) VALUES (?)", [(r[0],) for r in src.execute("SELECT date FROM calendar ORDER BY date")])
+            for c in covs:
+                _refresh(c, pkg)
+            run_id = DB.start_run(pkg, "package", end=end, args={"source_db": _rel(src_path), "force": force}, universe_sha256=uni_sha)
+            DB.write_coverage(pkg, run_id, covs)
+            panel = [c for c in covs if c.get("status") in U.PANEL_STATUSES]
+            info = {"end": end.isoformat(), "created_at": _now(), "git_commit": DB.git_head(), "source_db": _rel(src_path),
+                    "source_db_sha256": src_sha, "source_db_matches_commit": DB.git_clean(src_path), "universe_sha256": uni_sha,
+                    "series": n, "panel_containers": len(panel), "with_series": sum(1 for c in panel if c.get("rows")),
+                    "inconsistent_with_bars": inconsistent, "price_only": sum(1 for c in panel if c.get("price_only") == "True"),
+                    "calendar_days": pkg.execute("SELECT count(*) FROM calendar").fetchone()[0]}
+            with pkg:
+                pkg.executemany("INSERT INTO package (key, value) VALUES (?, ?)",
+                                [(k, json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v) for k, v in info.items()])
+            DB.finish_run(pkg, run_id, "ok")
+            pkg.execute("VACUUM")
+        finally:
+            pkg.close()
+    finally:
+        src.close()
+    os.chmod(dest, 0o444)
+    meta = {"file": dest.name, "sha256": DB.sha256_file(dest), **info,
+            "verify": f"python -m src.data verify {dest.name}"}
+    man.write_text(json.dumps(meta, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    log(f"  研究数据包 {dest}：{n} 条序列，面板容器 {info['with_series']}/{info['panel_containers']} 有数据")
     return dest
 
 
-def verify(dest: Path) -> list[str]:
-    """按 MANIFEST.sha256 复验；返回问题列表（空 = 通过）。"""
-    man = dest / "MANIFEST.sha256"
+def package_info(con) -> dict:
+    """包内 package 表 → dict（数值与列表按 JSON 还原）。"""
+    out = {}
+    for k, v in con.execute("SELECT key, value FROM package"):
+        try:
+            out[k] = json.loads(v) if k not in ("end", "created_at", "git_commit", "source_db", "source_db_sha256", "universe_sha256") else v
+        except json.JSONDecodeError:
+            out[k] = v
+    return out
+
+
+def verify(path: Path) -> list[str]:
+    """研究数据包复验；返回问题列表（空 = 通过）。
+    文件 sha256 对 MANIFEST.json、PRAGMA integrity_check、bars 行数对 coverage、无晚于 end 的行、source = route_used（执行序列对 exec_route）、
+    没有 coverage 未引用的序列。"""
+    path = Path(path)
+    if not path.exists():
+        return [f"缺文件 {path.name}"]
+    problems = []
+    man = manifest_path(path)
     if not man.exists():
-        return ["缺少 MANIFEST.sha256"]
-    problems, listed = [], set()
-    for line in man.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        digest, rel = line.split("  ", 1)
-        listed.add(rel)
-        p = dest / rel
-        if not p.exists():
-            problems.append(f"缺文件 {rel}")
-        elif _sha256(p) != digest:
-            problems.append(f"哈希不符 {rel}")
-    extra = {p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file()} - listed - {"MANIFEST.sha256", "MANIFEST.json"}
-    problems += [f"清单外文件 {x}" for x in sorted(extra)]
+        problems.append(f"缺 {man.name}")
+    elif json.loads(man.read_text(encoding="utf-8")).get("sha256") != DB.sha256_file(path):
+        problems.append(f"哈希不符 {path.name}")
+    try:
+        con = DB.connect(path, readonly=True)
+    except Exception as e:  # noqa: BLE001 — 不是 SQLite 库 / schema 不对
+        return problems + [f"打不开：{str(e)[:160]}"]
+    try:
+        try:
+            ok = con.execute("PRAGMA integrity_check").fetchone()[0]
+        except Exception as e:  # noqa: BLE001
+            return problems + [f"integrity_check 失败：{str(e)[:160]}"]
+        if ok != "ok":
+            problems.append(f"integrity_check：{ok[:160]}")
+        info = package_info(con)
+        end = info.get("end")
+        if not end:
+            return problems + ["缺 package 表或其中的 end"]
+        late = con.execute("SELECT count(*), min(code) FROM bars WHERE date > ?", (end,)).fetchone()
+        if late[0]:
+            problems.append(f"有 {late[0]} 行晚于 end={end}（如 {late[1]}）")
+        uni = {r["theme_id"]: json.loads(r["row"]) for r in con.execute("SELECT theme_id, row FROM universe")}
+        referenced = set()
+        for c in DB.read_coverage(con):
+            referenced |= {(code, adj) for _, code, adj in container_series(c, uni.get(c["theme_id"], {}))}
+            checks = [("", c.get("series_code"), c.get("series_adj"), c.get("route_used")),
+                      ("exec_", c.get("exec_code"), "raw" if c.get("exec_rows") else "", c.get("exec_route"))]
+            for prefix, code, adj, route in checks:
+                if not code or not adj:
+                    continue
+                sp = store.span(con, code, adj)
+                if str(sp["rows"] or "") != str(c.get(f"{prefix}rows") or ""):
+                    problems.append(f"行数不符 {c['theme_id']} {code}/{adj}：bars {sp['rows']}，coverage {c.get(f'{prefix}rows')}")
+                if sp["rows"] and (sp["sources"] != 1 or sp["source"] != route):
+                    problems.append(f"来源不符 {c['theme_id']} {code}/{adj}：bars {sp['source']}，coverage {route}")
+        have = {(r[0], r[1]) for r in con.execute("SELECT DISTINCT code, adj FROM bars")}
+        problems += [f"清单外序列 {code}/{adj}" for code, adj in sorted(have - referenced)]
+    finally:
+        con.close()
     return problems
 
 
-def compare(ref: Path, raw: Path, *, tol: float = 0.0015, out: Path | None = None) -> dict:
-    """重叠区间逐日比对收盘价（如仓库 data/kline_*.csv 的 09-14 腾讯快照 vs data/raw）。
-    差值 = raw − ref；tol 默认 1.5 个最小价位（0.001），避免三位小数的四舍五入被当成阶跃。腾讯 qfq 是减法复权：与不复权相比，差值在两次除息之间恒定、除息日跳变，最后一次除息后为 0；
+def _read_csv(path: Path) -> list[dict]:
+    with open(path, encoding="utf-8", newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def compare(ref: Path, code: str, *, adj: str = "raw", db: Path = DB.MARKET_DB, tol: float = 0.0015, out: Path | None = None) -> dict:
+    """重叠区间逐日比对收盘价（如 09-14 腾讯快照 data/kline_*.csv vs 库里的序列 code/adj）。
+    差值 = 库 − ref；tol 默认 1.5 个最小价位（0.001），避免三位小数的四舍五入被当成阶跃。腾讯 qfq 是减法复权：与不复权相比，差值在两次除息之间恒定、除息日跳变，最后一次除息后为 0；
     列出差值变化的日期（候选除息日）逐条解释，其余不一致需人工查。"""
-    a = {r["date"][:10]: float(r["close"]) for r in store.read(ref) if r.get("close")}
-    b = {r["date"][:10]: float(r["close"]) for r in store.read(raw) if r.get("close")}
+    a = {r["date"][:10]: float(r["close"]) for r in _read_csv(ref) if r.get("close")}
+    con = DB.connect(db, readonly=True)
+    try:
+        b = {r["date"]: r["close"] for r in store.read(con, code, adj) if r.get("close") is not None}
+    finally:
+        con.close()
     days = sorted(set(a) & set(b))
     diffs = [(d, a[d], b[d], round(b[d] - a[d], 6)) for d in days]
     steps = [{"date": q[0], "diff_before": p[3], "diff_after": q[3]} for p, q in zip(diffs, diffs[1:]) if abs(q[3] - p[3]) > tol]
@@ -509,6 +583,6 @@ def compare(ref: Path, raw: Path, *, tol: float = 0.0015, out: Path | None = Non
         out.parent.mkdir(parents=True, exist_ok=True)
         with open(out, "w", encoding="utf-8", newline="") as f:
             w = csv.writer(f, lineterminator="\n")
-            w.writerow(["date", "ref_close", "raw_close", "diff"])
+            w.writerow(["date", "ref_close", "db_close", "diff"])
             w.writerows(diffs)
     return res

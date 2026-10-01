@@ -1,11 +1,12 @@
-"""python -m src.data <命令>
+"""python -m src.data <命令>（库默认 data/market.sqlite，--db 可换）
 
-    probe    [--end D] [--start D] [--only T01,T02] [--record DIR]   → outputs/data/coverage.csv
-    backfill --end 2026-09-30 [--start D] [--exec-start D] [--only …] → data/raw/*.csv + coverage
+    probe    [--end D] [--start D] [--only T01,T02] [--record DIR]   → coverage 写进库
+    backfill --end 2026-09-30 [--start D] [--exec-start D] [--only …] → bars + coverage
     update   [--end D] [--only …]                                     增量（往回多拉 10 天）
-    package  --end 2026-09-30 [--force]                               → outputs/research-package-<end>/
-    verify   <包目录>                                                  按 MANIFEST.sha256 复验
-    compare  <参考.csv> <raw.csv> [--out diff.csv]                     重叠区间逐日比对收盘
+    calendar <交易日清单文件> [--replace]                               astra 生成的交易日 → calendar 表
+    package  --end 2026-09-30 [--force] [--out-dir outputs]           → outputs/research-package-<end>.sqlite（+ .MANIFEST.json）
+    verify   <包.sqlite>                                               sha256、integrity_check、行数、截断、来源
+    compare  <参考.csv> <code> [--adj raw|hfq] [--out diff.csv]        重叠区间逐日比对收盘
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from . import db as DB
 from . import runner
 
 
@@ -40,32 +42,42 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--record", type=Path, default=None, help="把原始响应存到该目录（替换构造的 fixtures 用）")
         if name == "package":
             p.add_argument("--force", action="store_true")
+            p.add_argument("--out-dir", type=Path, default=runner.PKG_ROOT)
+    p = sub.add_parser("calendar")
+    p.add_argument("file", type=Path)
+    p.add_argument("--replace", action="store_true", help="整表换成该文件（默认与已有的日子取并集）")
     p = sub.add_parser("verify")
-    p.add_argument("dir", type=Path)
+    p.add_argument("package", type=Path)
     p = sub.add_parser("compare")
     p.add_argument("ref", type=Path)
-    p.add_argument("raw", type=Path)
+    p.add_argument("code")
+    p.add_argument("--adj", choices=["raw", "hfq"], default="raw")
     p.add_argument("--out", type=Path, default=None)
+    for name, sp in sub.choices.items():
+        if name != "verify":
+            sp.add_argument("--db", type=Path, default=DB.MARKET_DB)
     a = ap.parse_args(argv)
 
     if a.cmd == "probe":
-        covs = runner.probe(a.end, start=a.start, only=a.only, record=a.record)
+        covs = runner.probe(a.end, start=a.start, only=a.only, record=a.record, db=a.db)
         panel = [c for c in covs if c["status"] in ("retained", "flagged")]
         print(f"面板容器 {len(panel)}：有路由 {sum(1 for c in panel if c['route_used'])}，"
-              f"error {sum(1 for c in panel if c['error'])} → {runner.OUT_DIR / 'coverage.csv'}")
+              f"error {sum(1 for c in panel if c['error'])} → {a.db}")
     elif a.cmd == "backfill":
-        runner.backfill(a.end, start=a.start, exec_start=a.exec_start, only=a.only)
+        runner.backfill(a.end, start=a.start, exec_start=a.exec_start, only=a.only, db=a.db)
     elif a.cmd == "update":
-        rep = runner.update(a.end, only=a.only)
-        print(f"更新 {sum(1 for r in rep if r.get('ok'))} / {len(rep)} 个文件")
+        rep = runner.update(a.end, only=a.only, db=a.db)
+        print(f"更新 {sum(1 for r in rep if r.get('ok'))} / {len(rep)} 条序列")
+    elif a.cmd == "calendar":
+        runner.load_calendar(a.file, replace=a.replace, db=a.db)
     elif a.cmd == "package":
-        runner.package(a.end, force=a.force)
+        runner.package(a.end, force=a.force, db=a.db, pkg_root=a.out_dir)
     elif a.cmd == "verify":
-        problems = runner.verify(a.dir)
+        problems = runner.verify(a.package)
         print("通过" if not problems else "\n".join(problems))
         return 1 if problems else 0
     elif a.cmd == "compare":
-        print(json.dumps(runner.compare(a.ref, a.raw, out=a.out), ensure_ascii=False, indent=1))
+        print(json.dumps(runner.compare(a.ref, a.code, adj=a.adj, db=a.db, out=a.out), ensure_ascii=False, indent=1))
     return 0
 
 

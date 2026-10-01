@@ -8,6 +8,7 @@ Python 层的校验只为给出可读的错误，绕过它直接写 SQL 同样�
   没注册该函数的连接写不进台账行。注入时钟只用于回放：必须 replay=True，且不能是正式台账库；
   库在第一次打开时记下时钟模式（real / replay），之后用另一种模式打开即拒绝——回放的卡永远进不了正式库。
 - 边界：拿到数据库文件的人仍可 DROP TRIGGER——存储层防误改和流程绕行，防不了蓄意篡改；文件应只由台账进程写入。
+- 库文件入 Git（replan §11）：journal_mode = DELETE，提交前不留 -journal / -wal。测试只许连临时库（ETF_LEDGER_TESTING 置位时拒绝默认库）。
 """
 from __future__ import annotations
 
@@ -19,14 +20,16 @@ from pathlib import Path
 from typing import Callable
 from zoneinfo import ZoneInfo
 
+from src.data.db import DbError, refuse_default_in_tests
+
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = Path(__file__).with_name("schema.sql")
 FIXED_SOURCES = ROOT / "docs" / "etf-fixed-sources-v1.csv"
-DEFAULT_DB = ROOT / "data" / "ledger.sqlite"          # 不入 Git（.gitignore：*.sqlite）
+DEFAULT_DB = ROOT / "data" / "ledger.sqlite"          # 入 Git（replan §11）
 BEIJING = ZoneInfo("Asia/Shanghai")
 
 APPEND_ONLY = ("cards", "evidence", "strength_scores", "entries", "daily", "exit_signals", "exits", "finals", "voids",
-               "source_loads", "fixed_sources")
+               "source_loads", "fixed_sources", "ew_daily", "job_days")
 CARD_FIELDS = (
     "id", "created_at", "close_date", "scan_key", "container", "instrument_code", "instrument_name", "research_index_code",
     "trigger_type", "state_at_entry", "thesis", "evidence_status", "expectation_horizon_days", "expectation_target_excess_pct",
@@ -40,7 +43,8 @@ FROZEN_FIELDS = CARD_FIELDS + ("recorded_at",)
 EVIDENCE_FIELDS = ("source_id", "published_at", "summary", "url", "first_seen_at", "available_at", "snapshot_path", "snapshot_sha256")
 SCORING_RULE = "schema-v1-§3"          # 菜单第 1 项（按超额与期限）
 SCORING_RULE_R = "schema-v1.1-R"        # 菜单第 2 项（按 R 倍数，规则卡；v1.1-c）
-SCHEMA_VERSION = "v1.1-g"               # v1.1-g：出场信号表 exit_signals，出场引用信号；之前建的库拒绝打开（v1.1-f：exit_signal_close）
+SCHEMA_VERSION = "v1.1-g.1"             # v1.1-g.1：等权日收益 ew_daily 与已处理交易日 job_days 进库（replan §11），记账口径仍是 v1.1-g；
+                                         # 之前建的库拒绝打开（v1.1-g：出场信号表 exit_signals；v1.1-f：exit_signal_close）
 
 
 class LedgerError(ValueError):
@@ -95,6 +99,10 @@ class Ledger:
             raise LedgerError("注入时钟只用于回放：请传 replay=True，并使用单独的回放库")
         if replay and str(path) != ":memory:" and Path(path).resolve() == DEFAULT_DB.resolve():
             raise LedgerError("回放不能写正式台账库")
+        try:
+            refuse_default_in_tests(path, DEFAULT_DB)
+        except DbError as e:
+            raise LedgerError(str(e)) from e
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.clock, self._frozen, self.sources_path = clock or beijing_now, None, Path(sources)
@@ -103,6 +111,7 @@ class Ledger:
         self.conn.create_function("ledger_now", 0, lambda: self._frozen or self.clock())
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA recursive_triggers = ON")                # 第二道防线：REPLACE 的隐式删除也触发 DELETE 触发器
+        self.conn.execute("PRAGMA journal_mode = DELETE")                  # 入 Git 的库不留 -wal / -shm
         tables = {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         if tables:                                    # 先查版本再建表：旧库不能被 IF NOT EXISTS 补上半套新触发器
             old = dict(self.conn.execute("SELECT key, value FROM ledger_meta").fetchall()) if "ledger_meta" in tables else {}
@@ -241,7 +250,23 @@ class Ledger:
     def void(self, card_id: str, reason: str, voided_at: str | None = None) -> None:
         self._tx(lambda: self._insert("voids", {"card_id": card_id, "reason": reason, "voided_at": voided_at or self.now()}))
 
+    def record_ew(self, day: str, ew_return: float, ew_level: float, n_containers: int) -> None:
+        """等权日收益追加一行（v1.1-e；库内表，只追加，点位逐日连乘由触发器核对）。"""
+        self._tx(lambda: self._insert("ew_daily", {"date": day, "ew_return": ew_return, "ew_level": ew_level,
+                                                   "n_containers": n_containers}))
+
+    def mark_processed(self, day: str) -> None:
+        """每日任务跑完 day（台账流程未被阻断）后记一笔；已记过则不动。"""
+        if day not in self.processed_days():
+            self._tx(lambda: self._insert("job_days", {"day": day}))
+
     # ------------------------------------------------------------ 读
+    def ew_rows(self) -> dict[str, tuple[float, float, int]]:
+        return {r[0]: (r[1], r[2], r[3]) for r in self.conn.execute("SELECT date, ew_return, ew_level, n_containers FROM ew_daily")}
+
+    def processed_days(self) -> set[str]:
+        return {r[0] for r in self.conn.execute("SELECT day FROM job_days")}
+
     def card(self, card_id: str) -> dict | None:
         r = self.conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
         return dict(r) if r else None
