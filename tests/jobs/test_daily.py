@@ -274,7 +274,16 @@ class Replay(unittest.TestCase):
 
     def test_mfe_frozen_after_the_signal_matches_the_engine(self):
         """v1.1-h 第 1 条：跌破失效位次日没有开盘价、当天收盘创新高（103 > 此前最高 101）→ 顺延期间 MFE / MAE 不变，
-        出场时的 MFE 等于引擎的 mfe_R（引擎在 exit_flag 之后不再更新 hi_close）。"""
+        出场时的 MFE 等于引擎的 mfe_R（引擎在 exit_flag 之后不再更新 hi_close）；信号日那一行照常按当天收盘更新。"""
+        (lp, lb), _ = self.deferred_path([100.5, 101.0, 100.0, 95.5], [90.0, 97.5], {1: np.nan, 2: 97.2})
+        self.replay(lp, lb)                                                                      # 顺延日收盘创新低：MAE 也不动
+        lows = self.L.daily_rows("T-2026-001")
+        sig_low = next(r for r in lows if r["close"] == 95.5)
+        deferred_low = next(r for r in lows if r["close"] == 90.0)
+        self.assertLess(deferred_low["r_current"], sig_low["mae"])
+        self.assertEqual((deferred_low["mfe"], deferred_low["mae"]), (sig_low["mfe"], sig_low["mae"]))
+        self.assertAlmostEqual(sig_low["mae"], sig_low["r_current"], places=6)                 # 信号日那一行：MAE 取到当天的跌破收盘
+        self.new_ledger()
         (panel, bench), b = self.deferred_path([100.5, 101.0, 100.0, 95.5], [103.0, 97.5], {1: np.nan, 2: 97.2})
         self.replay(panel, bench)
         cid = "T-2026-001"
@@ -335,6 +344,45 @@ class Replay(unittest.TestCase):
         reps = {r.day: r for r in self.replay(panel, bench)}
         self.assertEqual(reps[fill].entries, ["T-2026-001"])
         self.assertEqual(reps["2026-02-27"].created, ["T-2026-002"])
+
+    def test_hole_does_not_jump_the_skip_order(self):
+        """I-26 的「数据断档」排在已持有、持仓已满之后（与引擎同一位置）：两种情况下作废原因与引擎 skipped 一致。"""
+        flat = [100.0] * len(DAYS)                                                            # 半导体不跌破：第一张卡一直持有
+        panel, bench = make_panel({("半导体", "2026-02-27"): -2.5}, semis=flat)
+        panel.loc[(panel["container"] == "半导体") & (panel["date"] == pd.Timestamp("2026-03-02")), "data_hole"] = 1
+        reps = {r.day: r for r in self.replay(panel, bench)}
+        self.assertEqual(reps["2026-03-02"].voids, [("T-2026-002", "已持有该容器（不加仓，I-09）")])
+        two = pd.concat([self.engine_signal(), self.engine_signal().assign(date=pd.Timestamp("2026-02-27"), z_month=-2.5)])
+        res = simulate(panel, Params(), DAYS[0], DAYS[-1], signals=two)
+        self.assertEqual(res.skipped["reason"].tolist(), ["已持有"])
+        self.new_ledger()                                                                     # 持仓已满 + 断档：仍记「持仓已满」
+        panel, bench = make_panel({("黄金", SIGNAL): -2.2})
+        fill = DAYS[DAYS.index(SIGNAL) + 1]
+        panel.loc[(panel["container"] == "黄金") & (panel["date"] == pd.Timestamp(fill)), "data_hole"] = 1
+        reps = {r.day: r for r in self.replay(panel, bench, days=DAYS[:30], p=Params(max_positions=1))}
+        self.assertEqual(reps[fill].voids, [("T-2026-002", "持仓已满")])
+        gold = self.engine_signal().assign(container="黄金", close=float(panel.loc[(panel["container"] == "黄金")
+                                                                                    & (panel["date"] == pd.Timestamp(SIGNAL)), "close"].iloc[0]),
+                                           z_month=-2.2, priority=1.0)
+        gold["stop_level"] = gold["close"] - 4.0
+        res = simulate(panel, Params(max_positions=1), DAYS[0], DAYS[29], signals=pd.concat([self.engine_signal(), gold]))
+        self.assertEqual(res.skipped[["container", "reason"]].values.tolist(), [["黄金", "持仓已满"]])
+
+    def test_late_manual_signal_defers_instead_of_crashing(self):
+        """owner 在次日 09:30 之后、当天任务之前才补记上一日的手动出场：不能按当天开盘成交（存储层会拒绝）——
+        任务记进报告并顺延到下一个开盘，不中断当天流程（复核 F1）。"""
+        panel, bench = make_panel(semis=[100.0] * len(DAYS))
+        i = DAYS.index("2026-02-10")
+        self.replay(panel, bench, days=DAYS[: i + 1])
+        self.now = f"{DAYS[i + 1]}T10:00"
+        self.L.signal_exit("T-2026-001", DAYS[i], "手动", 100.0, "收盘后没来得及")
+        rep = self.replay(panel, bench, days=[DAYS[i + 1]])[0]
+        self.assertTrue(any("顺延到下一个开盘" in x for x in rep.skipped), rep.skipped)
+        self.assertEqual(rep.exits, [])
+        rep = self.replay(panel, bench, days=[DAYS[i + 2]])[0]
+        self.assertEqual(rep.exits, ["T-2026-001"])
+        x = dict(self.L.conn.execute("SELECT * FROM exits WHERE card_id = 'T-2026-001'").fetchone())
+        self.assertEqual((x["exit_date"], x["exit_reason"], x["exit_signal_close"]), (DAYS[i + 2], "手动", 100.0))
 
     def test_lifecycle_matches_the_engine(self):
         panel, bench = make_panel()
@@ -705,6 +753,20 @@ class Pieces(unittest.TestCase):
         self.addCleanup(L.close)
         with self.assertRaisesRegex(ValueError, "data_hole"):                                 # 不默认 0
             DailyJob(L, panel.drop(columns="data_hole"), bench, rules=RULES, instruments=INST)
+        with self.assertRaisesRegex(ValueError, "data_hole"):
+            DailyJob(L, panel.assign(data_hole=np.where(panel.index == 3, np.nan, 0)), bench, rules=RULES, instruments=INST)
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        write_panel_db(tmp / "p.sqlite", panel.assign(data_hole=0), pd.DataFrame({"date": bench.index, "hs300": bench.values, "hs300_open": bench.values}), {})
+        con = sqlite3.connect(tmp / "p.sqlite")
+        con.execute("ALTER TABLE panel DROP COLUMN data_hole")                               # 旧面板库：没有 data_hole
+        con.commit()
+        con.close()
+        (tmp / "rules.json").write_text(json.dumps(CONFIG, ensure_ascii=False), encoding="utf-8")
+        with self.assertRaisesRegex(SystemExit, "回放库未建"), mock.patch("builtins.print"):
+            jobs_main(["replay", "--panel", str(tmp / "p.sqlite"), "--from", "2026-01-02", "--to", "2026-01-30",
+                       "--rules", str(tmp / "rules.json"), "--db", str(tmp / "r.sqlite"), "--calendar", str(tmp / "none.sqlite")])
+        self.assertFalse((tmp / "r.sqlite").exists())
 
     def test_daily_cli_on_market_db(self):
         """daily 的接线（P7）：只读行情库现算面板，已处理交易日与等权日收益都记在台账库；漏跑一天即拒绝，台账不动。"""

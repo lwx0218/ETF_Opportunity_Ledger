@@ -74,6 +74,14 @@ def next_weekday_open(d: str, trading_days=None) -> str:
     return f"{nxt.isoformat()}T09:30"
 
 
+def check_panel(panel: pd.DataFrame) -> None:
+    """I-25 / I-26：面板必须带 data_hole 列且只有 0 / 1——缺列或空值不默认 0（默认 0 等于把断档当行情）。"""
+    if "data_hole" not in panel:
+        raise ValueError("面板缺 data_hole 列（I-25）：用 research_frame / build 产出的面板")
+    if not panel["data_hole"].isin([0, 1]).all():
+        raise ValueError("面板的 data_hole 只能是 0 / 1（I-25），不能为空")
+
+
 def _num(x):
     return None if x is None or (isinstance(x, float) and not np.isfinite(x)) else float(x)
 
@@ -83,8 +91,7 @@ class DailyJob:
                  events_dir=None, scorer: Callable[[R.Candidate], dict | None] = default_scorer, p: Params = Params(),
                  bench_open: pd.Series | None = None, trading_days=None):
         self.L, self.p, self.rules, self.instruments, self.events_dir, self.scorer = ledger, p, rules, instruments, events_dir, scorer
-        if "data_hole" not in panel:                                     # I-25 / I-26：缺列不默认 0（默认 0 等于把断档当行情）
-            raise ValueError("面板缺 data_hole 列（I-25）：用 research_frame / build 产出的面板")
+        check_panel(panel)
         self.panel = panel.assign(date=pd.to_datetime(panel["date"])).sort_values(["date", "container"])
         self.bench = bench.sort_index()
         self.bench_open = bench_open.sort_index() if bench_open is not None else None
@@ -169,6 +176,10 @@ class DailyJob:
         for cid in self.L.cards_in("当下"):
             sig = self.L.exit_signal(cid, fill_date=D.date().isoformat())
             if sig is None or sig["signal_date"] >= D.date().isoformat():
+                continue
+            if sig["reason"] in ("手动", "论点作废") and sig["recorded_at"] >= f"{D.date()}T09:30":
+                # v1.1-g 第 2 条：声明晚于 D 09:30，不能按 D 的开盘成交（存储层也会拒绝）；顺延到之后第一个开盘，不中断当天流程
+                rep.skipped.append(f"{cid}：{sig['reason']}信号 {sig['recorded_at']} 才记录，晚于 {D.date()} 09:30，顺延到下一个开盘")
                 continue
             card = self.L.card(cid)
             r = self._row(card["container"], D)

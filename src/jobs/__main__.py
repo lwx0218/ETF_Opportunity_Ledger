@@ -24,7 +24,7 @@ from src.indicators.calendar import load_trading_days
 from src.ledger.store import DEFAULT_DB, Ledger
 from src.research.prereg_v1.panel import read_table
 from . import rules as R
-from .daily import DailyJob
+from .daily import DailyJob, check_panel
 from .guard import preflight
 from .live import coverage, instruments, live_panel
 
@@ -106,6 +106,10 @@ def main(argv: list[str] | None = None) -> int:
     b = read_table(a.bench or a.panel, "bench").assign(date=lambda x: pd.to_datetime(x["date"])).set_index("date")
     bench = b["hs300"]
     bench_open = b["hs300_open"] if "hs300_open" in b else None
+    try:
+        check_panel(panel)                                      # 先查面板再建回放库：旧面板库不留下一个空库
+    except ValueError as e:
+        raise SystemExit(f"面板不可用，回放库未建：{e}")
     trading_days = calendar_or_exit(a.calendar)
     state = {"now": ""}
     L = Ledger(a.db, clock=lambda: state["now"], replay=True)        # 正式台账库会被拒绝；回放库记为 replay 模式
