@@ -15,8 +15,9 @@ from pathlib import Path
 import pandas as pd
 
 ACTIVE_BEFORE_V1 = ("恐慌下轨", "事件驱动")
-TERMS_VERSION = "jobs-daily-v4"        # docs/jobs-daily.md 口径版本（v1：v1.1-e；v2：v1.1-f 证伪判定；v3：v1.1-g 出场信号持久化；
-                                       # v4：v1.1-h 出场信号边角 + I-26 断档行不做决策）；配置里显式确认后规则才启用
+TERMS_VERSION = "jobs-daily-v5"        # docs/jobs-daily.md 口径版本（v1：v1.1-e；v2：v1.1-f 证伪判定；v3：v1.1-g 出场信号持久化；
+                                       # v4：v1.1-h 出场信号边角 + I-26 断档行不做决策；v5：v1.1-i 信号时限、出场在断档顺延、
+                                       # 事件与排名不用断档行）；配置里显式确认后规则才启用
 RULE_R = {"scoring_rule": "schema-v1.1-R", "horizon_days": None, "target_excess_pct": None, "target_r": 2, "benchmark": "等权组合"}
 
 
@@ -40,7 +41,7 @@ class Candidate:
 
 def load_rule_config(path: Path, problems: list[str] | None = None) -> dict:
     """返回启用的规则 → 卡片预期：
-    {"confirmed_terms": "jobs-daily-v4",
+    {"confirmed_terms": "jobs-daily-v5",
      "恐慌下轨": {"enabled": true, "scoring_rule": "schema-v1.1-R", "horizon_days": null, "target_r": 2, "benchmark": "等权组合"},
      "事件驱动": {"enabled": true}}                                  # 事件卡的预期由草稿逐卡给
     confirmed_terms 不等于当前口径版本、或 enabled 不为真的规则不启用；恐慌规则的预期必须是菜单第 2 项（v1.1-c）。
@@ -107,6 +108,7 @@ def event_candidates(day_rows: pd.DataFrame, events_dir: Path | None, day: str) 
         ti, score, exp = (x if isinstance(x, dict) else {} for x in (e.get("thesis_invalidation"), e.get("agent_score"), e.get("expectation")))
         status, evidence = e.get("evidence_status"), e.get("evidence") or []
         why = ("当日无该容器的收盘或 ATR20" if r is None or not (r.atr20 > 0)
+               else "该容器当日数据断档（data_hole = 1，收盘与 ATR 是陈旧拷贝；v1.1-i 第 4 条）" if r.data_hole != 0
                else "论点为空或超过 80 字（不截断，退回重写）" if not thesis or len(thesis) > 80
                else "缺论点失效条件（A3：source_id / deadline / statement）" if not all(ti.get(k) for k in ("source_id", "deadline", "statement"))
                else "缺 agent 评分与理由（A1）" if score.get("score") is None or not score.get("reason")

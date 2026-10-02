@@ -1,6 +1,6 @@
 """收盘后的每日流程骨架（replan §3 P5）。一个交易日 D 依次：
 
-  1. 开盘离场：有未成交出场信号的卡按 D 开盘成交；D 无开盘价则顺延，信号不撤销（v1.1-g 第 3 条，与 V1 引擎的 exit_flag 一致）；
+  1. 开盘离场：有未成交出场信号的卡按 D 开盘成交；D 无开盘价或是数据断档（I-27）则顺延，信号不撤销（v1.1-g 第 3 条，与 V1 引擎的 exit_flag 一致）；
      同一信号日的「论点作废」在 D 09:30 前声明则覆盖止损类信号（v1.1-h 第 4 条）
   2. 开盘进场：上一交易日立的候选卡按 D 开盘成交；开盘不高于失效位、持仓已满、已持有该容器、D 是数据断档（I-26）、错过次日开盘 → 作废
      （A4：留在分母）
@@ -10,7 +10,7 @@
   5. 触发候选：只接「恐慌下轨」与「事件驱动」（A7），立卡即锁死
 
 幂等：每一步都先查台账已有的记录，同一天重跑不产生任何新行。所有价格都在卡片的研究序列上（后复权 / 全收益点位）。
-只验流程，不产出任何研究结论；记账口径按 schema v1.1-e ~ v1.1-h 与 I-26（docs/jobs-daily.md，jobs-daily-v4）。
+只验流程，不产出任何研究结论；记账口径按 schema v1.1-e ~ v1.1-i 与 I-26 / I-27（docs/jobs-daily.md，jobs-daily-v5）。
 """
 from __future__ import annotations
 
@@ -172,19 +172,17 @@ class DailyJob:
 
     def _exits(self, D, rep):
         """v1.1-g 第 3 条：出场信号在之后第一个有开盘价的交易日按开盘成交；原因与触发收盘取自信号。
-        v1.1-h 第 4 条：同一信号日在 D 09:30 前声明的「论点作废」覆盖止损类信号，出场引用它。"""
+        v1.1-h 第 4 条：同一信号日在 D 09:30 前声明的「论点作废」覆盖止损类信号，出场引用它。
+        I-27 / v1.1-i 第 3 条：D 是数据断档（开盘是陈旧收盘的拷贝）视同无开盘价，顺延到第一个非断档行。"""
         for cid in self.L.cards_in("当下"):
             sig = self.L.exit_signal(cid, fill_date=D.date().isoformat())
             if sig is None or sig["signal_date"] >= D.date().isoformat():
                 continue
-            if sig["reason"] in ("手动", "论点作废") and sig["recorded_at"] >= f"{D.date()}T09:30":
-                # v1.1-g 第 2 条：声明晚于 D 09:30，不能按 D 的开盘成交（存储层也会拒绝）；顺延到之后第一个开盘，不中断当天流程
-                rep.skipped.append(f"{cid}：{sig['reason']}信号 {sig['recorded_at']} 才记录，晚于 {D.date()} 09:30，顺延到下一个开盘")
-                continue
             card = self.L.card(cid)
             r = self._row(card["container"], D)
-            if r is None or not np.isfinite(r.open):
-                rep.skipped.append(f"{cid}：{sig['signal_date']} 的出场信号，{D.date()} 无开盘价，顺延（信号不撤销）")
+            if r is None or not np.isfinite(r.open) or r.data_hole == 1:
+                why = "数据断档" if r is not None and r.data_hole == 1 else "无开盘价"
+                rep.skipped.append(f"{cid}：{sig['signal_date']} 的出场信号，{D.date()} {why}，顺延（信号不撤销）")
                 continue
             entry = self._entry(cid)
             r_unit = entry["entry_price"] - card["invalidation_price"]
@@ -251,8 +249,15 @@ class DailyJob:
             self.L.enter(cid, D.date().isoformat(), px, round(w * 100, 6))
             rep.entries.append(cid)
 
+    @staticmethod
+    def _ranks(today: pd.DataFrame) -> pd.Series:
+        """当日 rs_1m 横截面名次（1 = 最强）。断档行的 rs_1m 是陈旧收盘算的，排名前置空：不占名次（v1.1-i 第 4 条，
+        与 V1 的 rs_top_flags 同一口径）。"""
+        rs = today["rs_1m"].where(today["data_hole"].eq(0))
+        return pd.Series(rs.to_numpy(), index=today["container"].to_numpy()).rank(ascending=False, method="min")
+
     def _daily(self, D, today, rep):
-        ranks = today.set_index("container")["rs_1m"].rank(ascending=False, method="min")
+        ranks = self._ranks(today)
         hs = self._level(self.bench, D)
         for cid in self.L.cards_in("当下", "过去"):
             card = self.L.card(cid)
@@ -332,7 +337,7 @@ class DailyJob:
             ev, problems = R.event_candidates(today, self.events_dir, day)
             cands += ev
             rep.skipped += problems
-        ranks = today.set_index("container")["rs_1m"].rank(ascending=False, method="min")
+        ranks = self._ranks(today)
         for c in sorted(cands, key=lambda c: (c.priority, c.container)):
             key = f"{day}|{c.container}|{c.trigger_type}{c.key_suffix}"
             if self.L.find_by_scan_key(key):
