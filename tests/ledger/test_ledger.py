@@ -302,6 +302,13 @@ class SchemaV11(Base):
             L.close()
             with self.assertRaisesRegex(LedgerError, "schema 是 v1.1-g.1，"):
                 Ledger(v11g1, clock=lambda: T0, replay=True)
+            v11h = Path(d) / "v11h.sqlite"                                         # P6e-2 的 v1.1-h 库：没有手动信号时限（旧触发器不会被替换）
+            L = Ledger(v11h, clock=lambda: T0, replay=True)
+            L.conn.execute("DROP TRIGGER ledger_meta_no_update")
+            L.conn.execute("UPDATE ledger_meta SET value = 'v1.1-h' WHERE key = 'schema'")
+            L.close()
+            with self.assertRaisesRegex(LedgerError, "schema 是 v1.1-h，"):
+                Ledger(v11h, clock=lambda: T0, replay=True)
             v11g = Path(d) / "v11g.sqlite"                                         # P6d 的 v1.1-g 库：没有 ew_daily / job_days
             L = Ledger(v11g, clock=lambda: T0, replay=True)
             L.conn.execute("DROP TRIGGER ledger_meta_no_update")
@@ -400,9 +407,20 @@ class FalsificationV11f(Base):
                 with self.assertRaisesRegex(LedgerError, "取自出场信号"):
                     self.L.exit(cid, exit_date="2026-11-20", exit_reason=reason, manual_reason="换个说法" if manual else "x", **base)
                 self.L.exit(cid, exit_date="2026-11-20", exit_reason=reason, manual_reason=manual, **base)
-        fri = self.entered()                                                          # 周五的信号：时限是下周一 09:30
-        self.at("2026-11-20T16:00").L.append_daily(fri, dict(date="2026-11-20", close=10.6, state="NEUTRAL"))
-        self.at("2026-11-22T20:00").L.signal_exit(fri, "2026-11-20", "手动", 10.6, "周末想清楚")
+        for when, ok in (("2026-11-22T20:00", True), ("2026-11-23T09:29", True), ("2026-11-23T09:30", False)):   # 周五的信号：时限是下周一 09:30
+            fri = self.entered()
+            self.at("2026-11-20T16:00").L.append_daily(fri, dict(date="2026-11-20", close=10.6, state="NEUTRAL"))
+            with self.subTest(when):
+                if ok:
+                    self.at(when).L.signal_exit(fri, "2026-11-20", "手动", 10.6, "周末想清楚")
+                else:
+                    with self.assertRaisesRegex(LedgerError, "09:30 前记录"):           # 09:30 整即拒绝
+                        self.at(when).L.signal_exit(fri, "2026-11-20", "手动", 10.6, "周末想清楚")
+        wknd = self.entered()                                                         # 后备检查：成交日落在周末这类非常路径
+        self.at("2026-11-20T16:00").L.append_daily(wknd, dict(date="2026-11-20", close=10.6, state="NEUTRAL"))
+        self.at("2026-11-21T10:00").L.signal_exit(wknd, "2026-11-20", "手动", 10.6, "周六想清楚")
+        with self.assertRaisesRegex(LedgerError, "成交那天开盘前记录"):
+            self.L.exit(wknd, exit_date="2026-11-21", exit_reason="手动", manual_reason="周六想清楚", **base)
         late = self.entered()                                                         # 止损信号补跑晚记：照常成交
         self.at("2026-11-19T16:00").L.append_daily(late, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))
         self.at("2026-11-21T20:00").L.signal_exit(late, "2026-11-19", "失效位", 9.0)

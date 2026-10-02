@@ -108,7 +108,7 @@ def event_candidates(day_rows: pd.DataFrame, events_dir: Path | None, day: str) 
         ti, score, exp = (x if isinstance(x, dict) else {} for x in (e.get("thesis_invalidation"), e.get("agent_score"), e.get("expectation")))
         status, evidence = e.get("evidence_status"), e.get("evidence") or []
         why = ("当日无该容器的收盘或 ATR20" if r is None or not (r.atr20 > 0)
-               else "该容器当日数据断档（data_hole = 1，收盘与 ATR 是陈旧拷贝；v1.1-i 第 4 条）" if getattr(r, "data_hole", 0) != 0
+               else "该容器当日数据断档（data_hole = 1，收盘与 ATR 是陈旧拷贝；v1.1-i 第 4 条）" if r.data_hole != 0
                else "论点为空或超过 80 字（不截断，退回重写）" if not thesis or len(thesis) > 80
                else "缺论点失效条件（A3：source_id / deadline / statement）" if not all(ti.get(k) for k in ("source_id", "deadline", "statement"))
                else "缺 agent 评分与理由（A1）" if score.get("score") is None or not score.get("reason")

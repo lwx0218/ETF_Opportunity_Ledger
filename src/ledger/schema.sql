@@ -372,7 +372,8 @@ BEGIN
                          WHERE t.card_id = NEW.card_id AND (t.seq = 1 OR t.recorded_at < NEW.exit_date || 'T09:30'))
            AND s.reason IS NEW.exit_reason AND s.manual_reason IS NEW.manual_reason AND s.signal_close IS NEW.exit_signal_close);
     -- v1.1-g 第 2 条：owner 在某日收盘后声明手动 / 论点作废，成交在之后的开盘——声明必须早于成交那天 09:30
-    -- （否则等于看了当天盘中走势再拿更早的开盘价成交）。止损信号由每日任务写，补跑时记录时刻会晚，不受这条限制
+    -- （否则等于看了当天盘中走势再拿更早的开盘价成交）。止损信号由每日任务写，补跑时记录时刻会晚，不受这条限制。
+    -- v1.1-i 第 1 条（信号插入时的时限）之后，按工作日成交不会触发这一条，只作后备（成交日落在周末这类非常路径）
     SELECT RAISE(ABORT, '手动 / 论点作废的出场信号必须在成交那天开盘前记录')
      WHERE EXISTS (SELECT 1 FROM exit_signals WHERE card_id = NEW.card_id AND seq = 1 AND reason IN ('手动', '论点作废')
                       AND recorded_at >= NEW.exit_date || 'T09:30');

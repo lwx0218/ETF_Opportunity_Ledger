@@ -405,6 +405,7 @@ class Replay(unittest.TestCase):
         sig = next(r for r in rows if r["date"] == DAYS[b])
         self.assertAlmostEqual(sig["mfe"], t["mfe_R"], places=6)
         self.assertTrue(all((r["mfe"], r["mae"]) == (sig["mfe"], sig["mae"]) for r in rows if DAYS[b] < r["date"] <= DAYS[b + 4]))
+        self.assertEqual([r["rs_1m_rank"] for r in rows if DAYS[b] < r["date"] < DAYS[b + 4]], [None] * 3)   # 断档日自己的名次为空
         self.new_ledger()                                                                    # 对照：不标断档，次日开盘离场（与 P6e-2 相同）
         self.replay(panel.assign(data_hole=0), bench)
         x0 = dict(self.L.conn.execute("SELECT * FROM exits WHERE card_id = 'T-2026-001'").fetchone())
