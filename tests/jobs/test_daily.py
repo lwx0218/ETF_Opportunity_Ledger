@@ -368,21 +368,65 @@ class Replay(unittest.TestCase):
         res = simulate(panel, Params(max_positions=1), DAYS[0], DAYS[29], signals=pd.concat([self.engine_signal(), gold]))
         self.assertEqual(res.skipped[["container", "reason"]].values.tolist(), [["黄金", "持仓已满"]])
 
-    def test_late_manual_signal_defers_instead_of_crashing(self):
-        """owner 在次日 09:30 之后、当天任务之前才补记上一日的手动出场：不能按当天开盘成交（存储层会拒绝）——
-        任务记进报告并顺延到下一个开盘，不中断当天流程（复核 F1）。"""
-        panel, bench = make_panel(semis=[100.0] * len(DAYS))
+    def test_late_manual_signal_uses_the_next_close(self):
+        """v1.1-i 第 1 条：X+1 09:31 补记 X 日的手动信号被拒（存储层），只能用 X+1 的收盘作信号行，X+2 开盘成交；09:29 记的照常 X+1 开盘成交。"""
+        panel, bench = make_panel(semis=[100.0 + 0.01 * k for k in range(len(DAYS))])
         i = DAYS.index("2026-02-10")
-        self.replay(panel, bench, days=DAYS[: i + 1])
-        self.now = f"{DAYS[i + 1]}T10:00"
-        self.L.signal_exit("T-2026-001", DAYS[i], "手动", 100.0, "收盘后没来得及")
-        rep = self.replay(panel, bench, days=[DAYS[i + 1]])[0]
-        self.assertTrue(any("顺延到下一个开盘" in x for x in rep.skipped), rep.skipped)
-        self.assertEqual(rep.exits, [])
-        rep = self.replay(panel, bench, days=[DAYS[i + 2]])[0]
-        self.assertEqual(rep.exits, ["T-2026-001"])
+        for when, signal_day, fill_day in (("T09:31", DAYS[i + 1], DAYS[i + 2]), ("T09:29", DAYS[i], DAYS[i + 1])):
+            with self.subTest(when):
+                self.new_ledger()
+                self.replay(panel, bench, days=DAYS[: i + 1])
+                self.now = f"{DAYS[i + 1]}{when}"
+                if when == "T09:31":
+                    with self.assertRaisesRegex(LedgerError, "09:30 前记录"):
+                        self.L.signal_exit("T-2026-001", DAYS[i], "手动", self.L.daily_rows("T-2026-001")[-1]["close"], "收盘后没来得及")
+                    self.replay(panel, bench, days=[DAYS[i + 1]])
+                    self.now = f"{DAYS[i + 1]}T20:00"                                         # 改用 X+1 的收盘
+                close = next(r["close"] for r in self.L.daily_rows("T-2026-001") if r["date"] == signal_day)
+                self.L.signal_exit("T-2026-001", signal_day, "手动", close, "收盘后决定")
+                self.replay(panel, bench, days=DAYS[i + 1: i + 3] if when == "T09:29" else [DAYS[i + 2]])
+                x = dict(self.L.conn.execute("SELECT * FROM exits WHERE card_id = 'T-2026-001'").fetchone())
+                self.assertEqual((x["exit_date"], x["exit_reason"], x["exit_signal_close"]), (fill_day, "手动", close))
+
+    def test_stop_during_a_hole_fills_after_it_like_the_engine(self):
+        """I-27 / v1.1-i 第 3 条：跌破失效位后接着 3 行断档（开盘是陈旧拷贝）→ 出场信号保留，断档后第一根真 K 线开盘成交；
+        与 V1 引擎逐项相同（出场日、价、原因、R、MFE），顺延期间 MFE / MAE 冻结。"""
+        (panel, bench), b = self.deferred_path([100.5, 101.0, 100.0, 95.5], [95.5, 95.5, 95.5, 97.0, 97.5], {4: 96.8})
+        for k in (1, 2, 3):
+            panel.loc[(panel["container"] == "半导体") & (panel["date"] == pd.Timestamp(DAYS[b + k])), "data_hole"] = 1
+        reps = {r.day: r for r in self.replay(panel, bench)}
+        self.assertTrue(all(any("数据断档，顺延" in x for x in reps[DAYS[b + k]].skipped) for k in (1, 2, 3)))
         x = dict(self.L.conn.execute("SELECT * FROM exits WHERE card_id = 'T-2026-001'").fetchone())
-        self.assertEqual((x["exit_date"], x["exit_reason"], x["exit_signal_close"]), (DAYS[i + 2], "手动", 100.0))
+        t = simulate(panel, Params(), DAYS[0], DAYS[-1], signals=self.engine_signal()).trades.iloc[0]
+        self.assertEqual((x["exit_date"], x["exit_price"], x["exit_reason"]), (DAYS[b + 4], 96.8, "失效位"))
+        self.assertEqual((t["exit_date"].date().isoformat(), t["exit_px"], t["exit_reason"]), (x["exit_date"], x["exit_price"], x["exit_reason"]))
+        self.assertAlmostEqual(x["realized_r"], t["R"], places=6)
+        rows = self.L.daily_rows("T-2026-001")
+        sig = next(r for r in rows if r["date"] == DAYS[b])
+        self.assertAlmostEqual(sig["mfe"], t["mfe_R"], places=6)
+        self.assertTrue(all((r["mfe"], r["mae"]) == (sig["mfe"], sig["mae"]) for r in rows if DAYS[b] < r["date"] <= DAYS[b + 4]))
+        self.new_ledger()                                                                    # 对照：不标断档，次日开盘离场（与 P6e-2 相同）
+        self.replay(panel.assign(data_hole=0), bench)
+        x0 = dict(self.L.conn.execute("SELECT * FROM exits WHERE card_id = 'T-2026-001'").fetchone())
+        self.assertEqual(x0["exit_date"], DAYS[b + 1])
+
+    def test_hole_container_does_not_take_a_rank(self):
+        """v1.1-i 第 4 条（P6e-2 复核的半导体用例）：断档容器的陈旧 rs_1m 很高也不挤占名次——每日行的 rs_1m_rank
+        与立卡时冻结的 crowd_rs_1m_rank 都不受它影响；断档容器自己的名次为空。"""
+        d = DAYS[DAYS.index(SIGNAL) + 3]
+        panel, bench = make_panel()
+        for day in (SIGNAL, d):
+            row = (panel["container"] == "黄金") & (panel["date"] == pd.Timestamp(day))
+            panel.loc[row, ["rs_1m", "data_hole"]] = [0.5, 1]
+        self.replay(panel, bench, days=DAYS[: DAYS.index(d) + 1])
+        self.assertEqual(self.L.card("T-2026-001")["crowd_rs_1m_rank"], 1)
+        row = next(r for r in self.L.daily_rows("T-2026-001") if r["date"] == d)
+        self.assertEqual(row["rs_1m_rank"], 1)
+        today = panel[panel["date"] == pd.Timestamp(d)]
+        self.assertTrue(np.isnan(DailyJob._ranks(today)["黄金"]))
+        self.new_ledger()                                                                    # 对照：不标断档时黄金占第 1、半导体被挤到第 2
+        self.replay(panel.assign(data_hole=0), bench, days=DAYS[: DAYS.index(d) + 1])
+        self.assertEqual(self.L.card("T-2026-001")["crowd_rs_1m_rank"], 2)
 
     def test_lifecycle_matches_the_engine(self):
         panel, bench = make_panel()
@@ -524,6 +568,24 @@ class Replay(unittest.TestCase):
         self.assertEqual(reps["2026-03-11"].entries, [cid])
         self.assertTrue(any("论点失效判定日" in x for x in reps["2026-04-10"].reminders))
 
+    def test_event_draft_on_a_hole_day_is_returned(self):
+        """v1.1-i 第 4 条：事件草稿的容器当日数据断档（收盘、ATR 都是陈旧拷贝）→ 不立卡，退回并注明；不断档照常立卡。"""
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        draft = {"container": "黄金", "thesis": "构造事件", "evidence_status": "已检索无证据", "evidence": [],
+                 "agent_score": {"score": 1, "reason": "弱"}, "expectation": EVENT_EXP,
+                 "thesis_invalidation": {"source_id": "ENE-EIA-WPSR", "deadline": "2026-06-30", "statement": "构造"}}
+        (d / "2026-03-10.json").write_text(json.dumps([draft], ensure_ascii=False), encoding="utf-8")
+        panel, bench = make_panel()
+        holed = panel.copy()
+        holed.loc[(holed["container"] == "黄金") & (holed["date"] == pd.Timestamp("2026-03-10")), "data_hole"] = 1
+        rep = {r.day: r for r in self.replay(holed, bench, days=[x for x in DAYS if x <= "2026-03-10"], events_dir=d)}["2026-03-10"]
+        self.assertEqual(rep.created, [])
+        self.assertTrue(any("数据断档" in x and "未立卡" in x for x in rep.skipped), rep.skipped)
+        self.new_ledger()
+        rep = {r.day: r for r in self.replay(panel, bench, days=[x for x in DAYS if x <= "2026-03-10"], events_dir=d)}["2026-03-10"]
+        self.assertEqual(len(rep.created), 1)
+
     def test_event_drafts_are_validated_one_by_one(self):
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d)
@@ -637,10 +699,10 @@ class Pieces(unittest.TestCase):
         self.assertEqual(self.problems, [])                                                    # 全关：没有请求，不算问题
 
     def test_rule_config_requires_confirmed_terms_and_enabled(self):
-        self.assertEqual(R.TERMS_VERSION, "jobs-daily-v4")
+        self.assertEqual(R.TERMS_VERSION, "jobs-daily-v5")
         self.assertEqual(self.load(CONFIG), RULES)
         self.assertEqual(self.load({**CONFIG, "confirmed_terms": None}), {})                  # 没确认记账口径：不启用
-        for old in ("jobs-daily-v1", "jobs-daily-v2", "jobs-daily-v3"):                      # 旧口径（v1.1-h 之前）的确认不算数
+        for old in ("jobs-daily-v1", "jobs-daily-v2", "jobs-daily-v3", "jobs-daily-v4"):    # 旧口径（v1.1-i 之前）的确认不算数
             self.assertEqual(self.load({**CONFIG, "confirmed_terms": old}), {})
         self.assertEqual(set(self.load({**CONFIG, "事件驱动": {"enabled": False}})), {"恐慌下轨"})
         self.assertEqual(set(self.load({**CONFIG, "恐慌下轨": {**CONFIG["恐慌下轨"], "enabled": "true"}})), {"事件驱动"})
@@ -825,7 +887,7 @@ class Pieces(unittest.TestCase):
             self.assertEqual(jobs_main(args), 0)
         L = sqlite3.connect(tmp / "replay.sqlite")
         self.assertEqual(L.execute("SELECT value FROM ledger_meta WHERE key = 'clock'").fetchone()[0], "replay")
-        self.assertEqual(L.execute("SELECT value FROM ledger_meta WHERE key = 'schema'").fetchone()[0], "v1.1-h")
+        self.assertEqual(L.execute("SELECT value FROM ledger_meta WHERE key = 'schema'").fetchone()[0], "v1.1-i")
         self.assertEqual(L.execute("SELECT count(*) FROM cards").fetchone()[0], 1)
         ew = L.execute("SELECT min(date), max(date), (SELECT ew_level FROM ew_daily ORDER BY date LIMIT 1) FROM ew_daily").fetchone()
         self.assertEqual(ew, ("2026-01-02", "2026-03-31", 1.0))                                 # 回放的等权日收益记在回放库里

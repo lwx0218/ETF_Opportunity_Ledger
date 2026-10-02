@@ -43,8 +43,8 @@ FROZEN_FIELDS = CARD_FIELDS + ("recorded_at",)
 EVIDENCE_FIELDS = ("source_id", "published_at", "summary", "url", "first_seen_at", "available_at", "snapshot_path", "snapshot_sha256")
 SCORING_RULE = "schema-v1-§3"          # 菜单第 1 项（按超额与期限）
 SCORING_RULE_R = "schema-v1.1-R"        # 菜单第 2 项（按 R 倍数，规则卡；v1.1-c）
-SCHEMA_VERSION = "v1.1-h"               # v1.1-h：出场信号的五个边角（同日论点作废覆盖止损类信号 → exit_signals 加 seq；止损类信号收盘
-                                         # 低于当时生效的止损）；之前建的库拒绝打开（v1.1-g.1：ew_daily / job_days 进库；v1.1-g：exit_signals）
+SCHEMA_VERSION = "v1.1-i"               # v1.1-i：手动 / 论点作废第一条信号须在信号日后第一个工作日 09:30 前记录；之前建的库拒绝打开
+                                         # （v1.1-h：exit_signals 加 seq；v1.1-g.1：ew_daily / job_days 进库；v1.1-g：exit_signals）
 
 
 class LedgerError(ValueError):

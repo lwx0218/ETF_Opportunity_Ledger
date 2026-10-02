@@ -385,19 +385,24 @@ class FalsificationV11f(Base):
         with self.assertRaisesRegex(LedgerError, "已出场|已有出场信号"):
             self.L.signal_exit(cid, "2026-11-19", "手动", 9.0, "x")
 
-    def test_manual_signal_must_precede_the_fill_and_match(self):
-        """手动 / 论点作废：声明必须早于成交那天 09:30（收盘后决定、次日开盘成交，不能看了盘中再按开盘价成交）；
-        出场的理由必须取自信号。止损信号由每日任务写，补跑晚记不受这条限制。"""
+    def test_manual_signal_must_precede_the_next_open(self):
+        """v1.1-i 第 1 条：手动 / 论点作废的第一条信号须在信号日之后第一个工作日 09:30 前记录（与立卡时限同一口径）——
+        X+1 09:31 补记 X 日的被拒、09:29 可以；过了时限只能用下一个收盘作信号行。止损信号由每日任务写，补跑晚记不受限。"""
         base = dict(exit_price=10.4, realized_r=0.1, realized_excess_pct=0.5, holding_days=28, exit_signal_close=10.6)
-        cid = self.entered()
-        self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=10.6, state="NEUTRAL"))
-        self.at("2026-11-20T10:30").L.signal_exit(cid, "2026-11-19", "手动", 10.6, "盘中看到暴跌")   # 11-20 盘中才记
-        with self.assertRaisesRegex(LedgerError, "开盘前记录"):
-            self.L.exit(cid, exit_date="2026-11-20", exit_reason="手动", manual_reason="盘中看到暴跌", **base)
-        self.at("2026-11-23T09:35")
-        with self.assertRaisesRegex(LedgerError, "取自出场信号"):
-            self.L.exit(cid, exit_date="2026-11-23", exit_reason="手动", manual_reason="换个说法", **base)
-        self.L.exit(cid, exit_date="2026-11-23", exit_reason="手动", manual_reason="盘中看到暴跌", **base)   # 下一个开盘成交可以
+        for reason, manual in (("手动", "盘中看到暴跌"), ("论点作废", None)):
+            with self.subTest(reason):
+                cid = self.entered()
+                self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=10.6, state="NEUTRAL"))
+                with self.assertRaisesRegex(LedgerError, "09:30 前记录"):
+                    self.at("2026-11-20T09:31").L.signal_exit(cid, "2026-11-19", reason, 10.6, manual)
+                self.at("2026-11-20T09:29").L.signal_exit(cid, "2026-11-19", reason, 10.6, manual)
+                self.at("2026-11-20T16:00")
+                with self.assertRaisesRegex(LedgerError, "取自出场信号"):
+                    self.L.exit(cid, exit_date="2026-11-20", exit_reason=reason, manual_reason="换个说法" if manual else "x", **base)
+                self.L.exit(cid, exit_date="2026-11-20", exit_reason=reason, manual_reason=manual, **base)
+        fri = self.entered()                                                          # 周五的信号：时限是下周一 09:30
+        self.at("2026-11-20T16:00").L.append_daily(fri, dict(date="2026-11-20", close=10.6, state="NEUTRAL"))
+        self.at("2026-11-22T20:00").L.signal_exit(fri, "2026-11-20", "手动", 10.6, "周末想清楚")
         late = self.entered()                                                         # 止损信号补跑晚记：照常成交
         self.at("2026-11-19T16:00").L.append_daily(late, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))
         self.at("2026-11-21T20:00").L.signal_exit(late, "2026-11-19", "失效位", 9.0)
@@ -410,7 +415,7 @@ class FalsificationV11f(Base):
         self.at("2026-11-19T16:00").L.append_daily(cid, dict(date="2026-11-19", close=9.0, state="NEUTRAL"))
         self.at("2026-11-20T16:00").L.append_daily(cid, dict(date="2026-11-20", close=10.6, state="NEUTRAL"))
         with self.assertRaisesRegex(LedgerError, "不能补记更早的出场信号"):
-            self.L.signal_exit(cid, "2026-11-19", "手动", 9.0, "回头看")
+            self.L.signal_exit(cid, "2026-11-19", "失效位", 9.0)                    # 不受时限约束的止损信号也不能补记
         self.L.signal_exit(cid, "2026-11-20", "手动", 10.6, "收盘后决定")
         self.at("2026-11-23T09:35").L.exit(cid, exit_date="2026-11-23", exit_price=10.4, exit_reason="手动", manual_reason="收盘后决定",
                                            realized_r=0.1, realized_excess_pct=0.5, holding_days=29, exit_signal_close=10.6)
