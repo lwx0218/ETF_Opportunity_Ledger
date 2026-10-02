@@ -3,6 +3,7 @@
 运行：python -m unittest discover -s tests -v
 """
 import contextlib
+import hashlib
 import io
 import json
 import shutil
@@ -246,6 +247,63 @@ class HoleDecisionTests(unittest.TestCase):
         b, c = (random_entry_null(x, p, DATES[0], DATES[259], n_signals=40, reps=8, seed=3) for x in (gone, unmarked))
         np.testing.assert_array_equal(a, b)                                              # 与「断档行不在面板」时逐次相同
         self.assertFalse(np.array_equal(a, c))                                           # 对照：断档行进池，抽样就变了
+
+
+class HoleExitTests(unittest.TestCase):
+    """I-27：断档行对出场也视同无开盘价——exit_flag 保留，顺延到第一个非断档行按其开盘成交。"""
+    N = 40
+
+    def trade(self, closes, holes, opens=None):
+        pn = make({"A": closes, "B": flat(self.N)}, states={"A": {1: "XB"}}, rs={"A": {1: 1}},
+                  opens={"A": opens} if opens else None, holes={"A": holes} if holes else None)
+        return run(pn, n=self.N)
+
+    def path(self, breach_day, drop=95.0):
+        """进场 100（第 2 天开盘）、1R = 4、止损 96；breach_day 收盘跌到 drop 后一直平；第 21 天开盘 94（断档后第一根真 K 线）。"""
+        cl = [100.0] * breach_day + [drop] * (self.N - breach_day)
+        op = [cl[0]] + cl[:-1]
+        op[21] = 94.0
+        return cl, op
+
+    def test_flag_on_a_real_bar_followed_by_a_hole_fills_after_the_hole(self):
+        cl, op = self.path(10)
+        res = self.trade(cl, set(range(11, 21)), op)
+        t = res.trades.iloc[0]
+        self.assertEqual((t["exit_date"], t["exit_px"], t["exit_reason"]), (DATES[21], 94.0, "失效位"))
+        self.assertEqual(len(res.trades), 1)
+        t0 = self.trade(cl, None, op).trades.iloc[0]                                     # 对照：不标断档，次日开盘离场
+        self.assertEqual((t0["exit_date"], t0["exit_px"]), (DATES[11], 95.0))
+        self.assertEqual(t["mfe_R"], t0["mfe_R"])                                        # 顺延期间不更新最高收盘
+
+    def test_flag_inside_the_hole_fills_after_the_hole(self):
+        cl, op = self.path(13)                                                           # 构造：断档行里出现跌破（真实数据里平盘不会跌破）
+        res = self.trade(cl, set(range(10, 21)), op)
+        t = res.trades.iloc[0]
+        self.assertEqual((t["exit_date"], t["exit_px"], t["exit_reason"]), (DATES[21], 94.0, "失效位"))
+
+    def test_without_holes_identical_to_p6e1(self):
+        """无断档时与 P6e-1 引擎逐笔相同：随机面板（含偶尔无开盘价的顺延）上的成交、跳过与净值摘要，取自 P6e-1 引擎（main 55ef5db）。"""
+        rng = np.random.default_rng(11)
+        n, dates = 600, pd.bdate_range("2016-01-01", periods=600)
+        rows = []
+        for j in range(8):
+            c = 100 * np.cumprod(1 + rng.normal(0.0004, 0.013, n))
+            o = np.r_[c[0], c[:-1]] * (1 + rng.normal(0, 0.003, n))
+            o[rng.random(n) < 0.01] = np.nan
+            st = rng.choice(["XB", "POP", "BNB", "NEUTRAL", "EXH"], n)
+            for i, d in enumerate(dates):
+                rows.append(dict(date=d, container=f"C{j}", open=o[i], high=np.nanmax([o[i], c[i]]) * 1.004,
+                                 low=np.nanmin([o[i], c[i]]) * 0.996, close=c[i], state=st[i], rs_1m=rng.normal(),
+                                 atr20=c[i] * 0.015, z_month=(rng.normal() * 1.5 if d.is_month_end else np.nan), data_hole=0))
+        pn = validate_panel(pd.DataFrame(rows))
+        res = simulate(pn, Params(), pn["date"].min(), pn["date"].max())
+        t = res.trades.copy()
+        for col in t.columns:
+            if t[col].dtype == float:
+                t[col] = t[col].round(10)
+        blob = t.to_csv(index=False) + res.skipped.to_csv(index=False) + res.nav.round(10).to_csv()
+        self.assertEqual((len(t), len(res.skipped)), (117, 44))
+        self.assertEqual(hashlib.sha256(blob.encode()).hexdigest(), "e5988d3d1b31d2a282fbbadb1ff245b0aa1f89756cdd746772b7168f74da5b58")
 
 
 class EngineTests(unittest.TestCase):

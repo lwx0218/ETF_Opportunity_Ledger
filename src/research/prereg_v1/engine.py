@@ -7,6 +7,7 @@
 价格一律用面板里的后复权点位；成本每边 cost_per_side。
 成交行 data_hole = 1（I-26：数据断档上的平盘占位，开盘是陈旧收盘的拷贝）不入场，记入 skipped「数据断档」，信号不保留——
 与「无开盘价」同一处理；D 日开盘时 D−1 有没有海外 K 线已知，不用未来信息。
+出场也一样（I-27）：成交行断档视同无开盘价，exit_flag 保留，顺延到第一个非断档行按其开盘成交。
 """
 from dataclasses import dataclass, field
 
@@ -91,7 +92,7 @@ def simulate(panel: pd.DataFrame, p: Params, start, end, signals: pd.DataFrame =
             pos = positions[c]
             if pos.exit_flag:
                 px = Oa[k, ci[c]]
-                if np.isfinite(px):                   # 停牌则顺延到下一个有开盘价的交易日
+                if np.isfinite(px) and Ha[k, ci[c]] != 1:      # 停牌或断档（I-27）则顺延到下一个有开盘价的非断档行
                     close_trade(pos, d, px, pos.exit_flag)
                     del positions[c]
         # ---------- 开盘：入场 ----------
