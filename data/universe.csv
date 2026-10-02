@@ -36,5 +36,5 @@ T34,现金,防守,execution_only,,,none,,511880,银华日利ETF（货币）,5113
 T35,纳指100,海外,retained,NDX,Nasdaq-100（价格，USD）,yahoo,^XNDX（全收益）,513100,国泰纳斯达克100ETF,159941;513300,QDII,美元序列；QDII 溢价只作执行层限制,astra R0：NDX Versions + 513100 概要
 T36,纳指科技,海外,flagged,NDXTMC,Nasdaq-100 Technology Sector Market-Cap（价格，USD）,yahoo,,159509,景顺长城纳斯达克科技市值加权ETF,,QDII,NDXTMC 在免费源可能不可得；probe 拉不到则本容器不进面板（AGENTS：不用近似指数替代；^NDXT 是等权版，只探测可得性不采用），由 astra 另试 Nasdaq 官方历史数据页；159509 溢价常极端（2026-05 曾 40%+）,astra R0：NDXTMC 方法文件 + 159509 产品页
 T37,标普500,海外,retained,SPX,S&P 500（价格，USD）,yahoo,^SP500TR,513500,博时标普500ETF,159612;513650,QDII,,astra R0：513500 概要 p2 NTR 基准
-T38,恒生科技,海外,retained,HSTECH,恒生科技指数（HKD）,yahoo,,513180,华夏恒生科技ETF,513130;159740,QDII,指数 2020-07 发布、基日 2014-12-31；免费源多只有 2020 起,astra R0：513180 旧概要 p1
+T38,恒生科技,海外,retained,^HSTECH,恒生科技指数（HKD）,yahoo,,513180,华夏恒生科技ETF,513130;159740,QDII,指数 2020-07 发布、基日 2014-12-31；免费源多只有 2020 起,astra R0：513180 旧概要 p1
 T39,日经,海外,retained,N225,日经225（JPY）,yahoo,,513520,华夏野村日经225ETF,159866,QDII,日元序列,astra R0：513520 概要
