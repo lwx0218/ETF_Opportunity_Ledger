@@ -3,7 +3,6 @@
 运行：python -m unittest discover -s tests -v
 """
 import contextlib
-import hashlib
 import io
 import json
 import shutil
@@ -281,8 +280,17 @@ class HoleExitTests(unittest.TestCase):
         t = res.trades.iloc[0]
         self.assertEqual((t["exit_date"], t["exit_px"], t["exit_reason"]), (DATES[21], 94.0, "失效位"))
 
+    def test_flag_kept_while_the_hole_closes_back_above_the_stop(self):
+        """exit_flag 在断档行上保留：跌破后断档行的收盘（构造）回到止损之上，也不撤销，断档后第一根真 K 线开盘成交。"""
+        cl, op = self.path(10)
+        cl[11:21] = [100.0] * 10
+        op[11:21] = [100.0] * 10
+        t = self.trade(cl, set(range(11, 21)), op).trades.iloc[0]
+        self.assertEqual((t["exit_date"], t["exit_px"], t["exit_reason"]), (DATES[21], 94.0, "失效位"))
+
     def test_without_holes_identical_to_p6e1(self):
-        """无断档时与 P6e-1 引擎逐笔相同：随机面板（含偶尔无开盘价的顺延）上的成交、跳过与净值摘要，取自 P6e-1 引擎（main 55ef5db）。"""
+        """无断档时与 P6e-1 引擎逐笔相同：随机面板（含约 1% 无开盘价的顺延）上的成交、跳过与净值，
+        对照 tests/research/fixtures/p6e1_*.csv（由 P6e-1 的引擎，即 main 55ef5db，在同一面板上生成）。"""
         rng = np.random.default_rng(11)
         n, dates = 600, pd.bdate_range("2016-01-01", periods=600)
         rows = []
@@ -297,13 +305,18 @@ class HoleExitTests(unittest.TestCase):
                                  atr20=c[i] * 0.015, z_month=(rng.normal() * 1.5 if d.is_month_end else np.nan), data_hole=0))
         pn = validate_panel(pd.DataFrame(rows))
         res = simulate(pn, Params(), pn["date"].min(), pn["date"].max())
-        t = res.trades.copy()
-        for col in t.columns:
-            if t[col].dtype == float:
-                t[col] = t[col].round(10)
-        blob = t.to_csv(index=False) + res.skipped.to_csv(index=False) + res.nav.round(10).to_csv()
-        self.assertEqual((len(t), len(res.skipped)), (117, 44))
-        self.assertEqual(hashlib.sha256(blob.encode()).hexdigest(), "e5988d3d1b31d2a282fbbadb1ff245b0aa1f89756cdd746772b7168f74da5b58")
+        fx = Path(__file__).with_name("fixtures")
+        dt = ["signal_date", "entry_date", "exit_date"]
+        want_t = pd.read_csv(fx / "p6e1_trades.csv", parse_dates=dt, float_precision="round_trip")
+        want_s = pd.read_csv(fx / "p6e1_skipped.csv", parse_dates=["date", "signal_date"])
+        want_n = pd.read_csv(fx / "p6e1_nav.csv", parse_dates=["date"], index_col="date", float_precision="round_trip")["nav"]
+        self.assertEqual((len(res.trades), len(res.skipped)), (117, 44))
+        self.assertGreater(int((res.skipped["reason"] == "无开盘价").sum()) + int(pn["open"].isna().sum()), 0)
+        keys = ["container", "branch", "signal_date", "entry_date", "exit_date", "exit_reason", "activated"]
+        pd.testing.assert_frame_equal(res.trades[keys].reset_index(drop=True), want_t[keys], check_dtype=False)      # 逐笔：谁、何时、为何
+        pd.testing.assert_frame_equal(res.trades.reset_index(drop=True), want_t, check_dtype=False, rtol=1e-12)    # 数值带容差
+        pd.testing.assert_frame_equal(res.skipped.reset_index(drop=True), want_s, check_dtype=False)
+        pd.testing.assert_series_equal(res.nav.rename("nav"), want_n, check_names=False, check_freq=False, rtol=1e-12)
 
 
 class EngineTests(unittest.TestCase):
