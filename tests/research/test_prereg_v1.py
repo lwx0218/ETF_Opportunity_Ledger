@@ -248,6 +248,77 @@ class HoleDecisionTests(unittest.TestCase):
         self.assertFalse(np.array_equal(a, c))                                           # 对照：断档行进池，抽样就变了
 
 
+class HoleExitTests(unittest.TestCase):
+    """I-27：断档行对出场也视同无开盘价——exit_flag 保留，顺延到第一个非断档行按其开盘成交。"""
+    N = 40
+
+    def trade(self, closes, holes, opens=None):
+        pn = make({"A": closes, "B": flat(self.N)}, states={"A": {1: "XB"}}, rs={"A": {1: 1}},
+                  opens={"A": opens} if opens else None, holes={"A": holes} if holes else None)
+        return run(pn, n=self.N)
+
+    def path(self, breach_day, drop=95.0):
+        """进场 100（第 2 天开盘）、1R = 4、止损 96；breach_day 收盘跌到 drop 后一直平；第 21 天开盘 94（断档后第一根真 K 线）。"""
+        cl = [100.0] * breach_day + [drop] * (self.N - breach_day)
+        op = [cl[0]] + cl[:-1]
+        op[21] = 94.0
+        return cl, op
+
+    def test_flag_on_a_real_bar_followed_by_a_hole_fills_after_the_hole(self):
+        cl, op = self.path(10)
+        res = self.trade(cl, set(range(11, 21)), op)
+        t = res.trades.iloc[0]
+        self.assertEqual((t["exit_date"], t["exit_px"], t["exit_reason"]), (DATES[21], 94.0, "失效位"))
+        self.assertEqual(len(res.trades), 1)
+        t0 = self.trade(cl, None, op).trades.iloc[0]                                     # 对照：不标断档，次日开盘离场
+        self.assertEqual((t0["exit_date"], t0["exit_px"]), (DATES[11], 95.0))
+        self.assertEqual(t["mfe_R"], t0["mfe_R"])                                        # 顺延期间不更新最高收盘
+
+    def test_flag_inside_the_hole_fills_after_the_hole(self):
+        cl, op = self.path(13)                                                           # 构造：断档行里出现跌破（真实数据里平盘不会跌破）
+        res = self.trade(cl, set(range(10, 21)), op)
+        t = res.trades.iloc[0]
+        self.assertEqual((t["exit_date"], t["exit_px"], t["exit_reason"]), (DATES[21], 94.0, "失效位"))
+
+    def test_flag_kept_while_the_hole_closes_back_above_the_stop(self):
+        """exit_flag 在断档行上保留：跌破后断档行的收盘（构造）回到止损之上，也不撤销，断档后第一根真 K 线开盘成交。"""
+        cl, op = self.path(10)
+        cl[11:21] = [100.0] * 10
+        op[11:21] = [100.0] * 10
+        t = self.trade(cl, set(range(11, 21)), op).trades.iloc[0]
+        self.assertEqual((t["exit_date"], t["exit_px"], t["exit_reason"]), (DATES[21], 94.0, "失效位"))
+
+    def test_without_holes_identical_to_p6e1(self):
+        """无断档时与 P6e-1 引擎逐笔相同：随机面板（含约 1% 无开盘价的顺延）上的成交、跳过与净值，
+        对照 tests/research/fixtures/p6e1_*.csv（由 P6e-1 的引擎，即 main 55ef5db，在同一面板上生成）。"""
+        rng = np.random.default_rng(11)
+        n, dates = 600, pd.bdate_range("2016-01-01", periods=600)
+        rows = []
+        for j in range(8):
+            c = 100 * np.cumprod(1 + rng.normal(0.0004, 0.013, n))
+            o = np.r_[c[0], c[:-1]] * (1 + rng.normal(0, 0.003, n))
+            o[rng.random(n) < 0.01] = np.nan
+            st = rng.choice(["XB", "POP", "BNB", "NEUTRAL", "EXH"], n)
+            for i, d in enumerate(dates):
+                rows.append(dict(date=d, container=f"C{j}", open=o[i], high=np.nanmax([o[i], c[i]]) * 1.004,
+                                 low=np.nanmin([o[i], c[i]]) * 0.996, close=c[i], state=st[i], rs_1m=rng.normal(),
+                                 atr20=c[i] * 0.015, z_month=(rng.normal() * 1.5 if d.is_month_end else np.nan), data_hole=0))
+        pn = validate_panel(pd.DataFrame(rows))
+        res = simulate(pn, Params(), pn["date"].min(), pn["date"].max())
+        fx = Path(__file__).with_name("fixtures")
+        dt = ["signal_date", "entry_date", "exit_date"]
+        want_t = pd.read_csv(fx / "p6e1_trades.csv", parse_dates=dt, float_precision="round_trip")
+        want_s = pd.read_csv(fx / "p6e1_skipped.csv", parse_dates=["date", "signal_date"])
+        want_n = pd.read_csv(fx / "p6e1_nav.csv", parse_dates=["date"], index_col="date", float_precision="round_trip")["nav"]
+        self.assertEqual((len(res.trades), len(res.skipped)), (117, 44))
+        self.assertGreater(int((res.skipped["reason"] == "无开盘价").sum()) + int(pn["open"].isna().sum()), 0)
+        keys = ["container", "branch", "signal_date", "entry_date", "exit_date", "exit_reason", "activated"]
+        pd.testing.assert_frame_equal(res.trades[keys].reset_index(drop=True), want_t[keys], check_dtype=False)      # 逐笔：谁、何时、为何
+        pd.testing.assert_frame_equal(res.trades.reset_index(drop=True), want_t, check_dtype=False, rtol=1e-12)    # 数值带容差
+        pd.testing.assert_frame_equal(res.skipped.reset_index(drop=True), want_s, check_dtype=False)
+        pd.testing.assert_series_equal(res.nav.rename("nav"), want_n, check_names=False, check_freq=False, rtol=1e-12)
+
+
 class EngineTests(unittest.TestCase):
     def single(self, closes, opens=None, atr=2.0, p=None):
         n = len(closes)
