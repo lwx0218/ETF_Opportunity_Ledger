@@ -201,7 +201,7 @@ Owner 决定：生成的数据不再用 CSV，结构化数据进 SQLite，其余
 |---|---|
 | 行情库 | `data/market.sqlite`，一个库：`bars(code, adj ∈ {raw, hfq}, date, open, high, low, close, volume, amount, source, fetched_at)` 主键 (code, adj, date)，取代 `data/raw/*.csv`；`coverage`（每容器一行，带 `run_id`，保留历史）；`requests`（取代三个 `*-requests.jsonl`）；`runs`（probe / backfill / update / package 的起止、`end`、git commit）；`calendar(date)`（取代 `sse-trading-days.csv`，仍由 astra 用深交所接口生成后写入）；`universe`（每次运行从 `data/universe.csv` 装入，记 seed 的 sha256）；`meta`（schema 版本） |
 | 手工维护的清单 | `data/universe.csv` 与 `docs/etf-fixed-sources-v1.csv` 是人手编辑的 seed，不是生成数据，**保留 CSV**，运行时装入库表（serenity 的 seed → 库）。AGENTS.md 与多份文档引用 `universe.csv` v1，不改名 |
-| 研究数据包 | `package --end D` 从库复制一份截到 D 的只读库 `outputs/research-package-D.sqlite`（bars / coverage / calendar / universe / meta + `package` 表：D、生成时刻、源库 sha256、git commit），旁边 `MANIFEST.json` 记文件 sha256；`verify` 做 `PRAGMA integrity_check`、行数对 coverage、无晚于 D 的行、`source = route_used`。库已在 Git 里，**不再需要传包**：Cowork `git pull` 后自己 `package` + `build`，包的 sha256 与源库 commit 写进 prereg §13 |
+| 研究数据包 | `package --end D` 从库复制一份截到 D 的只读库 `outputs/research-package-D.sqlite`（bars / coverage / calendar / universe / meta + `package` 表：D、生成时刻、源库 sha256、git commit），旁边 `MANIFEST.json` 记文件 sha256；`verify` 做 `PRAGMA integrity_check`、行数对 coverage、无晚于 D 的行、`source = route_used`。库已在 Git 里，**不再需要传包**：Cowork `git pull` 后自己 `package` + `build`，包的 `content_sha256`（P7 起：内容哈希，不记含打包时刻的文件哈希；源库只读打开，打包作业记在包内）与源库 commit、`source_db_matches_commit = true` 写进 prereg §13（10-02 按 P7 实现修订） |
 | 面板 | `build` 输出 `outputs/panel-D.sqlite`（`panel`、`bench` 两表，含 `data_hole` 与 `hs300_open`），`build-report.json` 照旧；`prereg_v1/panel.py` 改读库，其余研究代码不动 |
 | 台账 | `data/ledger.sqlite` 入 Git；`ew_daily.csv` 改为台账库内的 `ew_daily` 表（v1.1-e 的「库旁文件」改为「库内表」，成对约束自然满足）；schema 版本升 |
 | 每日任务 | 读写 `market.sqlite`，`update` 写库；`live_panel` 共用 `research_frame` 不变 |
@@ -257,3 +257,42 @@ P6d-1 / P6d-2 已合并（PR #10、#11，main `45573fa`，207 个测试通过；
 3. 做 S2（replan §4：固定源 17 个 C 级 + 6 个待补时刻的 B 级，每个只核三项，结果写回 `docs/etf-fixed-sources-v1.csv`，一行一个来源，不另写日志），提交并推送。
 4. 等 Owner 通知 P7 合并后，`git pull` 再做 S1（§4 + §8 + §11）：`probe --record` → `backfill --end 2026-09-30` → 交易日历写入库 → 北京时间 05:00 之后 `package` → `verify`；全部写进 `data/market.sqlite`，提交库文件与一页工作日志，推送。不打包传文件。
 5. 不做：审读与清理（§11，等第一次真实数据跑通后另行安排）。
+
+## 13. 追加（2026-10-02）· P7 / P6e 合并后的裁定、治理层修订、P6f、S1 放行
+
+P7 / P6e-1 / P6e-2 已合并（PR #12–#14，main `ea87e8b`，235 个测试通过）。三份工作日志「交 Cowork 留意」裁定如下，细节见 implementation-notes I-26（措辞改）/ I-27 与 schema v1.1-i。
+
+| 留意项 | 裁定 |
+|---|---|
+| AGENTS.md「数据库、批量行情不入 Git」与 §11 冲突 | **治理层单独修订**，由 CC 走一个只改这一句的 PR（G1，措辞见下），Owner 批准；astra 在它合并后再提交 `market.sqlite` |
+| `package` 只读源库、不在源库记打包作业；prereg §13 记 `content_sha256` 而非文件哈希 | **接受**。§11「包的 sha256」改读作 `content_sha256` + 源库 commit + `source_db_matches_commit = true`；面板同理 `panel_content_sha256` |
+| 权威文档旧路径 | 已改：schema v1.1-e 两处、prereg §13.0 |
+| `job_days` 进台账库；版本 `v1.1-g.1`；`series_adj`；迁移期 CSV 读法留到清理包 | 接受 |
+| I-26 (1) 背景措辞 | 已改写 |
+| 刻画排除断档行的副作用；等权与相关仍含断档行 | 接受，V1 报告注明（I-27 备注） |
+| 晚记的手动 / 论点作废 | **收紧**：第一条须在信号日后第一个工作日 09:30 前记录（v1.1-i 1） |
+| 顺延期间的覆盖 | **维持从严**（v1.1-i 2） |
+| 每日任务三处仍用断档行 | 排名置空、事件草稿不立卡（v1.1-i 4）；出场改为顺延（I-27 / v1.1-i 3），引擎同改 |
+| `card_status.exit_signal_reason` 短暂显示 | 接受，无代码读它 |
+
+### G1 · 治理层修订（CC，只改 AGENTS.md 一句，Owner 批准后合并）
+
+「交付边界」最后一条改为：
+
+> 密钥、认证信息、依赖缓存、`outputs/` 重型产物与回放库不入 Git；行情库 `data/market.sqlite` 与台账库 `data/ledger.sqlite` 按 `operations/planning/2026-09-29-replan-three-lanes.md` §11 入 Git（白名单见 `.gitignore`；提交前无热日志、`integrity_check = ok`，只在检查点 `VACUUM`）；保留轻量文档、清单及必要小样例。业务源码与运行数据只落本项目，不放进 Harness_Workspace。
+
+其余一字不动。
+
+### P6f · CC（G1 之后；P6f-1 在 `build` 之前合并，P6f-2 不阻塞）
+
+- **P6f-1 `src/research/prereg_v1/engine.py`（I-27）**：成交行 `data_hole = 1` 时出场不成交、`exit_flag` 保留，顺延到第一个非断档行按其开盘成交（与无开盘价同一分支）。测试：断档中出现出场信号 → 断档后第一根真 K 线开盘成交；无断档时结果与 P6e-1 逐笔相同；变异（去掉该分支）失败。
+- **P6f-2 `src/ledger/` + `src/jobs/`（v1.1-i）**：手动 / 论点作废第一条信号的 09:30 时限（存储层，时钟与 `creation_cutoff` 同口径）；出场在断档行顺延（与引擎对拍）；事件草稿容器断档不立卡；`rs_1m_rank` / `crowd_rs_1m_rank` 排名前断档行置空；版本各升一版。测试：X+1 09:31 补记 X 日手动信号被拒、09:29 可以；断档中止损 → 断档后成交，与引擎零差异；断档容器不挤占排名（P6e-2 复核的半导体用例）。
+- 每包一页工作日志 + 包末只读复核。
+
+### S1 放行（astra 现在可以开始）
+
+拉到 main `ea87e8b` 以上即可 `probe` → `backfill` → `calendar`（用法在 `operations/work_logs/2026-10-01-p7-sqlite-data-layer.md`「astra S1 用法」）；`package` → `verify` 不受 G1 影响；**提交 `market.sqlite` 等 G1 合并后**。P6f 不影响 S1。
+
+### 之后的顺序
+
+S1 的库进 main → Cowork `git pull` → `package --end 2026-09-30` → `build` → `run check → characterize → design`（P6f-1 须已合并）→ 清理（§11：astra 只读审读 + CC 修改，验收门为逐行复现面板与设计期结果）→ `oos` 一次 → prereg §13。
