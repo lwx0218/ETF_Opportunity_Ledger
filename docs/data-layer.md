@@ -20,7 +20,7 @@ python -m src.data package  --end 2026-09-30 [--force]   # → outputs/research-
 python -m src.data verify   outputs/research-package-2026-09-30.sqlite
 python -m src.data compare  data/kline_510300.csv 510300 [--adj raw] --out outputs/data/diff-510300.csv
 python -m src.data offline-restore --source-run-id 1 --recorded-dir outputs/data/recorded [--apply] [--db 验证副本.sqlite]
-python -m src.data preflight --end 2026-09-30 [--db 验证副本.sqlite]  # 只读；research_ready=false 退出 1
+python -m src.data preflight --end 2026-09-30 [--start YYYY-MM-DD] [--db 验证副本.sqlite]  # 只读；research_ready=false 退出 1
 ```
 
 所有命令默认读写 `data/market.sqlite`，`--db` 可换（`verify` 只看包本身）。只用标准库（`urllib`、`csv`、`json`、`sqlite3`），不依赖 pandas / akshare / serenity。HTTP、分段、「一条路不通退下一条」的做法抄自 `lwx0218/serenity_quant_research`（physical-first）`api/app/ingest/{http,quotes,symbols,runner}.py`；单库、schema 写在代码里、每次作业记一行、seed → 库、测试只许连临时库，也按 serenity（replan §11）。

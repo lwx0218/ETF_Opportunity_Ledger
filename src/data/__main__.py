@@ -8,7 +8,7 @@
     verify   <包.sqlite>                                               sha256、integrity_check、行数、截断、来源
     compare  <参考.csv> <code> [--adj raw|hfq] [--out diff.csv]        重叠区间逐日比对收盘
     offline-restore --source-run-id N --recorded-dir DIR [--apply]  H00300 原文件恢复，默认只读
-    preflight --end D [--start 2005-01-01]                         只读研究输入质量预检
+    preflight --end D [--start D]                                只读预检，默认从官方日历首日开始
 """
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--apply", action="store_true", help="显式原子写入；省略时完全只读")
     p = sub.add_parser("preflight", help="只读质量预检；未达到 research_ready 时退出 1")
     p.add_argument("--end", type=_d, required=True)
-    p.add_argument("--start", type=_d, default=date(2005, 1, 1))
+    p.add_argument("--start", type=_d, default=None, help="请求窗口起点；省略时使用官方日历首日")
     for name, sp in sub.choices.items():
         if name != "verify":
             sp.add_argument("--db", type=Path, default=DB.MARKET_DB)

@@ -8,9 +8,8 @@ from pathlib import Path
 
 from . import db as DB
 from .universe import PANEL_STATUSES
-from src.indicators.calendar import MAX_GAP_DAYS, load_trading_days
+from src.indicators.calendar import load_trading_days
 
-RESEARCH_START = date(2005, 1, 1)
 BENCH_CODE = "H00300"
 OVERSEAS_ROUTES = {"yahoo", "stooq", "eia"}
 
@@ -19,11 +18,33 @@ def _positive(value) -> bool:
     return isinstance(value, (int, float)) and math.isfinite(value) and value > 0
 
 
-def inspect(con, end: date, *, start: date = RESEARCH_START) -> dict:
+def window_days(trading_days, start: date, end: date):
+    """预检与 build 共用的官方交易日窗口；边界由 inspect 验证并报告。"""
+    return trading_days[(trading_days.date >= start) & (trading_days.date <= end)]
+
+
+def input_rows(con, code: str, adj: str, trading_dates: list[str], *, start: date | None,
+               end: date, overseas: bool = False) -> tuple[list[dict], list[dict]]:
+    """预检与正式 build 共用原行情选择；海外仅保留可被 D−1 消费的原生历史。"""
+    lower = start.isoformat() if start else "0001-01-01"
+    raw = [dict(r) for r in con.execute(
+        "SELECT * FROM bars WHERE code=? AND adj=? AND date>=? AND date<=? ORDER BY date",
+        (code, adj, "0001-01-01" if overseas else lower, end.isoformat()))]
+    if overseas:
+        rows = [r for r in raw if trading_dates and r["date"] < trading_dates[-1]]
+    else:
+        on_calendar = set(trading_dates)
+        rows = [r for r in raw if r["date"] in on_calendar]
+    return raw, rows
+
+
+def inspect(con, end: date, *, start: date | None = None) -> dict:
     """检查调用方的只读快照。官方 calendar 是唯一 A 股日历，缺日不由行情推断。"""
-    if start > end:
+    if start is not None and start > end:
         raise ValueError("start 不能晚于 end")
-    report = {"start": start.isoformat(), "end": end.isoformat(), "benchmark_ready": False,
+    requested = {"start": start.isoformat() if start else None, "end": end.isoformat()}
+    report = {"requested_window": requested, "trusted_calendar_range": None, "effective_window": None,
+              "start": requested["start"], "end": end.isoformat(), "benchmark_ready": False,
               "research_ready": False, "calendar": None, "issues": [], "benchmark": {}, "containers": {}}
     try:
         days = load_trading_days(con)
@@ -35,12 +56,17 @@ def inspect(con, end: date, *, start: date = RESEARCH_START) -> dict:
         report["issues"].append("缺官方交易日历；不得由 H00300 或工作日推造")
     else:
         report["calendar"] = {"days": len(cal), "first": cal[0], "last": cal[-1]}
-        # 官方表常从元旦后的首个交易日开始；跨年缺覆盖不得静默缩短窗口。
+        report["trusted_calendar_range"] = {"start": cal[0], "end": cal[-1]}
         first = date.fromisoformat(cal[0])
-        starts_at_new_year = start.month == 1 and start.day == 1 and 0 <= (first - start).days <= MAX_GAP_DAYS
-        if (first > start and not starts_at_new_year) or date.fromisoformat(cal[-1]) < end:
+        start = start or first
+        if first > start or date.fromisoformat(cal[-1]) < end:
             report["issues"].append("官方交易日历未覆盖请求窗口")
-    window = [d for d in cal if start.isoformat() <= d <= end.isoformat()]
+    report["start"] = start.isoformat() if start else None
+    window = ([d.date().isoformat() for d in window_days(days, start, end)]
+              if days is not None and start is not None else [])
+    report["effective_window"] = {"start": report["start"], "end": end.isoformat(),
+                                  "first_trading_day": window[0] if window else None,
+                                  "last_trading_day": window[-1] if window else None}
     if not window:
         report["issues"].append("请求窗口没有官方交易日")
     calendar_ok = not report["issues"]
@@ -49,13 +75,13 @@ def inspect(con, end: date, *, start: date = RESEARCH_START) -> dict:
     def series(code, adj, route, *, benchmark=False, first=None):
         overseas = route in OVERSEAS_ROUTES and not benchmark
         # 海外窗口前的原生 K 线参与 I-24 预热，也必须有真实 OHLC。
-        raw = [dict(r) for r in con.execute(
-            "SELECT * FROM bars WHERE code=? AND adj=? AND date>=? AND date<=? ORDER BY date",
-            (code, adj, "0001-01-01" if overseas else start.isoformat(), end.isoformat()))]
-        rows = raw if overseas else [r for r in raw if r["date"] in calset]
+        lower = start.isoformat() if start else "0001-01-01"
+        # I-20：D 只能用 date < D 的行情。窗口末尾未被消费的原生行不能证明可用性。
+        raw, rows = input_rows(con, code, adj, window, start=start, end=end, overseas=overseas)
+        alignable = sum(d > rows[0]["date"] for d in window) if overseas and rows else len(rows)
         by_date = {r["date"]: r for r in rows}
         # 容器从自己的已登记起点起检查；基准必须覆盖整个窗口，含首尾。
-        first = min(filter(None, [first, raw[0]["date"] if raw else None]), default=start.isoformat())
+        first = min(filter(None, [first, raw[0]["date"] if raw else None]), default=lower)
         expected = window if benchmark else [d for d in window if d >= first]
         missing = [] if overseas else [d for d in expected if d not in by_date or not _positive(by_date[d]["close"])]
         bad_close = [r["date"] for r in rows if not _positive(r["close"])]
@@ -63,7 +89,7 @@ def inspect(con, end: date, *, start: date = RESEARCH_START) -> dict:
         wrong_source = [r["date"] for r in rows if r["source"] != route]
         issues = []
         if not rows:
-            issues.append("无窗口内真实行情")
+            issues.append("D−1 边界内无可用原生行情，无法对齐研究窗口" if overseas else "无窗口内真实行情")
         if missing:
             issues.append(f"缺交易日收盘 {len(missing)} 日")
         if bad_close:
@@ -72,9 +98,14 @@ def inspect(con, end: date, *, start: date = RESEARCH_START) -> dict:
             issues.append(f"来源与 coverage 不符 {len(wrong_source)} 行")
         close_ready = calendar_ok and bool(rows) and not issues
         return {"code": code, "adj": adj, "route": route, "raw_rows": len(raw), "view_rows": len(rows),
-                "native_warmup_rows": sum(r["date"] < start.isoformat() for r in rows) if overseas else 0,
+                "alignable_rows": alignable,
+                "native_warmup_rows": sum(r["date"] < lower for r in rows) if overseas else 0,
+                "unavailable_native_dates": [r["date"] for r in raw if not window or r["date"] >= window[-1]] if overseas else [],
                 "first": rows[0]["date"] if rows else None, "last": rows[-1]["date"] if rows else None,
-                "excluded_non_trading_dates": [r["date"] for r in raw if not overseas and r["date"] not in calset],
+                "excluded_non_trading_dates": [r["date"] for r in raw if not overseas and cal
+                                               and cal[0] <= r["date"] <= cal[-1] and r["date"] not in calset],
+                "outside_trusted_calendar_dates": [r["date"] for r in raw if not overseas
+                                                   and (not cal or not cal[0] <= r["date"] <= cal[-1])],
                 "missing_close_dates": missing, "invalid_close_dates": bad_close,
                 "missing_ohl_dates": bad_ohl, "source_mismatch_dates": wrong_source,
                 "close_ready": close_ready, "research_ready": close_ready and not bad_ohl,
@@ -103,7 +134,7 @@ def inspect(con, end: date, *, start: date = RESEARCH_START) -> dict:
     return report
 
 
-def preflight(db: Path, end: date, *, start: date = RESEARCH_START) -> dict:
+def preflight(db: Path, end: date, *, start: date | None = None) -> dict:
     """market 或 package 的只读质量报告；包的来源/哈希复验仍由 verify/build 负责。"""
     con = DB.connect(db, readonly=True)
     try:

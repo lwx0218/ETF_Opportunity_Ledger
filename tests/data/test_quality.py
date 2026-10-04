@@ -14,9 +14,9 @@ import pandas as pd
 from src.data import db as DB, quality, runner
 from src.data.__main__ import main
 from src.indicators import build as B
+from src.indicators.__main__ import main as indicators_main
 
 
-START = date(2005, 1, 1)
 END = date(2005, 1, 10)
 DAYS = pd.bdate_range("2005-01-04", END.isoformat()).strftime("%Y-%m-%d").tolist()
 
@@ -63,7 +63,7 @@ class Quality(unittest.TestCase):
             con.execute("INSERT INTO bars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", tuple(row.values()))
         con.close()
 
-    def report(self, *, end=END, start=START):
+    def report(self, *, end=END, start=None):
         before = DB.sha256_file(self.db)
         with mock.patch("urllib.request.urlopen", side_effect=AssertionError("quality must remain offline")):
             report = quality.preflight(self.db, end, start=start)
@@ -71,13 +71,13 @@ class Quality(unittest.TestCase):
         return report
 
     def package(self, end=END):
-        return runner.package(end, db=self.db, pkg_root=self.tmp / "package", log=lambda *_: None)
+        return runner.package(end, db=self.db, pkg_root=self.tmp / "package" / self.db.stem, log=lambda *_: None)
 
-    def assert_build_refuses_without_outputs(self, package):
+    def assert_build_refuses_without_outputs(self, package, *, start=None):
         out = self.tmp / "nested" / "panel.sqlite"
         before = DB.sha256_file(package)
         with self.assertRaises(B.BuildError):
-            B.build(package, out, log=lambda *_: None)
+            B.build(package, out, start=start, log=lambda *_: None)
         self.assertFalse(out.exists())
         self.assertFalse(out.with_name(out.name + ".tmp").exists())
         self.assertFalse(B.report_path(out).exists())
@@ -90,6 +90,103 @@ class Quality(unittest.TestCase):
         self.assertTrue(report["research_ready"])
         self.assertEqual(report["benchmark"]["missing_close_dates"], [])
 
+    def test_pre2005_history_is_preserved_by_default_and_explicit_windows(self):
+        calendar = pd.bdate_range("2004-12-27", "2005-01-14").strftime("%Y-%m-%d").tolist()
+        days = [d for d in calendar if d <= END.isoformat()]
+        self.fixture(days=days, calendar=calendar)
+        pkg = self.package()
+        for start in (None, date(2004, 12, 29)):
+            with self.subTest(start=start):
+                resolved = calendar[0] if start is None else start.isoformat()
+                expected = [d for d in days if d >= resolved]
+                report = self.report(start=start)
+                self.assertTrue(report["benchmark_ready"])
+                self.assertTrue(report["research_ready"])
+                self.assertEqual(report["benchmark"]["first"], expected[0])
+                self.assertEqual(report["containers"]["T01"]["first"], expected[0])
+                self.assertEqual(report["requested_window"], {
+                    "start": None if start is None else start.isoformat(), "end": END.isoformat()})
+                self.assertEqual(report["trusted_calendar_range"], {"start": calendar[0], "end": calendar[-1]})
+                self.assertEqual(report["effective_window"], {
+                    "start": resolved, "end": END.isoformat(),
+                    "first_trading_day": expected[0], "last_trading_day": expected[-1]})
+                self.assertEqual((report["start"], report["end"]), (resolved, END.isoformat()))
+                out = B.build(pkg, self.tmp / f"panel-{resolved}.sqlite", start=start, log=lambda *_: None)
+                with sqlite3.connect(out) as con:
+                    self.assertEqual(con.execute("SELECT date FROM panel ORDER BY date").fetchall(), [(d,) for d in expected])
+                    self.assertEqual(con.execute("SELECT date FROM bench ORDER BY date").fetchall(), [(d,) for d in expected])
+                    meta = dict(con.execute("SELECT key, value FROM meta"))
+                built = json.loads(B.report_path(out).read_text())
+                for field in ("requested_window", "trusted_calendar_range", "effective_window"):
+                    self.assertEqual(built["input_quality"][field], report[field])
+                    self.assertEqual(json.loads(meta[field]), report[field])
+
+    def test_pre2005_missing_close_is_checked_without_year_cutoff(self):
+        calendar = pd.bdate_range("2004-12-27", "2005-01-14").strftime("%Y-%m-%d").tolist()
+        self.fixture(days=[d for d in calendar if d <= END.isoformat()], calendar=calendar)
+        self.mutate("DELETE FROM bars WHERE date='2004-12-29'")
+        report = self.report()
+        self.assertFalse(report["benchmark_ready"])
+        self.assertFalse(report["research_ready"])
+        self.assertEqual(report["benchmark"]["missing_close_dates"], ["2004-12-29"])
+        self.assertEqual(report["containers"]["T01"]["missing_close_dates"], ["2004-12-29"])
+        self.assert_build_refuses_without_outputs(self.package())
+
+    def test_explicit_window_excludes_earlier_holes_for_preflight_and_build_cli(self):
+        self.fixture()
+        self.mutate("DELETE FROM bars WHERE date=?", (DAYS[0],))
+        self.assertFalse(self.report()["research_ready"])
+        start = date.fromisoformat(DAYS[1])
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = main(["preflight", "--db", str(self.db), "--start", start.isoformat(), "--end", END.isoformat()])
+        self.assertEqual(code, 0)
+        report = json.loads(output.getvalue())
+        self.assertEqual(report, self.report(start=start))
+        pkg = self.package()
+        out = self.tmp / "cli-panel.sqlite"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(indicators_main(["build", "--package", str(pkg), "--out", str(out),
+                                              "--start", start.isoformat()]), 0)
+        built = json.loads(B.report_path(out).read_text())
+        self.assertEqual(built["input_quality"], report)
+        with sqlite3.connect(out) as con:
+            self.assertEqual(con.execute("SELECT date FROM panel ORDER BY date").fetchall(), [(d,) for d in DAYS[1:]])
+            self.assertEqual(con.execute("SELECT date FROM bench ORDER BY date").fetchall(), [(d,) for d in DAYS[1:]])
+
+    def test_explicit_weekend_start_is_preserved_and_slices_official_days(self):
+        self.fixture()
+        self.mutate("INSERT INTO bars VALUES ('H00300', 'raw', '2005-01-08', NULL, NULL, NULL, 999999, NULL, NULL, 'csi', 'test')")
+        start = date(2005, 1, 8)
+        report = self.report(start=start)
+        self.assertTrue(report["research_ready"])
+        self.assertEqual(report["effective_window"], {
+            "start": "2005-01-08", "end": "2005-01-10",
+            "first_trading_day": "2005-01-10", "last_trading_day": "2005-01-10"})
+        self.assertEqual(report["containers"]["T01"]["excluded_non_trading_dates"], ["2005-01-08"])
+        out = B.build(self.package(), self.tmp / "weekend-start.sqlite", start=start, log=lambda *_: None)
+        with sqlite3.connect(out) as con:
+            self.assertEqual(con.execute("SELECT date FROM panel").fetchall(), [("2005-01-10",)])
+        built = json.loads(B.report_path(out).read_text())
+        self.assertEqual(built["input_quality"], report)
+        self.assertEqual(built["containers"]["沪深300"]["dropped_off_calendar"], 1)
+
+    def test_requests_outside_trusted_calendar_fail_including_new_year(self):
+        self.fixture()
+        pkg = self.package()
+        for start in (date(2005, 1, 1), date(2005, 1, 3)):
+            with self.subTest(start=start):
+                report = self.report(start=start)
+                self.assertFalse(report["benchmark_ready"])
+                self.assertFalse(report["research_ready"])
+                self.assertIn("覆盖", " ".join(report["issues"]))
+                self.assertEqual(report["requested_window"]["start"], start.isoformat())
+                self.assert_build_refuses_without_outputs(pkg, start=start)
+        report = self.report(end=date(2005, 1, 17))
+        self.assertFalse(report["research_ready"])
+        self.assertIn("覆盖", " ".join(report["issues"]))
+        self.assert_build_refuses_without_outputs(self.package(end=date(2005, 1, 17)))
+
     def test_close_only_benchmark_does_not_release_strategy(self):
         self.fixture()
         for day in DAYS:
@@ -100,6 +197,17 @@ class Quality(unittest.TestCase):
         self.assertFalse(report["containers"]["T01"]["research_ready"])
         self.assertEqual(report["containers"]["T01"]["missing_ohl_dates"], DAYS)
         self.assert_build_refuses_without_outputs(self.package())
+
+    def test_dates_outside_trusted_coverage_are_not_labeled_non_trading(self):
+        outside = ["2004-12-31", "2005-01-17"]
+        self.fixture(days=[outside[0], *DAYS, outside[1]])
+        start, end = date(2004, 12, 31), date(2005, 1, 17)
+        report = self.report(start=start, end=end)
+        self.assertFalse(report["research_ready"])
+        for item in (report["benchmark"], report["containers"]["T01"]):
+            self.assertEqual(item["outside_trusted_calendar_dates"], outside)
+            self.assertEqual(item["excluded_non_trading_dates"], [])
+        self.assert_build_refuses_without_outputs(self.package(end=end), start=start)
 
     def test_three_year_end_close_holes_are_explicit(self):
         missing = ["2008-12-31", "2009-12-31", "2010-12-31"]
@@ -130,16 +238,19 @@ class Quality(unittest.TestCase):
         self.assertFalse(report["containers"]["T01"]["research_ready"])
 
     def test_non_trading_rows_remain_raw_but_do_not_enter_calculation(self):
-        self.fixture()
-        # 一个工作日休市日与一个周末：只按输入的官方日历筛，不把工作日等同交易日。
-        for day in ("2005-01-03", "2005-01-08"):
+        days = [d for d in DAYS if d != "2005-01-06"]
+        calendar = [d for d in pd.bdate_range("2005-01-04", "2005-01-14").strftime("%Y-%m-%d")
+                    if d != "2005-01-06"]
+        self.fixture(days=days, calendar=calendar)
+        # 一个窗口内工作日休市日与一个周末：只按输入的官方日历筛，不把工作日等同交易日。
+        for day in ("2005-01-06", "2005-01-08"):
             self.mutate("INSERT INTO bars VALUES ('H00300', 'raw', ?, NULL, NULL, NULL, 999999, NULL, NULL, 'csi', 'original-time')", (day,))
         before = DB.sha256_file(self.db)
         report = self.report()
         self.assertTrue(report["research_ready"])
-        self.assertEqual(report["benchmark"]["excluded_non_trading_dates"], ["2005-01-03", "2005-01-08"])
-        self.assertEqual(report["benchmark"]["raw_rows"], len(DAYS) + 2)
-        self.assertEqual(report["benchmark"]["view_rows"], len(DAYS))
+        self.assertEqual(report["benchmark"]["excluded_non_trading_dates"], ["2005-01-06", "2005-01-08"])
+        self.assertEqual(report["benchmark"]["raw_rows"], len(days) + 2)
+        self.assertEqual(report["benchmark"]["view_rows"], len(days))
         pkg = self.package()
         out = B.build(pkg, self.tmp / "panel.sqlite", log=lambda *_: None)
         con = DB.connect(pkg, readonly=True)
@@ -147,11 +258,11 @@ class Quality(unittest.TestCase):
                          (999999, None, "original-time"))
         con.close()
         con = sqlite3.connect(out)
-        self.assertEqual(con.execute("SELECT date FROM panel ORDER BY date").fetchall(), [(d,) for d in DAYS])
+        self.assertEqual(con.execute("SELECT date FROM panel ORDER BY date").fetchall(), [(d,) for d in days])
         self.assertEqual(con.execute("SELECT hs300, hs300_open FROM bench ORDER BY date").fetchall(),
-                         [(100.0 + i, 90.0 + i) for i in range(len(DAYS))])
+                         [(100.0 + i, 90.0 + i) for i in range(len(days))])
         self.assertEqual(con.execute("SELECT open, high, low, close FROM panel ORDER BY date").fetchall(),
-                         [(90.0 + i, 110.0 + i, 80.0 + i, 100.0 + i) for i in range(len(DAYS))])
+                         [(90.0 + i, 110.0 + i, 80.0 + i, 100.0 + i) for i in range(len(days))])
         con.close()
         built = json.loads(B.report_path(out).read_text())
         self.assertEqual(built["containers"]["沪深300"]["dropped_off_calendar"], 2)
@@ -224,7 +335,8 @@ class Quality(unittest.TestCase):
         report = self.report()
         self.assertTrue(report["benchmark_ready"])
         self.assertFalse(report["research_ready"])
-        self.assertEqual(report["containers"]["T01"]["source_mismatch_dates"], DAYS)
+        self.assertEqual(report["containers"]["T01"]["source_mismatch_dates"], DAYS[:-1])
+        self.assertEqual(report["containers"]["T01"]["unavailable_native_dates"], [DAYS[-1]])
 
     def test_coverage_cannot_drop_retained_universe_container(self):
         self.fixture()
@@ -283,21 +395,105 @@ class Quality(unittest.TestCase):
         self.assertEqual(report["containers"]["T15"]["missing_close_dates"], [])
         self.assertEqual(report["containers"]["T15"]["missing_ohl_dates"], [DAYS[0]])
 
-    def add_overseas_warmup(self, *, missing_ohl_date=None):
-        native_days = pd.bdate_range("2004-11-01", END.isoformat()).strftime("%Y-%m-%d").tolist()
+    def add_overseas(self, native_days, *, missing_ohl_date=None, route="yahoo"):
         cov = dict(theme_id="T99", container="合成海外指数", status="retained", code="SYNTHETIC",
-                   series_code="SYNTHETIC", series_adj="raw", route_used="yahoo", first_date=native_days[0])
+                   series_code="SYNTHETIC", series_adj="raw", route_used=route, first_date=native_days[0],
+                   price_only="False")
         con = DB.connect(self.db)
+        universe = [json.loads(r[0]) for r in con.execute("SELECT row FROM universe ORDER BY ord")]
+        universe.append({"theme_id": cov["theme_id"], "theme": cov["container"], "status": cov["status"]})
+        DB.load_universe(con, universe, "synthetic-quality-universe-with-overseas")
         run = DB.start_run(con, "backfill")
         DB.write_coverage(con, run, [cov])
         DB.finish_run(con, run)
         with con:
             con.executemany("INSERT INTO bars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             [("SYNTHETIC", "raw", d, None if d == missing_ohl_date else 99.0 + i,
-                              102.0 + i, 98.0 + i, 100.0 + i, 1000.0, None, "yahoo", "test")
+                              102.0 + i, 98.0 + i, 100.0 + i, 1000.0, None, route, "test")
                              for i, d in enumerate(native_days)])
         con.close()
+        return cov
+
+    def add_overseas_warmup(self, *, missing_ohl_date=None):
+        native_days = pd.bdate_range("2004-11-01", END.isoformat()).strftime("%Y-%m-%d").tolist()
+        cov = self.add_overseas(native_days, missing_ohl_date=missing_ohl_date)
         return cov, native_days
+
+    def test_overseas_only_window_end_bar_blocks_before_build(self):
+        for route in ("yahoo", "stooq", "eia"):
+            with self.subTest(route=route):
+                self.db = self.tmp / f"{route}.sqlite"
+                self.fixture()
+                self.add_overseas([END.isoformat()], route=route)
+                report = self.report()
+                self.assertTrue(report["benchmark_ready"])
+                self.assertFalse(report["research_ready"])
+                overseas = report["containers"]["T99"]
+                self.assertFalse(overseas["research_ready"])
+                self.assertEqual(overseas["raw_rows"], 1)
+                self.assertEqual(overseas["view_rows"], 0)
+                self.assertEqual(overseas["alignable_rows"], 0)
+                self.assertEqual(overseas["unavailable_native_dates"], [END.isoformat()])
+                self.assert_build_refuses_without_outputs(self.package())
+
+    def test_overseas_weekend_end_uses_last_a_share_day_boundary(self):
+        self.fixture()
+        native_days = ["2005-01-07", "2005-01-08", "2005-01-09"]
+        self.add_overseas(native_days)
+        end = date(2005, 1, 9)
+        report = self.report(end=end)
+        self.assertTrue(report["benchmark_ready"])
+        self.assertFalse(report["research_ready"])
+        self.assertEqual(report["effective_window"]["last_trading_day"], "2005-01-07")
+        self.assertEqual(report["containers"]["T99"]["unavailable_native_dates"], native_days)
+        self.assertEqual(report["containers"]["T99"]["alignable_rows"], 0)
+        self.assert_build_refuses_without_outputs(self.package(end=end))
+
+    def test_overseas_prior_bar_aligns_and_unused_tail_bad_ohl_does_not_block(self):
+        self.fixture()
+        self.add_overseas(["2005-01-06", "2005-01-07", "2005-01-10"], missing_ohl_date="2005-01-10")
+        report = self.report()
+        self.assertTrue(report["benchmark_ready"])
+        self.assertTrue(report["research_ready"])
+        overseas = report["containers"]["T99"]
+        self.assertEqual(overseas["unavailable_native_dates"], ["2005-01-10"])
+        self.assertEqual(overseas["missing_ohl_dates"], [])
+        self.assertEqual(overseas["alignable_rows"], 2)
+        out = B.build(self.package(), self.tmp / "aligned-panel.sqlite", log=lambda *_: None)
+        with sqlite3.connect(out) as con:
+            actual = con.execute("SELECT date, close FROM panel WHERE container='合成海外指数' ORDER BY date").fetchall()
+        self.assertEqual(actual, [("2005-01-07", 100.0), ("2005-01-10", 101.0)])
+        built = json.loads(B.report_path(out).read_text())
+        self.assertEqual(built["containers"]["合成海外指数"]["ohl_filled_from_close"], 0)
+        self.assertEqual(built["containers"]["合成海外指数"]["last_bar_date"], "2005-01-07")
+        # 非交易日 end 的窗口也只消费最后 A 股交易日之前的本地 K 线。
+        weekend = self.report(end=date(2005, 1, 9))
+        self.assertTrue(weekend["research_ready"])
+        self.assertEqual(weekend["containers"]["T99"]["alignable_rows"], 1)
+        self.assertEqual(weekend["containers"]["T99"]["unavailable_native_dates"], ["2005-01-07"])
+        weekend_out = B.build(self.package(end=date(2005, 1, 9)), self.tmp / "weekend-panel.sqlite", log=lambda *_: None)
+        with sqlite3.connect(weekend_out) as con:
+            self.assertEqual(con.execute("SELECT date, close FROM panel WHERE container='合成海外指数'").fetchall(),
+                             [("2005-01-07", 100.0)])
+
+    def test_prewindow_overseas_bar_keeps_existing_stale_and_hole_rules(self):
+        calendar = pd.bdate_range("2005-01-04", "2005-01-18").strftime("%Y-%m-%d").tolist()
+        days = [d for d in calendar if d <= "2005-01-14"]
+        self.fixture(days=days, calendar=calendar)
+        self.add_overseas(["2004-12-31"])
+        end = date(2005, 1, 14)
+        report = self.report(end=end)
+        self.assertTrue(report["research_ready"])
+        self.assertEqual(report["containers"]["T99"]["alignable_rows"], len(days))
+        self.assertEqual(report["containers"]["T99"]["native_warmup_rows"], 1)
+        out = B.build(self.package(end=end), self.tmp / "stale-panel.sqlite", log=lambda *_: None)
+        with sqlite3.connect(out) as con:
+            actual = con.execute("SELECT date, close, data_hole FROM panel WHERE container='合成海外指数' ORDER BY date").fetchall()
+        self.assertEqual(actual, [(d, 100.0, int(i >= B.HOLE_MIN)) for i, d in enumerate(days)])
+        built = json.loads(B.report_path(out).read_text())["containers"]["合成海外指数"]
+        self.assertEqual(built["stale_days"], len(days) - 1)
+        self.assertEqual(built["data_hole_rows"], len(days) - B.HOLE_MIN)
+        self.assertEqual(built["last_bar_date"], "2004-12-31")
 
     def test_strict_overseas_preserves_pre2005_native_indicator_warmup(self):
         self.fixture()
@@ -314,7 +510,7 @@ class Quality(unittest.TestCase):
         self.assertIn("TREND_UP", strict["state"].tolist())
         report = self.report()
         self.assertTrue(report["research_ready"])
-        self.assertEqual(report["containers"]["T99"]["native_warmup_rows"], sum(d < START.isoformat() for d in native_days))
+        self.assertEqual(report["containers"]["T99"]["native_warmup_rows"], sum(d < DAYS[0] for d in native_days))
 
     def test_missing_pre2005_native_ohl_blocks_preflight(self):
         self.fixture()
@@ -326,7 +522,7 @@ class Quality(unittest.TestCase):
         overseas = report["containers"]["T99"]
         self.assertFalse(overseas["research_ready"])
         self.assertEqual(overseas["missing_ohl_dates"], [missing])
-        self.assertEqual(overseas["native_warmup_rows"], sum(d < START.isoformat() for d in native_days))
+        self.assertEqual(overseas["native_warmup_rows"], sum(d < DAYS[0] for d in native_days))
         self.assertIn("策略缺真实 OHLC", " ".join(overseas["issues"]))
 
 

@@ -13,13 +13,14 @@
 
 ```bash
 python -m src.indicators build --package outputs/research-package-2026-09-30.sqlite   # → outputs/panel-2026-09-30.sqlite
+python -m src.indicators build --package <包.sqlite> --start YYYY-MM-DD   # 显式窗口；省略起点取官方日历首日
 python -m src.research.prereg_v1.run check --panel outputs/panel-2026-09-30.sqlite     # --bench 默认同一个库
 python -m src.indicators legacy-check [--data data/]      # 与 09-25 快照 data/panel_daily.csv 逐日比对（state、ext、rs_1m）
 ```
 
 build 先用 `python -m src.data verify` 的同一套检查复验数据包（文件 sha256 对 MANIFEST、integrity_check、行数、截断、来源），不通过就拒绝；基准必须是数据包里的 `H00300`（沪深300 全收益，I-18），缺了就拒绝，不用价格指数顶替。
 
-随后强制执行[研究输入预检](h00300-offline-restore.md)：官方日历覆盖固定研究窗口 2005-01-01 至包的 end，基准每个交易日有真实收盘，全部已声明研究容器有真实 OHLC。缺收盘、缺 OHLC、缺容器均阻断，不自动选子集。`benchmark_ready` 与 `research_ready` 分列；基准可以只有收盘，T01 作为策略容器仍必须满足 OHLC 条件。失败打印质量 JSON 且不写面板；成功 `build-report.json` 保存 `input_quality`。
+随后强制执行[研究输入预检](h00300-offline-restore.md)：请求窗口起点由 `--start` 声明或默认取官方日历首日，终点为包的 end；窗口超出官方日历可信范围即阻断，没有固定年份裁剪。预检和 build 共用窗口与原行情选择函数。基准每个交易日须有真实收盘，全部已声明研究容器须有真实 OHLC。缺收盘、缺 OHLC、缺容器均阻断，不自动选子集。`benchmark_ready` 与 `research_ready` 分列；基准可以只有收盘，T01 作为策略容器仍必须满足 OHLC 条件。海外须有早于窗口最后实际 A 股交易日的可用原生行，末日尚不可用的行单列，不让“只有末日行情”通过。失败打印质量 JSON 且不写面板；成功 `build-report.json` 保存 `input_quality`。
 
 ## 输出
 
@@ -27,7 +28,7 @@ build 先用 `python -m src.data verify` 的同一套检查复验数据包（文
 
 - `panel` 表：`date, container, open, high, low, close, state, rs_1m, atr20, z_month, data_hole`，主键 `(date, container)`，`data_hole` 只能是 0 / 1（implementation-notes §B）。`container` 为 universe 的主题名；全部容器在 A 股日历（H00300 交易日）上（I-20）。海外容器的 `high` / `low` 是该 A 股日所用那根 K 线的值（长假多根只取最后一根、平盘行 = 前收），**V1 不用**：引擎只用 `open`（次日成交）与 `close`（止损按收盘判），高低点只进指标，而指标在原生序列上算（I-24）。
 - `bench` 表：`date, hs300, hs300_open`（H00300 收盘与原始开盘；开盘缺失时为空，不用收盘补。`hs300_open` 供每日任务的基准窗口「开盘到开盘」用，schema v1.1-e；V1 只读 `hs300`）。
-- `meta` 表：`schema`（`panel-v1`）、`end`、数据包的 `content_sha256`。不含生成时刻：同一个数据包 build 出的面板库逐字节相同（同一 SQLite 版本）；跨机器比对用内容哈希（`prereg_v1.panel.content_sha256`），V1 的 OOS 锁同时记文件与内容两个哈希。
+- `meta` 表：`schema`（`panel-v1`）、`end`、数据包的 `content_sha256`，以及 JSON 格式的 `requested_window`、`trusted_calendar_range`、`effective_window`。不含生成时刻：相同数据包与相同窗口声明生成逐字节相同的面板库（同一 SQLite 版本）；显式和默认起点的声明差异保留在 meta。跨机器比对用内容哈希（`prereg_v1.panel.content_sha256`），V1 的 OOS 锁同时记文件与内容两个哈希。
 - `build-report.json`：数据包文件的 sha256 与 `package_content_sha256`、源库 sha256 与打包时的 git commit、面板库的 sha256 与 `panel_content_sha256`、生成时刻、交易日历（`calendar`：天数与起止，没有则为 null）；每个容器的原始行数与对齐后行数、起止、路由、`price_only`、`volume_source`、各状态天数（可达状态表，只数非平盘行）、`z_month` 个数、补值 / 扩高低计数、原始无成交量行数、`volume_zero_after_align`（对齐后成交量为 0 的行，含平盘）、`calendar`（`a_share` / `overseas_d_minus_1`）；A 股路由另有 `dropped_off_calendar` / `missing_on_calendar`，海外路由另有 `stale_days` / `multi_bar_days` / `trailing_stale_days` / `last_bar_date`，以及 I-25 的 `max_stale_run`（中段最长连续平盘，不含末尾那段）、`stale_runs`（≥ 5 行的各段：`first`、`last`、`rows`、`trailing`、`hole_rows`）、`data_hole_rows`；跳过的容器与原因。
 
 ## 口径
