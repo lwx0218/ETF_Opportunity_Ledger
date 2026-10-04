@@ -82,6 +82,25 @@ def _year_segments(start: date, end: date):
 
 
 # ------------------------------------------------------------------ 中证指数官网
+def parse_csindex_data(data: list[dict], *, preserve_null_close: bool = False) -> Fetched:
+    """纯 CSI 行解析；离线恢复可保留 NULL close，不作联网、日历过滤或价格填补。"""
+    rows, name = [], None
+    for r in data:
+        td = str(r.get("tradeDate") or "")
+        if len(td) != 8:
+            continue
+        name = name or " / ".join(x for x in (r.get("indexNameCnAll") or r.get("indexNameCn"),
+                                              r.get("indexNameEnAll") or r.get("indexNameEn")) if x) or None
+        parsed = _row(f"{td[:4]}-{td[4:6]}-{td[6:]}", r.get("open"), r.get("high"), r.get("low"), r.get("close"),
+                      r.get("tradingVol"), r.get("tradingValue"))
+        if parsed is None and preserve_null_close:
+            parsed = {"date": f"{td[:4]}-{td[4:6]}-{td[6:]}",
+                      **{key: _f(r.get(raw)) for key, raw in (("open", "open"), ("high", "high"), ("low", "low"),
+                          ("close", "close"), ("volume", "tradingVol"), ("amount", "tradingValue"))}}
+        rows.append(parsed)
+    return Fetched(rows, name)
+
+
 def fetch_csindex(code: str, start: date, end: date) -> Fetched:
     """`perf/index-perf?indexCode=&startDate=&endDate=`，按年分段。任一段失败即整条失败（不留缺口）。"""
     rows, name, biz_err = [], None, []
@@ -98,14 +117,9 @@ def fetch_csindex(code: str, start: date, end: date) -> Fetched:
         data = (d.get("data") or []) if ok else []
         if not data:
             _hole(f"csindex {code}", b, e, bool(rows), i + 1 == len(segs))
-        for r in data:
-            td = str(r.get("tradeDate") or "")
-            if len(td) != 8:
-                continue
-            name = name or " / ".join(x for x in (r.get("indexNameCnAll") or r.get("indexNameCn"),
-                                                  r.get("indexNameEnAll") or r.get("indexNameEn")) if x) or None
-            rows.append(_row(f"{td[:4]}-{td[4:6]}-{td[6:]}", r.get("open"), r.get("high"), r.get("low"), r.get("close"),
-                             r.get("tradingVol"), r.get("tradingValue")))
+        parsed = parse_csindex_data(data)
+        name = name or parsed.name
+        rows.extend(parsed.rows)
         if i + 1 < len(segs):
             time.sleep(PAUSE["csi"])
     if not rows and biz_err:

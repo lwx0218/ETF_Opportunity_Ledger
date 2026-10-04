@@ -4,9 +4,9 @@
 
 - Project: ETF_Opportunity-Ledger
 - Document type: reference
-- Status: active（接口均未在服务器实网验证，以首次 probe 为准）
+- Status: active（S1 实网结果见 2026-10-04 日志；离线恢复真实原文件验证待 pi）
 - Owner: Faye
-- Last updated: 2026-10-01（P7：数据改存 `data/market.sqlite`，入 Git）
+- Last updated: 2026-10-04（H00300 离线恢复与只读研究输入预检）
 - Source of truth: `operations/planning/2026-09-29-replan-three-lanes.md` §3 P1、§8、§11；`data/universe.csv` v1；intake §4.2、§5
 
 ## 命令
@@ -19,9 +19,13 @@ python -m src.data calendar outputs/calendar/sse-trading-days.csv [--replace]   
 python -m src.data package  --end 2026-09-30 [--force]   # → outputs/research-package-2026-09-30.sqlite（+ .MANIFEST.json）
 python -m src.data verify   outputs/research-package-2026-09-30.sqlite
 python -m src.data compare  data/kline_510300.csv 510300 [--adj raw] --out outputs/data/diff-510300.csv
+python -m src.data offline-restore --source-run-id 1 --recorded-dir outputs/data/recorded [--apply] [--db 验证副本.sqlite]
+python -m src.data preflight --end 2026-09-30 [--start YYYY-MM-DD] [--db 验证副本.sqlite]  # 只读；research_ready=false 退出 1
 ```
 
 所有命令默认读写 `data/market.sqlite`，`--db` 可换（`verify` 只看包本身）。只用标准库（`urllib`、`csv`、`json`、`sqlite3`），不依赖 pandas / akshare / serenity。HTTP、分段、「一条路不通退下一条」的做法抄自 `lwx0218/serenity_quant_research`（physical-first）`api/app/ingest/{http,quotes,symbols,runner}.py`；单库、schema 写在代码里、每次作业记一行、seed → 库、测试只许连临时库，也按 serenity（replan §11）。
+
+`offline-restore` 默认只读 dry-run，明确 `--apply` 才原子写入；`preflight` 始终只读，复用现有 pandas 日历校验。完整恢复合同、计数与 pi 命令见 [H00300 离线恢复与研究输入校验](h00300-offline-restore.md)。恢复复用已有 CSI 取数方式的原响应，不增加网络来源。27 个年度响应单独入选；短窗只核验不拼入，NULL 与非交易日保留在原库。恢复作业使用现有 `backfill` 类型，以 `args.offline_restore=true` 区分。
 
 ## 取数方式（AGENTS.md：新增取数方式必须补记）
 

@@ -21,6 +21,7 @@ import pandas as pd
 
 from src.data import db as DB
 from src.data import runner as data_runner
+from src.data import quality
 from .calendar import load_trading_days
 from .metrics import atr20, rs_1m, z_month
 from .states import form_states
@@ -60,20 +61,28 @@ class BuildError(RuntimeError):
 
 def read_bars(con, code: str, adj: str) -> pd.DataFrame:
     """bars 表里的一条序列（date 为 datetime64，数值缺失为 NaN），按日期升序。"""
-    df = pd.DataFrame(con.execute("SELECT date, open, high, low, close, volume FROM bars WHERE code = ? AND adj = ? ORDER BY date",
-                                  (code, adj)).fetchall(), columns=BAR_COLUMNS)
+    return _bar_frame(con.execute("SELECT date, open, high, low, close, volume FROM bars WHERE code = ? AND adj = ? ORDER BY date",
+                                  (code, adj)).fetchall())
+
+
+def _bar_frame(rows) -> pd.DataFrame:
+    df = pd.DataFrame(rows, columns=BAR_COLUMNS)
     df["date"] = pd.to_datetime(df["date"])
     for c in BAR_COLUMNS[1:]:
         df[c] = pd.to_numeric(df[c], errors="coerce").astype(float)
     return df
 
 
-def load_series(con, code: str, adj: str) -> tuple[pd.DataFrame, dict]:
+def load_series(con, code: str, adj: str, *, frame=None, strict=False) -> tuple[pd.DataFrame, dict]:
     """读库里的序列并做最小修整，修了什么都计数进报告：
     - 开 / 高 / 低缺失或非正时用收盘补（EIA 布伦特只有收盘；ATR 因此退化为收盘到收盘的波幅）；
     - 高 / 低没有包住开收时，把高低价扩到包住开收（build_hfq.py 对腾讯两位小数高低价的同一处理）；
     - 收盘缺失的行丢弃；收盘非正直接报错。"""
-    df = read_bars(con, code, adj)
+    df = read_bars(con, code, adj) if frame is None else frame.copy()
+    if strict and not np.isfinite(df[["open", "high", "low", "close"]]).all(axis=None):
+        raise BuildError(f"{code}/{adj}: 策略需要真实 OHLC，不允许缺失或非有限值")
+    if strict and not (df[["open", "high", "low", "close"]] > 0).all(axis=None):
+        raise BuildError(f"{code}/{adj}: 策略需要正值 OHLC")
     bad = df["close"].notna() & ~(df["close"] > 0)
     if bad.any():          # P1 从不请求减法前复权：出现非正收盘就是数据坏了，不静默丢掉（也让下游的负价防线有意义）
         raise BuildError(f"{code}/{adj}: {int(bad.sum())} 行收盘非正（首个 {df.loc[bad, 'date'].iloc[0].date()}）")
@@ -176,20 +185,31 @@ def bar_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df.assign(state=form_states(df)["state"].to_numpy(), atr20=atr20(df).to_numpy())
 
 
-def research_frame(con, cov: dict, cal: pd.DatetimeIndex) -> tuple[pd.DataFrame, dict]:
+def research_frame(con, cov: dict, cal: pd.DatetimeIndex, *, strict=False,
+                   start: date | None = None, end: date | None = None) -> tuple[pd.DataFrame, dict]:
     """一个容器的研究序列：读取 → 借成交量（I-21）→ K 线级指标（I-24）→ 对齐 A 股日历（I-20）。数据包与每日任务共用，口径一致。
     海外容器的指标在其本地交易日的原生 K 线上算，长假内的高低点因此进入 hi20 / lo20 / ATR，平盘行不进指标（沿用上一根）；
     A 股容器先丢弃非日历行（那些行不是交易日）再算。"""
-    df, rep = load_series(con, cov["series_code"], cov["series_adj"])
+    overseas = cov.get("route_used") in OVERSEAS_ROUTES
+    frame = None
+    dropped = 0
+    if strict:
+        raw, rows = quality.input_rows(con, cov["series_code"], cov["series_adj"],
+                                       [d.date().isoformat() for d in cal], start=start or cal[0].date(),
+                                       end=end or cal[-1].date(), overseas=overseas)
+        frame = _bar_frame(rows)
+        dropped = len(raw) - len(rows) if not overseas else 0
+    df, rep = load_series(con, cov["series_code"], cov["series_adj"], frame=frame, strict=strict)
     df, vsrc = borrow_volume(df, con, cov)
     rep["volume_source"] = vsrc
-    overseas = cov.get("route_used") in OVERSEAS_ROUTES
     if overseas:
         df, arep = align_to_calendar(bar_indicators(df), cal, True)
     else:
         df, arep = align_to_calendar(df, cal, False)
         df = bar_indicators(df)
     rep.update(arep)
+    if strict and not overseas:
+        rep["dropped_off_calendar"] = dropped
     rep["volume_zero_after_align"] = int((~(df["volume"] > 0)).sum()) if len(df) else 0
     return df, rep
 
@@ -253,33 +273,36 @@ def write_panel_db(path: Path, panel: pd.DataFrame, bench: pd.DataFrame, meta: d
     tmp.replace(path)
 
 
-def build(package: Path, out: Path | None = None, *, log=print) -> Path:
+def build(package: Path, out: Path | None = None, *, start: date | None = None, log=print) -> Path:
     package = Path(package)
     problems = data_runner.verify(package)
     if problems:
         raise BuildError("研究数据包未通过复验：" + "; ".join(problems[:5]))
     con = DB.connect(package, readonly=True)
     try:
-        return _build(con, package, out, log)
+        con.execute("BEGIN")
+        return _build(con, package, out, log, start=start)
     finally:
         con.close()
 
 
-def _build(con, package: Path, out: Path | None, log) -> Path:
+def _build(con, package: Path, out: Path | None, log, *, start: date | None = None) -> Path:
     info = data_runner.package_info(con)
     end = date.fromisoformat(info["end"])
     out = Path(out) if out else ROOT / "outputs" / f"panel-{end.isoformat()}.sqlite"
     covs = DB.read_coverage(con)
 
-    bdf, _ = load_series(con, BENCH_CODE, "raw")
-    if bdf.empty:
-        raise BuildError(f"数据包里没有 {BENCH_CODE}（沪深300 全收益，I-18）；不以价格指数顶替")
-    bench = bdf.set_index("date")["close"]
-    cal = bench.index[bench.index <= pd.Timestamp(end)]
-    try:
-        trading_days = load_trading_days(con)
-    except ValueError as e:
-        raise BuildError(f"数据包里的交易日历不可用：{e}") from e
+    readiness = quality.inspect(con, end, start=start)
+    if not readiness["research_ready"]:
+        log(json.dumps(readiness, ensure_ascii=False, indent=1))
+        issues = readiness["issues"] + [f"H00300: {x}" for x in readiness["benchmark"]["issues"]]
+        issues += [f"{tid}: {x}" for tid, c in readiness["containers"].items() for x in c["issues"]]
+        raise BuildError("研究输入预检未通过（不补 OHLC、不自动剔除容器）：" + "; ".join(issues))
+    trading_days = load_trading_days(con)
+    cal = quality.window_days(trading_days, date.fromisoformat(readiness["start"]), end)
+    # 基准独立读真实收盘；不经过策略的 OHLC 修整路径。
+    bdf = read_bars(con, BENCH_CODE, "raw")
+    bench = bdf.set_index("date")["close"].reindex(cal)
 
     pkg_sha = DB.sha256_file(package)
     frames, report = [], {"package": str(package), "package_sha256": pkg_sha, "package_content_sha256": info_content(package),
@@ -288,21 +311,17 @@ def _build(con, package: Path, out: Path | None, log) -> Path:
                           "bench": {"code": BENCH_CODE, "first": str(bench.index.min().date()), "last": str(bench.index.max().date())},
                           "calendar": ({"days": len(trading_days), "first": str(trading_days[0].date()), "last": str(trading_days[-1].date())}
                                        if trading_days is not None else None),
-                          "containers": {}, "skipped": {}}
+                          "input_quality": readiness, "containers": {}, "skipped": {}}
     for c in covs:
         if c.get("status") not in ("retained", "flagged"):
             continue
         name = c["container"]
         if not c.get("series_adj") or not con.execute("SELECT 1 FROM bars WHERE code = ? AND adj = ? LIMIT 1",
                                                       (c["series_code"], c["series_adj"])).fetchone():
-            report["skipped"][name] = c.get("error") or "无研究序列"
-            log(f"  --  {name}: 跳过（{report['skipped'][name][:80]}）")
-            continue
-        df, rep = research_frame(con, c, cal)
+            raise BuildError(f"{name}: 无研究序列；不自动剔除容器")
+        df, rep = research_frame(con, c, cal, strict=True, start=date.fromisoformat(readiness["start"]), end=end)
         if df.empty:
-            report["skipped"][name] = "对齐 A 股日历后没有行"
-            log(f"  --  {name}: 跳过（对齐 A 股日历后没有行）")
-            continue
+            raise BuildError(f"{name}: 对齐 A 股日历后没有行；不自动剔除容器")
         p = container_panel(df, bench, end, trading_days)
         p.insert(1, "container", name)
         frames.append(p)
@@ -326,8 +345,10 @@ def _build(con, package: Path, out: Path | None, log) -> Path:
     bench_df = pd.DataFrame({"date": bench.index, "hs300": bench.to_numpy(),
                              "hs300_open": bench_open(con).reindex(bench.index).to_numpy()})
     created = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    write_panel_db(out, panel, bench_df, {"end": end.isoformat(), "package_content_sha256": info_content(package)})
-    report["created_at"] = created                                  # 时刻只进报告，面板库逐字节只由数据包决定
+    window_meta = {k: json.dumps(readiness[k], ensure_ascii=False, sort_keys=True)
+                   for k in ("requested_window", "trusted_calendar_range", "effective_window")}
+    write_panel_db(out, panel, bench_df, {"end": end.isoformat(), "package_content_sha256": info_content(package), **window_meta})
+    report["created_at"] = created                                  # 时刻只进报告，面板库由数据包与声明窗口决定
     report["panel_db"], report["panel_db_sha256"] = out.name, DB.sha256_file(out)
     report["panel_content_sha256"] = panel_content_sha256(out)
     report_path(out).write_text(json.dumps(report, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")

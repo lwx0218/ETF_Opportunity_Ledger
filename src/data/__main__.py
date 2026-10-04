@@ -7,6 +7,8 @@
     package  --end 2026-09-30 [--force] [--out-dir outputs]           → outputs/research-package-<end>.sqlite（+ .MANIFEST.json）
     verify   <包.sqlite>                                               sha256、integrity_check、行数、截断、来源
     compare  <参考.csv> <code> [--adj raw|hfq] [--out diff.csv]        重叠区间逐日比对收盘
+    offline-restore --source-run-id N --recorded-dir DIR [--apply]  H00300 原文件恢复，默认只读
+    preflight --end D [--start D]                                只读预检，默认从官方日历首日开始
 """
 from __future__ import annotations
 
@@ -53,6 +55,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("code")
     p.add_argument("--adj", choices=["raw", "hfq"], default="raw")
     p.add_argument("--out", type=Path, default=None)
+    p = sub.add_parser("offline-restore", help="离线恢复 H00300 与 T01 研究 coverage；默认 dry-run")
+    p.add_argument("--source-run-id", type=int, required=True, help="已有 requests 所属的 probe / backfill 作业")
+    p.add_argument("--recorded-dir", type=Path, required=True, help="原响应所在目录")
+    p.add_argument("--apply", action="store_true", help="显式原子写入；省略时完全只读")
+    p = sub.add_parser("preflight", help="只读质量预检；未达到 research_ready 时退出 1")
+    p.add_argument("--end", type=_d, required=True)
+    p.add_argument("--start", type=_d, default=None, help="请求窗口起点；省略时使用官方日历首日")
     for name, sp in sub.choices.items():
         if name != "verify":
             sp.add_argument("--db", type=Path, default=DB.MARKET_DB)
@@ -78,6 +87,23 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if problems else 0
     elif a.cmd == "compare":
         print(json.dumps(runner.compare(a.ref, a.code, adj=a.adj, db=a.db, out=a.out), ensure_ascii=False, indent=1))
+    elif a.cmd == "offline-restore":
+        from .offline_restore import RestoreError, restore
+        try:
+            report = restore(a.db, a.recorded_dir, a.source_run_id, apply=a.apply)
+        except (RestoreError, DB.DbError, OSError) as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 1
+        print(json.dumps(report, ensure_ascii=False, indent=1))
+    elif a.cmd == "preflight":
+        from .quality import preflight
+        try:
+            report = preflight(a.db, a.end, start=a.start)
+        except (DB.DbError, ValueError, OSError) as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 1
+        print(json.dumps(report, ensure_ascii=False, indent=1))
+        return 0 if report["research_ready"] else 1
     return 0
 
 
