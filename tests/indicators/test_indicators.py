@@ -180,22 +180,20 @@ class EndToEnd(unittest.TestCase):
         self.addCleanup(clock.stop)
 
     def make_package(self, with_bench=True, calendar=None, brent_gap=None):
-        """半导体的全收益序列没有成交量、价格版本 H30184 有（I-21 借量要经过「价格序列进包」这一步）。"""
+        """显式合成研究池、完整 OHLC 与合成日历；半导体借价格版成交量（I-21）。"""
         self.db = self.tmp / "market.sqlite"
         con = open_db(self.db)
-        series = {("H00300", "csi"): ohlcv(seed=1, start="2005-01-04", n=5600),
-                  ("H30184CNY010", "csi"): ohlcv(seed=2, start="2005-01-04", n=5600, volume=False),
-                  ("H30184", "csi"): ohlcv(seed=2, start="2005-01-04", n=5600),
-                  ("518880", "eastmoney_etf_hfq"): ohlcv(seed=3, start="2013-07-29", n=3400),
-                  ("BRENT", "eia"): ohlcv(seed=4, start="2005-01-04", n=5600, volume=False)}
+        series = {("H00300", "csi"): ohlcv(seed=1, start="2005-01-04", n=6000),
+                  ("H30184CNY010", "csi"): ohlcv(seed=2, start="2005-01-04", n=6000, volume=False),
+                  ("H30184", "csi"): ohlcv(seed=2, start="2005-01-04", n=6000),
+                  ("518880", "eastmoney_etf_hfq"): ohlcv(seed=3, start="2013-07-29", n=3600),
+                  ("BRENT", "eia"): ohlcv(seed=4, start="2005-01-04", n=6000, volume=False)}
         if not with_bench:
             series.pop(("H00300", "csi"))
         for (code, route), df in series.items():
             d = df.copy()
             if code == "BRENT" and brent_gap:                           # 构造原油的数据断档（I-25）
                 d = d[~d["date"].between(*map(pd.Timestamp, brent_gap))]
-            if route == "eia":
-                d[["open", "high", "low"]] = np.nan
             put(con, code, d, route)
         cov = [dict(theme_id="T01", container="沪深300", status="retained", code="000300", series_code="H00300", series_adj="raw", route_used="csi",
                     price_only="False"),
@@ -203,12 +201,23 @@ class EndToEnd(unittest.TestCase):
                     route_used="csi", price_only="False"),
                dict(theme_id="T15", container="原油", status="flagged", series_code="BRENT", series_adj="raw", route_used="eia", price_only="False"),
                dict(theme_id="T16", container="黄金", status="flagged", series_code="518880", series_adj="hfq", route_used="eastmoney_etf_hfq", price_only="False"),
-               dict(theme_id="T36", container="纳指科技", status="flagged", error="yahoo: 404"),
                dict(theme_id="T34", container="现金", status="execution_only")]
         put_coverage(con, cov)
+        # put_coverage 默认装入真实 universe；本测试只声明合成池，避免把缺数据的真实容器自动剔除。
+        wanted = {c["theme_id"] for c in cov}
+        rows = [json.loads(r[0]) for r in con.execute("SELECT row FROM universe")]
+        rows = [r for r in rows if r["theme_id"] in wanted]
+        DB.load_universe(con, rows, "synthetic-end-to-end-universe")
+        if calendar is None:
+            with con:
+                con.executemany("INSERT INTO calendar VALUES (?)", [(d.date().isoformat(),) for d in pd.bdate_range("2005-01-04", "2027-12-31")])
         con.close()
         if calendar is not None:
-            data_runner.load_calendar(calendar, db=self.db, log=lambda *_: None)
+            # load_calendar 会重新装真实 universe；这里只把已校验合成日历写入临时库。
+            con = open_db(self.db)
+            with con:
+                con.executemany("INSERT INTO calendar VALUES (?)", [(d.date().isoformat(),) for d in read_calendar_file(calendar)])
+            con.close()
         return data_runner.package(date(2026, 9, 30), db=self.db, pkg_root=self.tmp, force=True, log=lambda *_: None)
 
     def test_package_to_panel_to_check(self):
@@ -221,8 +230,9 @@ class EndToEnd(unittest.TestCase):
         rep = json.loads(B.report_path(out).read_text(encoding="utf-8"))
         self.assertEqual(rep["panel_db_sha256"], DB.sha256_file(out))
         self.assertEqual(rep["package_sha256"], DB.sha256_file(pkg))
-        self.assertIn("纳指科技", rep["skipped"])
-        self.assertGreater(rep["containers"]["原油"]["ohl_filled_from_close"], 5000)
+        self.assertEqual(rep["skipped"], {})
+        self.assertTrue(rep["input_quality"]["research_ready"])
+        self.assertEqual(rep["containers"]["原油"]["ohl_filled_from_close"], 0)
         self.assertEqual(rep["containers"]["原油"]["volume_missing_or_zero"], rep["containers"]["原油"]["rows"])
         hs = panel[panel["container"] == "沪深300"]
         self.assertTrue(np.allclose(hs["rs_1m"].dropna(), 0))       # 基准自己对自己
@@ -241,11 +251,11 @@ class EndToEnd(unittest.TestCase):
         raw_bench = B.read_bars(con, "H00300", "raw").set_index("date")
         con.close()
         self.assertTrue(np.allclose(bench.set_index("date")["hs300_open"], raw_bench.loc[bench["date"], "open"]))   # 基准原始开盘
-        self.assertIsNone(rep["calendar"])
+        self.assertEqual(rep["calendar"]["first"], "2005-01-04")
 
     def test_calendar_travels_with_package(self):
         cal = self.tmp / "sse-trading-days.csv"
-        days = pd.bdate_range("2005-01-01", "2027-12-31")
+        days = pd.bdate_range("2005-01-04", "2027-12-31")
         cal.write_text("date\n" + "\n".join(d.date().isoformat() for d in days) + "\n", encoding="utf-8")
         pkg = self.make_package(calendar=cal)
         con = DB.connect(pkg, readonly=True)
@@ -255,7 +265,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(data_runner.verify(pkg), [])
         out = B.build(pkg, self.tmp / "panel.sqlite", log=lambda *_: None)
         rep = json.loads(B.report_path(out).read_text(encoding="utf-8"))
-        self.assertEqual(rep["calendar"], {"days": len(days), "first": "2005-01-03", "last": "2027-12-31"})
+        self.assertEqual(rep["calendar"], {"days": len(days), "first": "2005-01-04", "last": "2027-12-31"})
         pkg.chmod(0o644)                                                                        # 包里的日历缺一段：build 拒绝，不退回工作日规则
         con = sqlite3.connect(pkg)
         con.execute("DELETE FROM calendar WHERE date BETWEEN '2020-03-01' AND '2020-04-30'")

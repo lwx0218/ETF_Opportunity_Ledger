@@ -6,7 +6,7 @@
 - Document type: reference
 - Status: active（只在构造数据上验证；真实数据包到达后跑 `legacy-check` 与 `run check`）
 - Owner: Faye
-- Last updated: 2026-10-01（P7：输入输出改为 SQLite 库）
+- Last updated: 2026-10-04（正式 build 接入只读研究输入预检）
 - Source of truth: replan §3 P2、§8 P6a、§9 P6c-1、§10 P6d-1、§11 P7；implementation-notes E 节 I-20、I-21、I-24、I-25；`operations/planning/2026-09-27-prereg-v1-implementation-notes.md`（I-02、I-18、B 节）；`docs/etf-rotation-framework-v0.md` §3.1
 
 ## 用法
@@ -18,6 +18,8 @@ python -m src.indicators legacy-check [--data data/]      # 与 09-25 快照 dat
 ```
 
 build 先用 `python -m src.data verify` 的同一套检查复验数据包（文件 sha256 对 MANIFEST、integrity_check、行数、截断、来源），不通过就拒绝；基准必须是数据包里的 `H00300`（沪深300 全收益，I-18），缺了就拒绝，不用价格指数顶替。
+
+随后强制执行[研究输入预检](h00300-offline-restore.md)：官方日历覆盖固定研究窗口 2005-01-01 至包的 end，基准每个交易日有真实收盘，全部已声明研究容器有真实 OHLC。缺收盘、缺 OHLC、缺容器均阻断，不自动选子集。`benchmark_ready` 与 `research_ready` 分列；基准可以只有收盘，T01 作为策略容器仍必须满足 OHLC 条件。失败打印质量 JSON 且不写面板；成功 `build-report.json` 保存 `input_quality`。
 
 ## 输出
 
@@ -52,6 +54,8 @@ build 先用 `python -m src.data verify` 的同一套检查复验数据包（文
 - **I-21 成交量**：研究序列缺成交量的行超过一半时，按日期换成同一指数价格版本（coverage 的 `code` 对应的原始文件）的成交量，`volume_source = price_version`；借不到的保持原样（`none`：研究序列就是价格版本本身、价格版本文件不存在或也没有成交量）——`none` 只表示没借到，序列自带的少量成交量照用，放量四态能不能出现以 `states` 为准；自带成交量的（`self`）不动。状态机阈值一个不改。
 
 ## 数据修整（非零计数打印到日志，并写进 build-report）
+
+**正式 build 的覆盖规则（2026-10-04）**：下述旧修整规则仍用于低层兼容调用及尚未改造的每日 live 路径。正式 build 先检查原始 OHLC 并以 strict 路径运行，不执行缺失/非正开高低的收盘填补；收盘缺失直接阻断。A 股计算视图以官方 `calendar` 而非 H00300 已有日期为准，研究窗口外与非交易日原行情保留在库里。正式 build 不适用上文「缺日只计数」「跳过容器」「缺日历退回工作日」的旧行为；其余海外 D−1、指标及量源口径不变。本包不涉及 P6g。
 
 - 开 / 高 / 低缺失或非正时用收盘补。EIA 布伦特只有收盘价，ATR 因此退化为收盘到收盘的波幅。
 - 高 / 低没有包住开收时，把高低价扩到包住开收（与 `build_hfq.py` 对腾讯两位小数高低价的处理相同）。
