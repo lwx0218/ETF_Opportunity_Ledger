@@ -74,7 +74,7 @@ JSON 报告分别给出 `benchmark_ready`、`research_ready`，以及每个容�
 
 ## pi 执行说明
 
-开发环境没有服务器原响应，以下真实恢复必须由 pi 在服务器离线执行。先进入项目并激活服务器已有的 Python 环境。使用独立验证副本，勿直接对真实库 apply：
+开发环境没有服务器原响应，以下真实恢复必须由 pi 在服务器离线执行。先完整执行上面的「SQLite 日期约束升级」，确认升级保全及重复 apply 幂等通过。以下从已升级的 `outputs/market-date-constraints-check.sqlite` 再备份恢复副本，保留升级后的恢复前基线；不能重新从尚未升级的正式库复制后直接恢复。先进入项目并激活服务器已有的 Python 环境，勿直接对真实库 apply：
 
 ```bash
 source outputs/s1-venv/bin/activate
@@ -86,7 +86,7 @@ from pathlib import Path
 p = Path('outputs/h00300-validation/market.sqlite')
 if p.exists():
     raise SystemExit('验证副本已存在；保留旧结果，请改用新的目录')
-src = sqlite3.connect(Path('data/market.sqlite').resolve().as_uri() + '?mode=ro', uri=True)
+src = sqlite3.connect(Path('outputs/market-date-constraints-check.sqlite').resolve().as_uri() + '?mode=ro', uri=True)
 dst = sqlite3.connect(p)
 src.backup(dst)
 dst.close()
@@ -117,7 +117,7 @@ python -m src.data preflight \
 
 pi 核对：28 个响应校验通过、27 个年度响应入选、短窗序号 0 被排除、恢复 **5,302 行**、其中 **4,955 行缺开高低**；原 23 个非交易日仍在原始 bars，但被计算视图排除；缺 **2008-12-31、2009-12-31、2010-12-31** 的基准收盘，因此 `benchmark_ready=false`，策略 OHLC 和其他容器问题也使 `research_ready=false`。这些计数是 Owner 提供的实网核验结果，本次合成测试不冒充真实复验。
 
-另核对副本 `PRAGMA integrity_check=ok`，并与原库比对：除 H00300/raw、新 backfill run 和新 T01 coverage 外，各表历史行及 T01 全部 `exec_*` 字段应逐值一致；第二次 apply 的 `idempotent=true`、`changed=false`，文件哈希不变。保留所有 JSON 和 Git commit 作为本机执行证据。真实库写入、缺行情修复和正式研究执行另行授权；本次不要自动接 build、研究命令、规则开关或 cron。
+另核对副本 `PRAGMA integrity_check=ok`。分开核对两步保全：升级副本相对正式原库只增加六个日期触发器及 `meta.date_constraints`，全部历史数据不变；恢复副本与已升级的 `outputs/market-date-constraints-check.sqlite` 比对，除 H00300/raw、新 backfill run 和新 T01 coverage 外，各表历史行及 T01 全部 `exec_*` 字段应逐值一致。第二次恢复 apply 的 `idempotent=true`、`changed=false`，文件哈希不变。保留所有 JSON 和 Git commit 作为本机执行证据。真实库写入、缺行情修复和正式研究执行另行授权；本次不要自动接 build、研究命令、规则开关或 cron。
 
 ## 相关文件
 
