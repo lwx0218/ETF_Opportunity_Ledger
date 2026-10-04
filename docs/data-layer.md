@@ -6,7 +6,7 @@
 - Document type: reference
 - Status: active（S1 实网结果见 2026-10-04 日志；离线恢复真实原文件验证待 pi）
 - Owner: Faye
-- Last updated: 2026-10-04（H00300 离线恢复与只读研究输入预检）
+- Last updated: 2026-10-04（跨 SQLite 版本日期约束与显式升级）
 - Source of truth: `operations/planning/2026-09-29-replan-three-lanes.md` §3 P1、§8、§11；`data/universe.csv` v1；intake §4.2、§5
 
 ## 命令
@@ -21,6 +21,7 @@ python -m src.data verify   outputs/research-package-2026-09-30.sqlite
 python -m src.data compare  data/kline_510300.csv 510300 [--adj raw] --out outputs/data/diff-510300.csv
 python -m src.data offline-restore --source-run-id 1 --recorded-dir outputs/data/recorded [--apply] [--db 验证副本.sqlite]
 python -m src.data preflight --end 2026-09-30 [--start YYYY-MM-DD] [--db 验证副本.sqlite]  # 只读；research_ready=false 退出 1
+python -m src.data upgrade-date-constraints --db 验证副本.sqlite [--apply]  # 默认只读审计；显式升级旧 market-v1
 ```
 
 所有命令默认读写 `data/market.sqlite`，`--db` 可换（`verify` 只看包本身）。只用标准库（`urllib`、`csv`、`json`、`sqlite3`），不依赖 pandas / akshare / serenity。HTTP、分段、「一条路不通退下一条」的做法抄自 `lwx0218/serenity_quant_research`（physical-first）`api/app/ingest/{http,quotes,symbols,runner}.py`；单库、schema 写在代码里、每次作业记一行、seed → 库、测试只许连临时库，也按 serenity（replan §11）。
@@ -57,6 +58,10 @@ python -m src.data preflight --end 2026-09-30 [--start YYYY-MM-DD] [--db 验证�
 ## 库与表（replan §11）
 
 `data/market.sqlite` 一个库，入 Git；`journal_mode = DELETE`（提交时不留 `-wal` / `-shm` / `-journal`），只在检查点 `VACUUM`。schema 写在 `src/data/db.py`，`meta.schema` 记版本（`market-v1`）：打开时版本不符直接拒绝（需迁移），不在旧库上补建半套表。
+
+日期约束修订为 `meta.date_constraints=gregorian-v1`。`bars.date`、`calendar.date`、`runs.end_date` 在数据库内按固定 ASCII `YYYY-MM-DD`、公历月长及 4/100/400 年闰年规则验证，范围 `0001–9999`，与 Python 日期域一致。不依赖不同 SQLite 版本对 `date('2026-02-30')` 的解析行为。`runs.end_date` 仍允许 NULL；行情 OHLC 的 NULL、合法周末/休市日原记录仍保留；`calendar` 仍拒绝周末。新库含 CHECK 和触发器；旧库显式添加同一规则的 INSERT/UPDATE 触发器，不重建原表。
+
+既有 `market-v1` 的普通写入口及 `offline-restore --apply` 在修订缺失或约束不完整时拒绝写入，并提示 `upgrade-date-constraints`。只读连接、preflight、package 的源库以及 offline-restore dry-run 不迁移；新生成的包使用新约束。升级审计所有存量日期，包括不被 coverage 引用的历史行，非法值报告表、列、主键和值，退出 1，不修写数据。`--apply` 用单个 `BEGIN IMMEDIATE` 事务追加触发器及修订标记；失败全部回滚，重复执行不写文件。未知修订或同名触发器定义冲突会停止。操作与 Pi 复验命令见 [约束升级](h00300-offline-restore.md#sqlite-日期约束升级)。
 
 | 表 | 内容 |
 |---|---|

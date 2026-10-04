@@ -9,6 +9,7 @@
     compare  <参考.csv> <code> [--adj raw|hfq] [--out diff.csv]        重叠区间逐日比对收盘
     offline-restore --source-run-id N --recorded-dir DIR [--apply]  H00300 原文件恢复，默认只读
     preflight --end D [--start D]                                只读预检，默认从官方日历首日开始
+    upgrade-date-constraints [--apply]                         显式升级旧 market-v1 日期约束，默认只读
 """
 from __future__ import annotations
 
@@ -62,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("preflight", help="只读质量预检；未达到 research_ready 时退出 1")
     p.add_argument("--end", type=_d, required=True)
     p.add_argument("--start", type=_d, default=None, help="请求窗口起点；省略时使用官方日历首日")
+    p = sub.add_parser("upgrade-date-constraints", help="审计旧 market-v1 日期；显式 --apply 才升级约束")
+    p.add_argument("--apply", action="store_true", help="原子追加约束，不改写历史数据")
     for name, sp in sub.choices.items():
         if name != "verify":
             sp.add_argument("--db", type=Path, default=DB.MARKET_DB)
@@ -104,6 +107,17 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(json.dumps(report, ensure_ascii=False, indent=1))
         return 0 if report["research_ready"] else 1
+    elif a.cmd == "upgrade-date-constraints":
+        from .date_constraints import UpgradeError, upgrade
+        try:
+            report = upgrade(a.db, apply=a.apply)
+        except UpgradeError as exc:
+            print(json.dumps({**exc.report, "error": str(exc)}, ensure_ascii=False, indent=1), file=sys.stderr)
+            return 1
+        except (DB.DbError, OSError) as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 1
+        print(json.dumps(report, ensure_ascii=False, indent=1))
     return 0
 
 

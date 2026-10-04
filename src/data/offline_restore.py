@@ -166,6 +166,8 @@ def restore(db: Path, recorded_dir: Path, source_run_id: int, *, apply: bool = F
         version = con.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
         if version is None or version[0] != DB.SCHEMA_VERSION:
             raise RestoreError("行情库 schema 不符；离线恢复不创建或迁移 schema")
+        if apply:
+            DB.require_date_constraints(con)
         run = con.execute("SELECT * FROM runs WHERE run_id = ?", (source_run_id,)).fetchone()
         if run is None or run["kind"] not in ("probe", "backfill"):
             raise RestoreError("source_run_id 必须指向原 probe / backfill 作业")

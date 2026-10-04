@@ -23,6 +23,30 @@
 - 同一个事务内写 bars、追加 T01 coverage、追加 `kind=backfill` 且 `args.offline_restore=true` 的 runs 记录。保留原 schema；研究字段更新，T01 执行字段原值复制。原 coverage、requests、runs、其他序列、日历、universe 和 meta 不改。
 - 新 run 记录来源作业、请求序号、证据摘要与原始哈希；失败回滚整个事务。相同证据及相同目标状态重复 apply 不新增行情、coverage 或作业。
 
+## SQLite 日期约束升级
+
+SQLite 3.42.0 会把部分不存在日期（例如 `2026-02-30`）原样通过旧 `date(value) IS value` 约束。新代码用明确的公历校验，同时提供旧 `market-v1` 的显式约束升级。`offline-restore --apply` 和普通数据写入口要求 `gregorian-v1` 修订及完整触发器；恢复入口不会顺带迁移。dry-run 仍可只读核验旧库的录件。
+
+Pi 先在停写且无热日志的行情库副本上复验；以下命令不会写正式库，也不会运行研究。使用项目已安装依赖的 Python（例如 `outputs/s1-venv/bin/python`）：
+
+```bash
+set -e
+PY=outputs/s1-venv/bin/python
+VERIFY_DB=outputs/market-date-constraints-check.sqlite
+test ! -e "$VERIFY_DB"
+cp data/market.sqlite "$VERIFY_DB"
+"$PY" -c 'import sqlite3; print(sqlite3.sqlite_version)'
+"$PY" -m unittest discover -s tests -t .
+"$PY" -m src.data upgrade-date-constraints --db "$VERIFY_DB"
+"$PY" -m src.data upgrade-date-constraints --db "$VERIFY_DB" --apply
+"$PY" -m src.data upgrade-date-constraints --db "$VERIFY_DB" --apply  # changed=false / idempotent=true
+"$PY" -m src.data offline-restore --db "$VERIFY_DB" --source-run-id 1 --recorded-dir outputs/data/recorded
+```
+
+任何命令失败即停止。非法存量日期会列在 `invalid_dates`，连同总数 `invalid_count` 输出，退出 1；不得先改历史日期来强行升级。升级只改变触发器和 `meta.date_constraints`，不改 bars、calendar、coverage、requests、runs、universe 或其他历史行，不增加作业记录。`runs.end_date=NULL`、原始 OHLC NULL、合法非交易日行情保留。升级失败会回滚新增 DDL 和标记；再次 apply 为字节幂等。只读审计不写入、不建库，升级命令没有网络路径。
+
+真实库应用和恢复写入仍需各自授权；本轮只交付代码和合成验证。三个缺失收盘价、研究放行与运行不在本轮范围内。升级本身不会改变质量预检结论。
+
 ## 只读预检与正式 build
 
 ```bash

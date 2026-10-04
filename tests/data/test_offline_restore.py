@@ -12,8 +12,10 @@ from urllib.parse import urlencode
 
 import tests  # noqa: F401 — 默认真实库测试防线
 from src.data import db as DB
+from src.data.date_constraints import DATE_CONSTRAINT_KEY, DATE_TRIGGERS, upgrade
 from src.data.offline_restore import RestoreError, restore
 from src.data.sources import CSI_PERF, parse_csindex_data
+from tests.data.test_date_constraints import create_legacy
 
 TABLES = {"meta": "key", "runs": "run_id", "bars": "code, adj, date", "coverage": "run_id, theme_id",
           "requests": "run_id, seq", "update_results": "run_id, seq", "calendar": "date", "universe": "theme_id"}
@@ -123,6 +125,39 @@ class OfflineRestore(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             self.assertEqual(main(args + ["--apply"]), 0)
         self.assertTrue(json.loads(output.getvalue())["applied"])
+
+    def test_legacy_database_requires_explicit_upgrade_before_restore_apply(self):
+        # 原 requests / 响应在冻结的旧 schema 中同样可恢复；dry-run 不能顺便迁移。
+        legacy_path = self.root / "legacy.sqlite"
+        legacy = create_legacy(legacy_path)
+        self.addCleanup(legacy.close)
+        with legacy:
+            for table, order in TABLES.items():
+                rows = [tuple(row) for row in self.con.execute(f"SELECT * FROM {table} ORDER BY {order}")]
+                if table == "meta":
+                    rows = [row for row in rows if row[0] not in ("schema", DATE_CONSTRAINT_KEY)]
+                if rows:
+                    legacy.executemany(f"INSERT INTO {table} VALUES ({','.join('?' for _ in rows[0])})", rows)
+        self.db, self.con = legacy_path, legacy
+        before, disk = self.snapshot(), DB.sha256_file(self.db)
+        self.assertTrue(self.call()["dry_run"])
+        with self.assertRaisesRegex(DB.DbError, "upgrade-date-constraints"):
+            self.call(apply=True)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(DB.sha256_file(self.db), disk)
+        self.assertTrue(upgrade(self.db, apply=True)["applied"])
+        self.assertTrue(self.call(apply=True)["applied"])
+        self.assertEqual(self.con.execute("SELECT count(*) FROM bars WHERE code='H00300'").fetchone()[0], 5)
+        self.assertTrue(self.call(apply=True)["idempotent"])
+
+    def test_restore_apply_rejects_incomplete_date_constraint_contract_without_repair(self):
+        self.con.execute(f"DROP TRIGGER {next(iter(DATE_TRIGGERS))}")
+        self.con.commit()
+        before, disk = self.snapshot(), DB.sha256_file(self.db)
+        with self.assertRaisesRegex(DB.DbError, "upgrade-date-constraints"):
+            self.call(apply=True)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(DB.sha256_file(self.db), disk)
 
     def test_atomic_apply_preserves_dates_nulls_origin_and_all_protected_data(self):
         old_tables = {table: [tuple(r) for r in self.con.execute(f"SELECT * FROM {table} ORDER BY {order}")]
