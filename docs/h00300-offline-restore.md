@@ -23,6 +23,30 @@
 - 同一个事务内写 bars、追加 T01 coverage、追加 `kind=backfill` 且 `args.offline_restore=true` 的 runs 记录。保留原 schema；研究字段更新，T01 执行字段原值复制。原 coverage、requests、runs、其他序列、日历、universe 和 meta 不改。
 - 新 run 记录来源作业、请求序号、证据摘要与原始哈希；失败回滚整个事务。相同证据及相同目标状态重复 apply 不新增行情、coverage 或作业。
 
+## SQLite 日期约束升级
+
+SQLite 3.42.0 会把部分不存在日期（例如 `2026-02-30`）原样通过旧 `date(value) IS value` 约束。新代码用明确的公历校验，同时提供旧 `market-v1` 的显式约束升级。`offline-restore --apply` 和普通数据写入口要求 `gregorian-v1` 修订及完整触发器；恢复入口不会顺带迁移。dry-run 仍可只读核验旧库的录件。
+
+Pi 先在停写且无热日志的行情库副本上复验；以下命令不会写正式库，也不会运行研究。使用项目已安装依赖的 Python（例如 `outputs/s1-venv/bin/python`）：
+
+```bash
+set -e
+PY=outputs/s1-venv/bin/python
+VERIFY_DB=outputs/market-date-constraints-check.sqlite
+test ! -e "$VERIFY_DB"
+cp data/market.sqlite "$VERIFY_DB"
+"$PY" -c 'import sqlite3; print(sqlite3.sqlite_version)'
+"$PY" -m unittest discover -s tests -t .
+"$PY" -m src.data upgrade-date-constraints --db "$VERIFY_DB"
+"$PY" -m src.data upgrade-date-constraints --db "$VERIFY_DB" --apply
+"$PY" -m src.data upgrade-date-constraints --db "$VERIFY_DB" --apply  # changed=false / idempotent=true
+"$PY" -m src.data offline-restore --db "$VERIFY_DB" --source-run-id 1 --recorded-dir outputs/data/recorded
+```
+
+任何命令失败即停止。非法存量日期会列在 `invalid_dates`，连同总数 `invalid_count` 输出，退出 1；不得先改历史日期来强行升级。升级只改变触发器和 `meta.date_constraints`，不改 bars、calendar、coverage、requests、runs、universe 或其他历史行，不增加作业记录。`runs.end_date=NULL`、原始 OHLC NULL、合法非交易日行情保留。升级失败会回滚新增 DDL 和标记；再次 apply 为字节幂等。只读审计不写入、不建库，升级命令没有网络路径。
+
+真实库应用和恢复写入仍需各自授权；本轮只交付代码和合成验证。三个缺失收盘价、研究放行与运行不在本轮范围内。升级本身不会改变质量预检结论。
+
 ## 只读预检与正式 build
 
 ```bash
@@ -50,7 +74,7 @@ JSON 报告分别给出 `benchmark_ready`、`research_ready`，以及每个容�
 
 ## pi 执行说明
 
-开发环境没有服务器原响应，以下真实恢复必须由 pi 在服务器离线执行。先进入项目并激活服务器已有的 Python 环境。使用独立验证副本，勿直接对真实库 apply：
+开发环境没有服务器原响应，以下真实恢复必须由 pi 在服务器离线执行。先完整执行上面的「SQLite 日期约束升级」，确认升级保全及重复 apply 幂等通过。以下从已升级的 `outputs/market-date-constraints-check.sqlite` 再备份恢复副本，保留升级后的恢复前基线；不能重新从尚未升级的正式库复制后直接恢复。先进入项目并激活服务器已有的 Python 环境，勿直接对真实库 apply：
 
 ```bash
 source outputs/s1-venv/bin/activate
@@ -62,7 +86,7 @@ from pathlib import Path
 p = Path('outputs/h00300-validation/market.sqlite')
 if p.exists():
     raise SystemExit('验证副本已存在；保留旧结果，请改用新的目录')
-src = sqlite3.connect(Path('data/market.sqlite').resolve().as_uri() + '?mode=ro', uri=True)
+src = sqlite3.connect(Path('outputs/market-date-constraints-check.sqlite').resolve().as_uri() + '?mode=ro', uri=True)
 dst = sqlite3.connect(p)
 src.backup(dst)
 dst.close()
@@ -93,7 +117,7 @@ python -m src.data preflight \
 
 pi 核对：28 个响应校验通过、27 个年度响应入选、短窗序号 0 被排除、恢复 **5,302 行**、其中 **4,955 行缺开高低**；原 23 个非交易日仍在原始 bars，但被计算视图排除；缺 **2008-12-31、2009-12-31、2010-12-31** 的基准收盘，因此 `benchmark_ready=false`，策略 OHLC 和其他容器问题也使 `research_ready=false`。这些计数是 Owner 提供的实网核验结果，本次合成测试不冒充真实复验。
 
-另核对副本 `PRAGMA integrity_check=ok`，并与原库比对：除 H00300/raw、新 backfill run 和新 T01 coverage 外，各表历史行及 T01 全部 `exec_*` 字段应逐值一致；第二次 apply 的 `idempotent=true`、`changed=false`，文件哈希不变。保留所有 JSON 和 Git commit 作为本机执行证据。真实库写入、缺行情修复和正式研究执行另行授权；本次不要自动接 build、研究命令、规则开关或 cron。
+另核对副本 `PRAGMA integrity_check=ok`。分开核对两步保全：升级副本相对正式原库只增加六个日期触发器及 `meta.date_constraints`，全部历史数据不变；恢复副本与已升级的 `outputs/market-date-constraints-check.sqlite` 比对，除 H00300/raw、新 backfill run 和新 T01 coverage 外，各表历史行及 T01 全部 `exec_*` 字段应逐值一致。第二次恢复 apply 的 `idempotent=true`、`changed=false`，文件哈希不变。保留所有 JSON 和 Git commit 作为本机执行证据。真实库写入、缺行情修复和正式研究执行另行授权；本次不要自动接 build、研究命令、规则开关或 cron。
 
 ## 相关文件
 

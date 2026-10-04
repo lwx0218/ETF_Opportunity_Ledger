@@ -16,6 +16,9 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .date_constraints import (DATE_CONSTRAINT_KEY, DATE_CONSTRAINT_VERSION, DATE_TRIGGERS,
+                               date_rule, require_date_constraints)
+
 ROOT = Path(__file__).resolve().parents[2]
 MARKET_DB = ROOT / "data" / "market.sqlite"
 SCHEMA_VERSION = "market-v1"
@@ -37,7 +40,7 @@ CREATE TABLE IF NOT EXISTS runs (
     kind            TEXT NOT NULL CHECK (kind IN {RUN_KINDS}),
     started_at      TEXT NOT NULL,
     finished_at     TEXT,
-    end_date        TEXT CHECK (end_date IS NULL OR date(end_date) IS end_date),
+    end_date        TEXT CHECK ({date_rule('runs', 'end_date')}),
     args            TEXT,
     git_commit      TEXT,
     universe_sha256 TEXT,
@@ -47,7 +50,7 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE TABLE IF NOT EXISTS bars (
     code       TEXT NOT NULL CHECK (length(code) > 0),
     adj        TEXT NOT NULL CHECK (adj IN ('raw', 'hfq')),
-    date       TEXT NOT NULL CHECK (date(date) IS date),
+    date       TEXT NOT NULL CHECK ({date_rule('bars', 'date')}),
     open       REAL, high REAL, low REAL, close REAL, volume REAL, amount REAL,
     source     TEXT NOT NULL CHECK (length(source) > 0),
     fetched_at TEXT NOT NULL,
@@ -101,7 +104,7 @@ CREATE TABLE IF NOT EXISTS update_results (
 );
 
 CREATE TABLE IF NOT EXISTS calendar (
-    date TEXT PRIMARY KEY CHECK (date(date) IS date AND strftime('%w', date) NOT IN ('0', '6'))
+    date TEXT PRIMARY KEY CHECK ({date_rule('calendar', 'date')})
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS universe (
@@ -113,7 +116,7 @@ CREATE TABLE IF NOT EXISTS universe (
 CREATE VIEW IF NOT EXISTS coverage_latest AS
 SELECT c.* FROM coverage c
  WHERE c.run_id = (SELECT max(run_id) FROM coverage x WHERE x.theme_id = c.theme_id);
-"""
+""" + ";\n".join(DATE_TRIGGERS.values()) + ";\n"
 
 PACKAGE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS package (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
@@ -134,15 +137,16 @@ def refuse_default_in_tests(path, default: Path) -> None:
         raise DbError(f"测试只许连临时库，拒绝默认库 {default}")
 
 
-def _check_schema(con, path) -> None:
+def _check_schema(con, path) -> bool:
     """先查版本再建表：旧库不能被 IF NOT EXISTS 补上半套新表。"""
     have = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     if not have:
-        return
+        return False
     v = con.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone() if "meta" in have else None
     if v is None or v[0] != SCHEMA_VERSION:
         con.close()
         raise DbError(f"{path} 的 schema 是 {v[0] if v else '未知'}，当前代码是 {SCHEMA_VERSION}；需迁移")
+    return True
 
 
 def connect(path=MARKET_DB, *, readonly: bool = False, schema: str = SCHEMA) -> sqlite3.Connection:
@@ -157,13 +161,21 @@ def connect(path=MARKET_DB, *, readonly: bool = False, schema: str = SCHEMA) -> 
         con = sqlite3.connect(str(path))
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
-    _check_schema(con, path)
+    existing = _check_schema(con, path)
     if readonly:
         return con
+    if existing:
+        try:
+            require_date_constraints(con)
+        except BaseException:
+            con.close()
+            raise
     con.execute("PRAGMA journal_mode = DELETE")                   # 入 Git 的库不留 -wal / -shm
-    con.executescript(schema)
-    con.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema', ?)", (SCHEMA_VERSION,))
-    con.commit()
+    if not existing:
+        con.executescript(schema)
+        con.executemany("INSERT INTO meta (key, value) VALUES (?, ?)",
+                        [("schema", SCHEMA_VERSION), (DATE_CONSTRAINT_KEY, DATE_CONSTRAINT_VERSION)])
+        con.commit()
     return con
 
 
