@@ -1,0 +1,302 @@
+{
+  "task": "seven targeted CSI and Eastmoney hfq windows",
+  "base_commit": "7fc19d265d5ff666e34d91a57fbb06468227c792",
+  "evidence_dir": "outputs/data/targeted-probes-20261005T155949Z",
+  "finished_at": "2026-10-05T16:00:14.147528+00:00",
+  "database_unchanged": true,
+  "source_db_sha256": {
+    "data/market.sqlite": "8fa89a71c2afad92204f0c00a343f031e6108db37e0e76e2b828b41f8f72e0af"
+  },
+  "logical_windows": 7,
+  "http_attempts": 9,
+  "CSI_stopped_on_403": false,
+  "windows": [
+    {
+      "window": "H00905-short",
+      "source": "csi",
+      "code": "H00905",
+      "start": "20110103",
+      "end": "20110114",
+      "url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=H00905&startDate=20110103&endDate=20110114",
+      "outcome": "success_nonempty",
+      "http_status": 200,
+      "request": {
+        "url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=H00905&startDate=20110103&endDate=20110114",
+        "fetched_at": "2026-10-05T15:59:51+00:00",
+        "bytes": 3337,
+        "sha256": "bbac4cd268e44012c3545ba5738f19f6f877ef86dc6288367415397dd25fdd2e",
+        "error": null,
+        "file": "8cd42f6bf6fc.body"
+      },
+      "response_code": "200",
+      "rows": 9,
+      "ohlc_field_states": {
+        "open": {
+          "null": 9
+        },
+        "high": {
+          "null": 9
+        },
+        "low": {
+          "null": 9
+        },
+        "close": {
+          "value": 9
+        }
+      },
+      "attempts": [
+        {
+          "window": "H00905-short",
+          "url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=H00905&startDate=20110103&endDate=20110114",
+          "started_at": "2026-10-05T15:59:49.619840+00:00",
+          "http_status": 200,
+          "final_url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=H00905&startDate=20110103&endDate=20110114"
+        }
+      ]
+    },
+    {
+      "window": "H00905-year",
+      "source": "csi",
+      "code": "H00905",
+      "start": "20110101",
+      "end": "20111231",
+      "url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=H00905&startDate=20110101&endDate=20111231",
+      "outcome": "success_nonempty",
+      "http_status": 200,
+      "request": {
+        "url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=H00905&startDate=20110101&endDate=20111231",
+        "fetched_at": "2026-10-05T15:59:52+00:00",
+        "bytes": 89512,
+        "sha256": "41b96e76b94faadd5608a88433a639f48667ec3591cc02a76a1139b4c878af4c",
+        "error": null,
+        "file": "cadae6f08f5b.body"
+      },
+      "response_code": "200",
+      "rows": 245,
+      "ohlc_field_states": {
+        "open": {
+          "null": 245
+        },
+        "high": {
+          "null": 245
+        },
+        "low": {
+          "null": 245
+        },
+        "close": {
+          "value": 245
+        }
+      },
+      "attempts": [
+        {
+          "window": "H00905-year",
+          "url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=H00905&startDate=20110101&endDate=20111231",
+          "started_at": "2026-10-05T15:59:51.338597+00:00",
+          "http_status": 200,
+          "final_url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=H00905&startDate=20110101&endDate=20111231"
+        }
+      ]
+    },
+    {
+      "window": "H00852-2015",
+      "source": "csi",
+      "code": "H00852",
+      "start": "20150105",
+      "end": "20150116",
+      "url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=H00852&startDate=20150105&endDate=20150116",
+      "outcome": "success_nonempty",
+      "http_status": 200,
+      "request": {
+        "url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=H00852&startDate=20150105&endDate=20150116",
+        "fetched_at": "2026-10-05T15:59:53+00:00",
+        "bytes": 3733,
+        "sha256": "05dd9634c678ba3c2e29a8aa7cbbd6b8a6d8a00b93821aa41681a4e83b0407e3",
+        "error": null,
+        "file": "5a290f3acda6.body"
+      },
+      "response_code": "200",
+      "rows": 10,
+      "ohlc_field_states": {
+        "open": {
+          "null": 10
+        },
+        "high": {
+          "null": 10
+        },
+        "low": {
+          "null": 10
+        },
+        "close": {
+          "value": 10
+        }
+      },
+      "attempts": [
+        {
+          "window": "H00852-2015",
+          "url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=H00852&startDate=20150105&endDate=20150116",
+          "started_at": "2026-10-05T15:59:52.457313+00:00",
+          "http_status": 200,
+          "final_url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=H00852&startDate=20150105&endDate=20150116"
+        }
+      ]
+    },
+    {
+      "window": "H00852-recent",
+      "source": "csi",
+      "code": "H00852",
+      "start": "20260914",
+      "end": "20260930",
+      "url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=H00852&startDate=20260914&endDate=20260930",
+      "outcome": "success_nonempty",
+      "http_status": 200,
+      "request": {
+        "url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=H00852&startDate=20260914&endDate=20260930",
+        "fetched_at": "2026-10-05T15:59:54+00:00",
+        "bytes": 4502,
+        "sha256": "fe79496ebde2b63a7dc432b9f27f1a14e55365a1be2814e3d048054bc38ae6dd",
+        "error": null,
+        "file": "68746c04fc9c.body"
+      },
+      "response_code": "200",
+      "rows": 12,
+      "ohlc_field_states": {
+        "open": {
+          "null": 12
+        },
+        "high": {
+          "null": 12
+        },
+        "low": {
+          "null": 12
+        },
+        "close": {
+          "value": 12
+        }
+      },
+      "attempts": [
+        {
+          "window": "H00852-recent",
+          "url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=H00852&startDate=20260914&endDate=20260930",
+          "started_at": "2026-10-05T15:59:53.597156+00:00",
+          "http_status": 200,
+          "final_url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=H00852&startDate=20260914&endDate=20260930"
+        }
+      ]
+    },
+    {
+      "window": "000852-recent",
+      "source": "csi",
+      "code": "000852",
+      "start": "20260914",
+      "end": "20260930",
+      "url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=000852&startDate=20260914&endDate=20260930",
+      "outcome": "success_nonempty",
+      "http_status": 200,
+      "request": {
+        "url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=000852&startDate=20260914&endDate=20260930",
+        "fetched_at": "2026-10-05T15:59:56+00:00",
+        "bytes": 4162,
+        "sha256": "66d4a617aa901f915dd2de9c3ee2a889cfe8c6e9cc337b52e629f4ca221d4c04",
+        "error": null,
+        "file": "3ed1985b3ea2.body"
+      },
+      "response_code": "200",
+      "rows": 12,
+      "ohlc_field_states": {
+        "open": {
+          "value": 12
+        },
+        "high": {
+          "value": 12
+        },
+        "low": {
+          "value": 12
+        },
+        "close": {
+          "value": 12
+        }
+      },
+      "attempts": [
+        {
+          "window": "000852-recent",
+          "url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=000852&startDate=20260914&endDate=20260930",
+          "started_at": "2026-10-05T15:59:54.901178+00:00",
+          "http_status": 200,
+          "final_url": "https://www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=000852&startDate=20260914&endDate=20260930"
+        }
+      ]
+    },
+    {
+      "window": "518880-hfq",
+      "source": "eastmoney",
+      "code": "518880",
+      "start": "20260901",
+      "end": "20260930",
+      "url": "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.518880&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=2&beg=20260901&end=20260930&lmt=10000",
+      "outcome": "request_failed",
+      "http_status": null,
+      "request": {
+        "url": "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.518880&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=2&beg=20260901&end=20260930&lmt=10000",
+        "fetched_at": "2026-10-05T16:00:09+00:00",
+        "bytes": null,
+        "sha256": null,
+        "error": "RemoteDisconnected: Remote end closed connection without response"
+      },
+      "error": "RemoteDisconnected: Remote end closed connection without response  ← https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.518880&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2",
+      "attempts": [
+        {
+          "window": "518880-hfq",
+          "url": "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.518880&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=2&beg=20260901&end=20260930&lmt=10000",
+          "started_at": "2026-10-05T15:59:56.123745+00:00",
+          "http_status": null,
+          "error": "RemoteDisconnected: Remote end closed connection without response",
+          "finished_at": "2026-10-05T16:00:07.207028+00:00"
+        },
+        {
+          "window": "518880-hfq",
+          "url": "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.518880&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=2&beg=20260901&end=20260930&lmt=10000",
+          "started_at": "2026-10-05T16:00:08.707372+00:00",
+          "http_status": null,
+          "error": "RemoteDisconnected: Remote end closed connection without response",
+          "finished_at": "2026-10-05T16:00:09.896304+00:00"
+        }
+      ]
+    },
+    {
+      "window": "511260-hfq",
+      "source": "eastmoney",
+      "code": "511260",
+      "start": "20260901",
+      "end": "20260930",
+      "url": "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.511260&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=2&beg=20260901&end=20260930&lmt=10000",
+      "outcome": "request_failed",
+      "http_status": null,
+      "request": {
+        "url": "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.511260&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=2&beg=20260901&end=20260930&lmt=10000",
+        "fetched_at": "2026-10-05T16:00:14+00:00",
+        "bytes": null,
+        "sha256": null,
+        "error": "RemoteDisconnected: Remote end closed connection without response"
+      },
+      "error": "RemoteDisconnected: Remote end closed connection without response  ← https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.511260&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2",
+      "attempts": [
+        {
+          "window": "511260-hfq",
+          "url": "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.511260&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=2&beg=20260901&end=20260930&lmt=10000",
+          "started_at": "2026-10-05T16:00:09.907604+00:00",
+          "http_status": null,
+          "error": "RemoteDisconnected: Remote end closed connection without response",
+          "finished_at": "2026-10-05T16:00:11.158540+00:00"
+        },
+        {
+          "window": "511260-hfq",
+          "url": "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.511260&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5%2Cf6&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58%2Cf59%2Cf60%2Cf61&klt=101&fqt=2&beg=20260901&end=20260930&lmt=10000",
+          "started_at": "2026-10-05T16:00:12.658894+00:00",
+          "http_status": null,
+          "error": "RemoteDisconnected: Remote end closed connection without response",
+          "finished_at": "2026-10-05T16:00:14.098695+00:00"
+        }
+      ]
+    }
+  ]
+}
