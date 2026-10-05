@@ -6,12 +6,14 @@
 - Document type: guide
 - Status: active
 - Owner: Faye
-- Last updated: 2026-10-04
+- Last updated: 2026-10-05
 - Source of truth: Owner 本包指令；`docs/data-layer.md`；`operations/work_logs/2026-10-04-s1-data-delivery.md`
 
 ## 范围
 
 恢复 `requests` 已锚定的 CSI H00300 年度原响应。全程离线，既不重抓行情，也不计算研究收益。本命令不替换缺失年份、不用短窗补年度缺口、不补 OHLC、不启用规则。
+
+服务器已在 `main=81e101e` 完成年度恢复，见 [服务器日志](../operations/work_logs/2026-10-04-h00300-server-restore.md)。三个年末缺日由独立 [offline-supplement](h00300-year-end-supplement.md) 处理；以下年度恢复命令只核验并保留已有且有完整补录审计的额外行，不负责补录。
 
 `offline-restore` 默认 dry-run，只读打开库；只有 `--apply` 才写入。输入包括已有行情库、原响应目录、明确的来源作业 ID。本次 S1 的 28 个成功响应属于 **probe run 1**：27 个年度窗口（2000–2026，最后一年截至 2026-09-30）和 1 个 45 天候选短窗。backfill run 2 的 H00300 请求失败，不是恢复来源。
 
@@ -19,7 +21,7 @@
 
 - 用来源作业的 `requests.file / bytes / sha256` 核验所有 H00300 原响应，短窗也要通过核验；路径不得逃出录件目录。年度窗口必须唯一且齐全，未知窗口、缺文件、`requests.error`、哈希不符或重复日期均拒绝，不联网回退。沿用 CSI 起点前无数据的处理：首条数据之前的空业务错误响应保留 warning，说明起点可能被截短；有行情之后的业务错误拒绝。
 - 复用在线 CSI 行解析器的纯解析入口。日期和 NULL 原样保留；每行 `source=csi`，`fetched_at` 取该年度请求的原获取时刻。恢复包括非交易日原行，过滤只发生在后续计算视图。
-- `H00300/raw` 的已有行只能是恢复结果的完全一致子集；数值、来源、获取时刻或额外日期冲突时拒绝覆盖。只补缺失行。
+- `H00300/raw` 的年度已有行必须与恢复结果完全一致；年度之外只允许三个年末日且必须重新核验完整补录原响应审计并逐字段匹配已有行。其余额外日期、缺证据或数值/NULL/来源/获取时刻冲突均拒绝。只插入缺失的年度响应行，不从补录审计补行。
 - 同一个事务内写 bars、追加 T01 coverage、追加 `kind=backfill` 且 `args.offline_restore=true` 的 runs 记录。保留原 schema；研究字段更新，T01 执行字段原值复制。原 coverage、requests、runs、其他序列、日历、universe 和 meta 不改。
 - 新 run 记录来源作业、请求序号、证据摘要与原始哈希；失败回滚整个事务。相同证据及相同目标状态重复 apply 不新增行情、coverage 或作业。
 

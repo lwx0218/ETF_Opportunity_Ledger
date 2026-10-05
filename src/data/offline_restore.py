@@ -152,7 +152,8 @@ def restore(db: Path, recorded_dir: Path, source_run_id: int, *, apply: bool = F
     """验证指定 run 的全部 H00300 响应；显式 apply 才以单事务恢复行情与 T01 研究 coverage。
 
     只接受年度窗口全集和已知 45 天候选短窗。短窗校验后排除，不补齐缺失收盘，不滤非交易日。
-    现有 H00300 行必须是恢复结果的精确子集（含获取时刻）；其余表与历史行仅查询、不覆写。
+    现有 H00300 行须逐字段匹配年度证据，或匹配已成功补录的三处年末审计证据。
+    只保留已存在的补录行，不从补录审计重插缺行；其余表与历史行仅查询、不覆写。
     """
     DB.refuse_default_in_tests(db, DB.MARKET_DB)
     path = Path(db).resolve()
@@ -194,10 +195,24 @@ def restore(db: Path, recorded_dir: Path, source_run_id: int, *, apply: bool = F
             raise RestoreError("H00300 被执行 coverage 引用，拒绝改动执行行情")
         desired = {r["date"]: r for r in rows}
         existing = {r["date"]: dict(r) for r in con.execute("SELECT * FROM bars WHERE code = ? AND adj = 'raw'", (CODE,))}
+        supplement_dates = set(existing) - desired.keys()
+        supplement_rows, supplement_run_ids = {}, []
+        if supplement_dates:
+            if any(day > end.isoformat() for day in supplement_dates):
+                raise RestoreError("已有 H00300 年度外行情晚于原作业窗口，拒绝覆盖")
+            from .offline_supplement import verified_supplement_rows
+
+            try:
+                supplement_rows, supplement_run_ids = verified_supplement_rows(con, supplement_dates)
+            except RestoreError as ex:
+                raise RestoreError(f"已有 H00300 年度外行情缺少有效补录证据，拒绝覆盖：{ex}") from ex
         for day, old in existing.items():
-            if day not in desired or old != desired[day]:
+            expected = desired[day] if day in desired else supplement_rows.get(day)
+            if old != expected:
                 raise RestoreError(f"已有 H00300/{day} 与离线证据冲突（含来源 / 获取时刻），拒绝覆盖")
         added = [r for r in rows if r["date"] not in existing]
+        annual_rows = len(rows)
+        rows = sorted([*rows, *(supplement_rows[day] for day in supplement_dates)], key=lambda r: r["date"])
         cov = _coverage(base, rows, name)
         previous_run = None
         for r in con.execute("SELECT run_id, args FROM runs WHERE kind = 'backfill' AND status = 'ok' ORDER BY run_id DESC"):
@@ -214,6 +229,8 @@ def restore(db: Path, recorded_dir: Path, source_run_id: int, *, apply: bool = F
                   "source_run_id": source_run_id, "run_id": previous_run, "manifest_sha256": digest,
                   "verified_requests": len(evidence), "annual_requests": len(annual),
                   "excluded_short_window_requests": short, "rows": len(rows), "rows_to_insert": len(added),
+                  "annual_rows": annual_rows, "retained_supplement_dates": sorted(supplement_dates),
+                  "supplement_run_ids": supplement_run_ids,
                   "first_date": rows[0]["date"], "last_date": rows[-1]["date"],
                   "ohlc_missing_rows": int(cov["ohlc_missing_rows"]),
                   "null_close_rows": sum(r["close"] is None for r in rows), "warnings": warnings}
@@ -228,6 +245,8 @@ def restore(db: Path, recorded_dir: Path, source_run_id: int, *, apply: bool = F
                 "start": START.isoformat(), "end": end.isoformat(), "code": CODE, "theme_id": THEME,
                 "annual_request_seqs": [entry["seq"] for entry, _ in annual.values()],
                 "excluded_short_window_request_seqs": short,
+                "annual_rows": annual_rows, "retained_supplement_dates": sorted(supplement_dates),
+                "supplement_run_ids": supplement_run_ids,
                 "request_refs": [{"run_id": source_run_id, "seq": e["seq"], "sha256": e["sha256"]} for e in evidence]}
         cur = con.execute("INSERT INTO runs (kind, started_at, finished_at, end_date, args, git_commit, universe_sha256, status) "
                           "VALUES ('backfill', ?, ?, ?, ?, ?, ?, 'ok')",
@@ -241,7 +260,7 @@ def restore(db: Path, recorded_dir: Path, source_run_id: int, *, apply: bool = F
         con.commit()
         result.update(applied=True, changed=True, run_id=run_id)
         return result
-    except (OSError, sqlite3.DatabaseError) as ex:
+    except (OSError, UnicodeError, sqlite3.DatabaseError) as ex:
         con.rollback()
         raise RestoreError(f"离线恢复失败，未写入：{ex}") from ex
     except BaseException:
