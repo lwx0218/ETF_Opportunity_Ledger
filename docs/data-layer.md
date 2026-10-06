@@ -4,9 +4,9 @@
 
 - Project: ETF_Opportunity-Ledger
 - Document type: reference
-- Status: active（年度恢复已由 Pi 完成；三年末补录真实原文件复验待 Pi）
+- Status: active（腾讯价格候选的真实原文件导入复验待 Pi）
 - Owner: Faye
-- Last updated: 2026-10-05（H00300 三个年末缺日独立离线补录）
+- Last updated: 2026-10-06（腾讯价格指数固定批次离线导入）
 - Source of truth: `operations/planning/2026-09-29-replan-three-lanes.md` §3 P1、§8、§11；`data/universe.csv` v1；intake §4.2、§5
 
 ## 命令
@@ -21,15 +21,18 @@ python -m src.data verify   outputs/research-package-2026-09-30.sqlite
 python -m src.data compare  data/kline_510300.csv 510300 [--adj raw] --out outputs/data/diff-510300.csv
 python -m src.data offline-restore --source-run-id 1 --recorded-dir outputs/data/recorded [--apply] [--db 验证副本.sqlite]
 python -m src.data offline-supplement --manifest 原证据清单.json [--recorded-dir 原响应目录] [--apply] [--db 验证副本.sqlite]
+python -m src.data offline-tencent-price --recorded-dir 原响应目录 [--apply] [--db 验证副本.sqlite]
 python -m src.data preflight --end 2026-09-30 [--start YYYY-MM-DD] [--db 验证副本.sqlite]  # 只读；research_ready=false 退出 1
 python -m src.data upgrade-date-constraints --db 验证副本.sqlite [--apply]  # 默认只读审计；显式升级旧 market-v1
 ```
 
-所有命令默认读写 `data/market.sqlite`，`--db` 可换（`verify` 只看包本身）。只用标准库（`urllib`、`csv`、`json`、`sqlite3`），不依赖 pandas / akshare / serenity。HTTP、分段、「一条路不通退下一条」的做法抄自 `lwx0218/serenity_quant_research`（physical-first）`api/app/ingest/{http,quotes,symbols,runner}.py`；单库、schema 写在代码里、每次作业记一行、seed → 库、测试只许连临时库，也按 serenity（replan §11）。
+所有命令默认使用 `data/market.sqlite`，`--db` 可换（`verify` 只看包本身；只读命令不写入）。在线取数与 SQLite 存储使用标准库（`urllib`、`csv`、`json`、`sqlite3`）；质量预检与腾讯离线导入复用已有 pandas 日历校验，不新增依赖。HTTP、分段、「一条路不通退下一条」的做法抄自 `lwx0218/serenity_quant_research`（physical-first）`api/app/ingest/{http,quotes,symbols,runner}.py`；单库、schema 写在代码里、每次作业记一行、seed → 库、测试只许连临时库，也按 serenity（replan §11）。
 
 `offline-restore` 默认只读 dry-run，明确 `--apply` 才原子写入；`preflight` 始终只读，复用现有 pandas 日历校验。完整恢复合同、计数与 pi 命令见 [H00300 离线恢复与研究输入校验](h00300-offline-restore.md)。恢复复用已有 CSI 取数方式的原响应，不增加网络来源。27 个年度响应单独入选；短窗只核验不拼入，NULL 与非交易日保留在原库。恢复作业使用现有 `backfill` 类型，以 `args.offline_restore=true` 区分。
 
 独立的 `offline-supplement` 只允许官方短窗证据支持的 2008/2009/2010 年末三日，默认只读，明确 `--apply` 才只补缺行并追加 backfill 审计；OHL 保持 NULL。完整原文与元数据保存在现有 runs/requests 中，年度恢复重验这些证据后才能保留已有补录行，其他无证据额外行仍拒绝。证据格式、保全合同与 Pi 副本命令见 [年末补录说明](h00300-year-end-supplement.md)。不增加抓取来源，不运行研究。
+
+`offline-tencent-price` 固定读取 357d2f3 的已批准索引并重验 44 个原响应，仅增加 `000852/raw` 与 `000905/raw` 价格候选。来源单独登记为 `tencent_price_index_offline`，`runs.args` 的顶层及逐序列 `price_only=true`，volume/amount 为 NULL。默认 dry-run，显式 apply 原子追加行情与完整原文审计；不改变 coverage/universe/全收益序列或研究选择。原件缺失不抓取，冲突停止，重复执行无写入。Pi 副本保全和正式命令见 [腾讯价格指数离线导入](tencent-price-index-offline.md)。
 
 ## 取数方式（AGENTS.md：新增取数方式必须补记）
 
@@ -38,6 +41,7 @@ python -m src.data upgrade-date-constraints --db 验证副本.sqlite [--apply]  
 | `csi` | `www.csindex.com.cn/csindex-home/perf/index-perf?indexCode=&startDate=&endDate=` | 按自然年 | 中证 / 上证 / 深证指数及其全收益版本（研究池主源） |
 | `eastmoney_index` | `push2his.eastmoney.com/api/qt/stock/kline/get`，secid `1.000xxx` / `0.399xxx`，`klt=101 fqt=0` | 120 天 | 创业板等不在中证 API 的指数 |
 | `tencent_index` | `web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=<sym>,day,<b>,<e>,400,` | 500 个日历日（< 400 行） | `eastmoney_index` 的退路；**只用不复权** |
+| `tencent_price_index_offline` | 仅重验既有 `proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get?param=sh<code>,day,<start>,<end>,320,qfq` 原响应，不发请求 | 2005–2026 年度固定批次，2026 截止 09-30 | 000852/000905 独立 raw 价格候选；qfq 参数不代表全收益，量额单位未核定，NULL 保留 |
 | `eastmoney_etf_hfq` | 同东财 K 线，`fqt=2` 后复权 | 120 天 | 研究 = 执行的容器（黄金 518880；国债拉不到财富版时的 511260） |
 | `eastmoney_etf` → `tencent_etf` | 东财 `fqt=0` → 腾讯不复权 | 同上 | 执行 ETF 日线（真实成交价与成交额） |
 | `yahoo` → `stooq` | `query1.finance.yahoo.com/v8/finance/chart/<sym>`；`stooq.com/q/d/l/?s=` | 一次 | 海外指数 |

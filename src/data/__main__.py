@@ -9,6 +9,7 @@
     compare  <参考.csv> <code> [--adj raw|hfq] [--out diff.csv]        重叠区间逐日比对收盘
     offline-restore --source-run-id N --recorded-dir DIR [--apply]  H00300 原文件恢复，默认只读
     offline-supplement --manifest FILE [--recorded-dir DIR] [--apply]  H00300 三个年末缺日补录，默认只读
+    offline-tencent-price --recorded-dir DIR [--apply]            批准的 000852/000905 价格指数候选，默认只读
     preflight --end D [--start D]                                只读预检，默认从官方日历首日开始
     upgrade-date-constraints [--apply]                         显式升级旧 market-v1 日期约束，默认只读
 """
@@ -65,6 +66,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--manifest", type=Path, required=True, help="Pi 原录件元数据清单")
     p.add_argument("--recorded-dir", type=Path, default=None, help="原响应目录；默认清单所在目录")
     p.add_argument("--apply", action="store_true", help="显式原子写入；省略时完全只读")
+    p = sub.add_parser("offline-tencent-price", help="固定证据批次导入腾讯价格指数，仅 000852/000905；默认 dry-run")
+    p.add_argument("--recorded-dir", type=Path, required=True, help="357d2f3 证据索引所列 44 个原响应所在目录")
+    p.add_argument("--apply", action="store_true", help="显式原子写入；不改变 coverage 或研究选择")
     p = sub.add_parser("preflight", help="只读质量预检；未达到 research_ready 时退出 1")
     p.add_argument("--end", type=_d, required=True)
     p.add_argument("--start", type=_d, default=None, help="请求窗口起点；省略时使用官方日历首日")
@@ -104,6 +108,14 @@ def main(argv: list[str] | None = None) -> int:
                 from .offline_supplement import supplement
                 report = supplement(a.db, a.manifest, recorded_dir=a.recorded_dir, apply=a.apply)
         except (RestoreError, DB.DbError, OSError) as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 1
+        print(json.dumps(report, ensure_ascii=False, indent=1))
+    elif a.cmd == "offline-tencent-price":
+        from .tencent_offline import PriceImportError, import_prices
+        try:
+            report = import_prices(a.db, a.recorded_dir, apply=a.apply)
+        except (PriceImportError, DB.DbError, OSError) as exc:
             print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
             return 1
         print(json.dumps(report, ensure_ascii=False, indent=1))
