@@ -716,6 +716,21 @@ class VolumeSource(unittest.TestCase):
         _, rep = B.research_frame(self.con, {"series_code": "H00300", "series_adj": "raw", "route_used": "csi", "code": "999999"}, cal)
         self.assertEqual(rep["volume_source"], "none")                      # 价格版本不在库里
 
+    def test_borrow_choice_is_cut_before_missing_share(self):
+        """D 后补齐的成交量不得把 D 的量源从 price_version 改成 self。"""
+        tr = self.px.copy().assign(volume=1000.0)
+        tr.loc[:19, "volume"] = np.nan
+        put(self.con, "H00300", tr, "csi")
+        cal = pd.DatetimeIndex(tr["date"].iloc[:20])
+        cov = {"series_code": "H00300", "series_adj": "raw", "route_used": "csi", "code": "000300"}
+        with_future, rep = B.research_frame(self.con, cov, cal)
+        self.assertEqual(rep["volume_source"], "price_version")
+        np.testing.assert_allclose(with_future["volume"], self.px["volume"].iloc[:20])
+        put(self.con, "H00300", tr.iloc[:20], "csi")
+        truncated, report = B.research_frame(self.con, cov, cal)
+        self.assertEqual(report["volume_source"], rep["volume_source"])
+        pd.testing.assert_frame_equal(with_future, truncated)
+
 
 class LegacyCheck(unittest.TestCase):
     def test_against_analyze_py_format(self):
