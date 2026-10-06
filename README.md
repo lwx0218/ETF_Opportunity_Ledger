@@ -27,13 +27,21 @@ Owner 只在规划阶段介入。已有 baseline 后，清楚的 bounded task �
 
 A prospective opportunity ledger for A-share ETFs/LOFs and cross-asset exposures. Freeze theses, evidence, and quantitative expectations at creation; append observations and score outcomes under precommitted rules to build a verifiable decision record.
 
-**当前仅完成最小初始化，不是可运行的交易或研究系统。** 不重做已证伪方向，不以回测曲线优化为目标；没有行情拉取、回测、卡片数据库、定时任务或 UI。
+已提供可运行的三态机会台账、同页详情和隔离演示：独立评分、候选作废、出场信号及逐日推进复用现有台账和每日任务。正式台账仅开放只读；研究与正式规则尚未放行。
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m src.web --port 8765
+```
+
+本机浏览器打开 `http://127.0.0.1:8765`。只查看正式台账可运行 `python -m src.web --mode readonly`（在已激活环境中）；正式库不存在时显示空态，不创建文件。启动、交互、隔离边界与复验详见 [可运行台账说明](docs/runnable-ledger.md)。
 
 ### 从这里接手
 
 1. 读 `AGENTS.md` 和 [完整初始化文档](docs/project-intake/etf-opportunity-ledger.md)，尤其 §1 已证伪方向与 §3 研究纪律。
-2. 从 QTradeResearch 导入 §4.1 八份权威文档至 `docs/`，优先 `etf-card-schema-v1.md`；数据、已有 Python 代码、Teardown 设计资产另行导入。本仓库没有这些资产的伪造占位版本。
-3. 澄清 §10 五项待决事项并批准实施规划；随后才从任务 0 指数清单核对开始。候选是否入账、20 日跟踪和触发频率均未擅自定案。
+2. 读仓库权威 [卡片 schema](docs/etf-card-schema-v1.md)、[每日任务](docs/jobs-daily.md) 与 `docs/design/` 设计规范；初始化材料已导入，旧 Project 副本仅供参考。
+3. 当前交付范围见 [数据与产品并行计划](operations/planning/2026-10-06-parallel-data-and-product.md)。正式数据应用、研究和规则启用仍需各自范围内的授权。
 
 ### 最小能力配置
 
