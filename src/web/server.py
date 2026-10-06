@@ -62,9 +62,16 @@ def create_server(app: Application, port=8765, *, host="127.0.0.1", public_host=
                     raise RequestError("拒绝跨站请求", 403)
                 url = urlsplit(self.path)
                 query = parse_qs(url.query, keep_blank_values=True)
-                if set(query) - {"mode"} or len(query.get("mode", [])) > 1:
+                page = url.path in ("/", "/rotation")
+                permitted = ({"mode", "as_of", "theme", "series", "card"} if page else
+                             {"mode", "as_of", "theme", "series", "weeks"} if url.path == "/api/observation" else {"mode"})
+                if set(query) - permitted or any(len(values) != 1 for values in query.values()):
                     raise RequestError("不允许此查询参数")
                 mode = app.effective_mode(query.get("mode", [None])[0])
+                if "theme" in query and not re.fullmatch(r"T[0-9]{2}", query["theme"][0]):
+                    raise RequestError("容器编号不合法")
+                if "card" in query and not re.fullmatch(r"T-[0-9]{4}-[0-9]{3,}", query["card"][0]):
+                    raise RequestError("卡片编号不合法")
                 match = CARD_ROUTE.fullmatch(url.path)
                 if write:
                     if app.mode == "market":
@@ -89,10 +96,17 @@ def create_server(app: Application, port=8765, *, host="127.0.0.1", public_host=
                     self.send(200, result)
                 elif url.path == "/api/state":
                     self.send(200, app.state(mode))
+                elif url.path == "/api/observation":
+                    window = query.get("weeks", ["12"])[0]
+                    if not window.isascii() or not window.isdigit():
+                        raise RequestError("周窗口须为 1–26")
+                    self.send(200, app.observation(mode, as_of=query.get("as_of", [None])[0],
+                              theme=query.get("theme", [None])[0],
+                              series=query.get("series", ["research"])[0], weeks=int(window)))
                 elif match and not match[2]:
                     self.send(200, app.detail(match[1], mode))
                 else:
-                    name = "index.html" if url.path == "/" else url.path.removeprefix("/")
+                    name = "index.html" if page else url.path.removeprefix("/")
                     file = (STATIC / name).resolve()
                     if not file.is_relative_to(STATIC.resolve()) or not file.is_file():
                         raise RequestError("未找到页面", 404)

@@ -2,9 +2,15 @@
 
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const requestedMode = new URLSearchParams(location.search).get('mode');
-const query = ['readonly', 'market'].includes(requestedMode) ? `?mode=${requestedMode}` : '';
-let state, selectedId = null, busy = false, noticeTimer;
+let state, observation, selectedId = new URLSearchParams(location.search).get('card'), busy = false, noticeTimer, loadSequence = 0;
+const page = () => location.pathname === '/rotation' ? 'rotation' : 'home';
+const params = () => new URLSearchParams(location.search);
+const route = (path, changes = {}) => {
+  const search = params();
+  if (state?.mode) search.set('mode', state.mode);
+  for (const [key, value] of Object.entries(changes)) value == null ? search.delete(key) : search.set(key, value);
+  return path + (search.size ? `?${search}` : '');
+};
 const number = (value, digits = 2) => value == null ? '—' : Number(value).toFixed(digits);
 const signed = (value, digits = 2) => value == null ? '—' : `${value > 0 ? '+' : value < 0 ? '−' : ''}${Math.abs(value).toFixed(digits)}`;
 const direction = (value) => value > 0 ? 'positive' : value < 0 ? 'negative' : '';
@@ -20,7 +26,10 @@ function notify(message) {
 }
 
 async function api(path, body) {
-  const response = await fetch(path + query, body === undefined ? {cache:'no-store'} : {
+  const url = new URL(path, location.origin);
+  const mode = state?.mode || params().get('mode');
+  if (mode) url.searchParams.set('mode', mode);
+  const response = await fetch(url, body === undefined ? {cache:'no-store'} : {
     method:'POST', headers:{'Content-Type':'application/json', 'X-CSRF-Token':state.csrf_token},
     body:JSON.stringify({...body, revision:state.revision}),
   });
@@ -40,14 +49,13 @@ function cardButton(card) {
     <h3 class="opportunity-title">${esc(card.container)}<span class="arrow" aria-hidden="true">↗</span></h3>
     <p class="opportunity-thesis">${esc(card.thesis)}</p>
     <div class="metric-line"><span class="metric ${direction(card.r_current)}">${hasR ? signed(card.r_current) : card.status === '候选' ? '待进场' : '—'}</span>${hasR ? '<span class="metric-unit">R</span>' : ''}</div>
-    <div class="metric-caption">${hasR ? (card.exit_date ? '出场后继续跟踪' : '当前浮动') : '入场条件待检查'} · ${shortDate(card.close_date)} 收盘起</div>
+    <div class="metric-caption">${hasR ? `${card.exit_date ? '出场后继续跟踪' : '当前浮动'} · ${card.daily_date ? `${shortDate(card.daily_date)} 收盘` : '读数日期待登记'}` : `入场条件待检查 · ${shortDate(card.close_date)} 关注`}</div>
     <div class="opportunity-note"><span>下一观察</span><span>${esc(observed(card))}</span></div>
     ${['待评分','待独立评分'].includes(card.owner_score_status) ? '<div class="score-cue">待独立评分 · 查看冻结判断</div>' : ''}
   </button>`;
 }
 
-function renderOverview() {
-  if (state.mode === 'market') { renderMarket(); return; }
+function renderLedgerOverview() {
   const cards = state.cards || [], summary = state.summary || {};
   const groups = ['过去', '当下', '候选'].map(status => cards.filter(card => card.status === status));
   const archive = cards.filter(card => ['已结', '作废'].includes(card.status));
@@ -67,25 +75,144 @@ function renderOverview() {
   });
 }
 
-function renderMarket() {
-  const market = state.market, series = market.series || [];
-  $('#overview').innerHTML = `<section class="intro"><div><div class="eyebrow">MARKET SNAPSHOT</div><h1>真实行情，等待真实判断。</h1><p>截至 ${esc(market.last || '无')} 收盘 · ${series.length} 条序列 · ${esc(market.rows)} 行原始行情</p></div></section>
-    <p class="summary-note">${esc(state.ledger_note)}</p>
-    <section class="timeline" aria-label="过去、当下与未来">${['过去','当下','未来'].map((label, index) => `<section class="lane ${index === 1 ? 'present' : ''}" aria-labelledby="lane-${index}"><div class="lane-heading"><h2 id="lane-${index}">${label}</h2></div><p class="empty">${['暂无出场后跟踪记录。','暂无持有记录。','暂无候选机会。'][index]}</p></section>`).join('')}</section>
-    <section aria-labelledby="market-heading"><div class="section-heading"><h2 id="market-heading">库内行情原貌</h2><span class="eyebrow">${esc(market.first || '—')} → ${esc(market.last || '—')}</span></div>
-    <p class="summary-note">仅展示收盘，不计算收益或信号。指数点位与 ETF 价格、价格指数与全收益指数分开保留；raw 不代表可研究。选中关系来自已有登记，不是研究就绪判定。</p>
-    ${series.length ? `<div class="market-scroll" tabindex="0" role="region" aria-label="行情列表，可横向滚动"><table class="market-table"><thead><tr>${['代码 / 名称','容器','类型 / 口径','登记关系','首日 → 最新日','行数','最新收盘','来源','OHLC 缺失行','成交量 / 金额缺失行'].map(label => `<th scope="col">${label}</th>`).join('')}</tr></thead><tbody>${series.map(item => `<tr>
-      <th scope="row"><span class="mono">${esc(item.code)}</span>${item.name !== item.code ? `<small>${esc(item.name)}</small>` : ''}</th>
-      <td>${esc(item.containers.join('、') || '—')}</td><td>${esc(item.type)}<small class="mono">${esc(item.adj)} · price_only ${item.price_only == null ? '—' : item.price_only ? 'true' : 'false'}</small></td>
-      <td>${item.research_selected ? 'coverage 选中研究' : '未选中研究'}<small>${item.relationships.map(r => `${esc(r.theme_id)} · ${r.role === 'research' ? '研究' : '执行'} · ${esc(r.status)}`).join('<br>') || '—'}</small></td>
-      <td class="mono">${esc(item.first)}<small>→ ${esc(item.last)}</small></td><td class="mono">${esc(item.count)}</td><td class="mono">${esc(item.close ?? '—')}</td><td class="mono">${esc(item.source)}</td>
-      <td class="mono">${esc(item.ohlc_null)}<small>O ${esc(item.open_null)} · H ${esc(item.high_null)} · L ${esc(item.low_null)} · C ${esc(item.close_null)}</small></td><td class="mono">量 ${esc(item.volume_null)} / 额 ${esc(item.amount_null)}</td></tr>`).join('')}</tbody></table></div>` : `<p class="empty">${market.available ? '行情库暂无记录。' : '行情库不存在，未创建文件。'}</p>`}</section>`;
+const fieldValue = field => field && field.available ? field.value : null;
+const fieldReason = field => field?.reason || (field?.available ? '当前形态可以观察；形成机会仍需催化、筹码、流动性与预期证据。' : '尚无合格输入。');
+const labels = {close:'原生收盘', rs_1m:'相对强弱 · 21 日', atr20:'ATR20 · 风险刻度', state:'形态状态', ext:'延伸度 · ATR14', z_month:'月末 z', rank:'全池名次'};
+const kindNames = {research:'选定研究序列', execution:'执行 ETF', price_candidate:'未选价格候选'};
+const identityText = identity => identity ? `${identity.code} / ${identity.adj} / ${identity.source}` : '未选定序列';
+const basisText = identity => identity?.price_basis || (identity?.price_only === true ? '价格序列' : '价格口径未确定');
+const priceUnit = identity => basisText(identity).includes('指数') ? '指数点位' : identity?.purpose === 'execution' ? 'ETF 价格' : '原生价格 · 单位未核定';
+const windowText = field => {
+  const win = field?.window;
+  return win ? `${win.start || '—'} → ${win.end || '—'} · ${win.points ?? '—'} / ${win.required ?? '—'} 个观察点` : '计算窗口尚未形成';
+};
+function reading(field, key) {
+  const value = fieldValue(field);
+  if (value == null) return '—';
+  if (key === 'state') return esc(field.state_label || value);
+  if (key === 'rs_1m') return `${signed(value * 100)}%`;
+  if (key === 'rank') return esc(value);
+  return key === 'ext' || key === 'z_month' ? signed(value) : number(value, key === 'close' ? 3 : 2);
+}
+function observationLink(theme, date, text, extra = {}) {
+  return `<a data-route href="${esc(route('/rotation', {theme, as_of:date || observation?.requested_date, card:null, ...extra}))}">${text}</a>`;
+}
+function renderOverview() {
+  if (page() === 'rotation') { renderRotation(); return; }
+  if (state.mode !== 'market') renderLedgerOverview();
+  else {
+    $('#overview').innerHTML = `<section class="intro"><div><div class="eyebrow">今天 · 真实观察</div><h1>先看见变化，再等待判断。</h1><p>此观察入口不载入正式判断／扫描结果，不能据此确认今天有无机会。</p></div>${observationLink(params().get('theme'), observation?.requested_date, '进入轮动全景 ↗')}</section>
+      <section class="timeline observation-timeline" aria-label="过去、当下与未来">${[0,1,2].map(renderPublicLane).join('')}</section>`;
+  }
+  const section = document.createElement('section'); section.id = 'current-observation'; section.className = 'current-observation';
+  section.innerHTML = renderObservationHome();
+  if (state.mode === 'market') $('#overview').append(section);
+  else $('#overview').querySelector('.flow-caption')?.after(section);
+  if (state.mode === 'market') {
+    const lower = document.createElement('div'); lower.innerHTML = `<section class="limits-section"><div class="section-heading"><h2>今天，哪些判断还不能做</h2><span class="eyebrow">条件欠缺，不是投资禁入</span></div>${renderEvidenceGaps()}</section><section class="rules-worth"><div class="section-heading"><h2>这套规则值多少</h2><span class="eyebrow">需要前向证据</span></div><p class="lead">价格读数不能回答规则是否有效。</p><p class="summary-note">本入口不载入正式台账、规则配置与扫描记录。没有可引用的前向样本，就不展示胜率、预期收益或旧回放成绩。</p></section>${renderRegistry()}`; $('#overview').append(lower);
+  } else {
+    const limits=document.createElement('section'); limits.className='limits-section';
+    limits.innerHTML=`<div class="section-heading"><h2>今天，哪些判断还不能做</h2><span class="eyebrow">条件欠缺，不是投资禁入</span></div>${renderEvidenceGaps()}`;
+    section.after(limits);
+  }
+  wireNavigation();
+}
+function renderPublicLane(index) {
+  const detail=observation?.detail, row=observation?.containers?.find(item=>item.theme_id === detail?.theme_id), fields=detail?.fields || row?.fields || {}, identity=detail?.identity || row?.identity;
+  const previous=observation?.rotation?.find(item=>item.theme_id === row?.theme_id)?.cells?.at(-2);
+  const value=index===0 ? reading(previous?.rs_1m,'rs_1m') : index===1 ? reading(fields.close,'close') : reading(fields.state,'state');
+  const captions=[`研究序列前周相对强弱 · ${previous?.date || '无截面'}`,`${row?.container || '观察容器'} · 原生收盘 ${detail?.native_date || row?.native_date || '—'}`,`${kindNames[detail?.series_kind] || '所选序列'} · 不生成入场信号`];
+  const conclusions=['上一笔判断仍需原记录验证。',fields.close?.available ? '价格已经可见，判断仍需证据。' : '当前序列的价格条件尚不完整。','先补齐条件，再形成新判断。'];
+  const explanation=index===0 ? '本入口不读取正式评分与出场记录。这里只回看同一容器选定研究序列的价格变化。' : index===1 ? `${kindNames[detail?.series_kind] || '所选序列'} · ${basisText(identity)} · ${identity?.code || '未选定'}。正式持仓和扫描结果不在本入口载入范围内。` : fieldReason(fields.state);
+  return `<section class="lane ${index === 1 ? 'present' : ''}"><div class="lane-heading"><h2>${['过去','当下','未来'][index]}</h2><span class="eyebrow">${['上一次对不对','当下在跑什么','下一个还差什么'][index]}</span></div><p class="lane-conclusion">${conclusions[index]}</p><div class="public-reading mono ${index===0 ? direction(fieldValue(previous?.rs_1m)) : ''}">${value}</div><p class="metric-caption">${esc(captions[index])}</p>${index===1 && detail ? `<div class="home-price">${priceChart(detail.chart || [],45,detail.identity)}</div>` : ''}<p class="lane-context">${esc(explanation)}</p>${observationLink(row?.theme_id,index===0?previous?.date:observation?.requested_date,index===0?'回看价格依据 ↗':index===1?'查看容器与窗口 ↗':'查看仍缺的条件 ↗',index===0?{series:'research'}:{})}</section>`;
+}
+function renderObservationHome() {
+  if (!observation) return '<p class="empty">观察尚未读取。</p>';
+  const rows = observation.containers || [], comparison = observation.comparison || {};
+  const available = rows.filter(row => row.fields?.close?.available);
+  const chosen = rows.find(row => row.theme_id === params().get('theme')) || available[0] || rows[0];
+  return `<div class="section-heading"><h2>今天能看见什么</h2><span class="eyebrow">截至 ${esc(observation.effective_date || '未能确定')} · ${state.mode === 'demo' ? '合成观察' : '真实观察'}</span></div>
+    <div class="observation-lead"><div><p class="lead">${comparison.comparison_complete ? comparison.valid > 0 ? '可比较相对强弱，仍需独立判断。' : '尚无完成相对强弱预热的容器。' : `${state.mode === 'demo' ? '展示合成价格' : available.length ? '已有真实价格' : '当前价格资格未确定'}，跨容器比较仍有缺口。`}</p><p class="summary-note">${esc(observation.reason || `选定研究序列中，${available.length} 个容器可读收盘，${comparison.valid ?? 0} 个容器具有合格相对强弱。`)}${comparison.comparison_complete ? '' : ' 全池排名暂不提供，容器按原登记顺序保留。'}</p></div><span class="availability-reading mono">${available.length}<small>/ ${rows.length} 可读收盘</small></span></div>
+    ${chosen ? `<div class="observation-focus"><div><span class="eyebrow">${esc(chosen.theme_id)} · ${esc(chosen.native_date || '无原生日期')}</span><h3>${observationLink(chosen.theme_id, observation.requested_date, `${esc(chosen.container)} <span aria-hidden="true">↗</span>`)}</h3><p class="summary-note">${esc(basisText(chosen.identity))} · ${esc(identityText(chosen.identity))}</p></div><div class="focus-reading"><span class="mono">${reading(chosen.fields?.close,'close')}</span><small>原生收盘 · ${esc(chosen.native_date || '—')}</small></div><div class="focus-explanation"><span>${chosen.fields?.state?.available ? reading(chosen.fields.state,'state') : '形态条件尚不完整'}</span><p>${esc(chosen.fields?.state?.reason || '价格形态是观察量，不直接形成买卖判断。')}</p></div></div>` : ''}
+    <p class="comparison-basis">下列读数 = 选定研究序列的 21 交易日收益 − H00300 全收益指数同窗收益；价格与全收益口径分别标明，不是绝对收益。</p>
+    <div class="container-links" aria-label="全部观察容器">${rows.map(row => observationLink(row.theme_id, observation.requested_date, `<span>${esc(row.container)}<small>${esc(basisText(row.identity))}</small></span><span class="mono ${direction(fieldValue(row.fields?.rs_1m))}">${reading(row.fields?.rs_1m,'rs_1m')}</span>`)).join('')}</div>
+    <p class="comparison-basis">${state.mode === 'demo' ? '合成观察不判定正式收盘基准与研究资格。' : `收盘基准：${observation.benchmark_ready === true ? '可用' : '尚未就绪'} · 正式研究输入：${observation.research_ready === true ? '就绪' : '尚未就绪'}。逐字段可观察，不代表全池可进入正式研究。`}</p>
+    <div class="observation-bottom"><span>${esc(observation.history_note || '历史观察按当前库版本重建，不代表当时已抓取或已扫描。')}</span>${observationLink(chosen?.theme_id, observation.requested_date, '比较各周变化 →')}</div>`;
+}
+function renderEvidenceGaps() {
+  return `<div class="evidence-gaps">${[
+    ['L1 · 物理催化','尚缺固定源、硬发布日期与历史可得时间组成的证据链。'],
+    ['L2 · 筹码与份额','尚缺经核定的 ETF 份额和资金流输入；价格涨跌不能证明资金迁入。'],
+    ['L3 · 流动性','尚缺可用于判断市场环境的合格流动性记录。'],
+    ['L4 · 预期与溢价','尚缺同日、匹配口径的价格与 NAV；不从价格排名推断拥挤或溢价。'],
+    ['源头 → 目的地','尚缺以上各层形成的迁徙证据；周截面只展示价格观察。']
+  ].map(([label,reason]) => `<div class="gap-row"><h3>${label}</h3><p>${reason}</p></div>`).join('')}</div>`;
+}
+function renderRegistry() {
+  if (state.mode !== 'market' || !state.market) return '';
+  const market=state.market, series=market.series || [];
+  return `<details class="disclosure registry-check"><summary>辅助检查 · 行情登记 ${series.length} 条序列</summary><p class="history-note">这是当前库全历史的登记清单，独立于页面观察日；首末日、行数与缺值统计不代表所选观察窗口可用。研究选中关系只读既有登记。</p><div class="market-scroll" tabindex="0" role="region" aria-label="行情登记辅助检查，可横向滚动"><table class="market-table"><thead><tr>${['代码 / 价格口径','容器 / 登记关系','历史范围 / 行数','库内最新收盘','来源','OHLC 缺失','量 / 额缺失'].map(label=>`<th scope="col">${label}</th>`).join('')}</tr></thead><tbody>${series.map(item=>`<tr><th scope="row"><span class="mono">${esc(item.code)} / ${esc(item.adj)}</span><small>${esc(item.name || item.code)} · ${esc(item.type)}</small><small>price_only ${item.price_only == null ? '未登记' : item.price_only ? 'true' : 'false'}</small></th><td>${esc((item.containers || []).join('、') || '—')}<small>${item.research_selected ? 'coverage 选中研究' : '未选中研究'}</small><small>${(item.relationships || []).map(relation=>`${esc(relation.theme_id)} · ${relation.role === 'research' ? '研究' : '执行'} · ${esc(relation.status)}`).join('<br>')}</small></td><td class="mono">${esc(item.first)} → ${esc(item.last)}<small>${esc(item.count)} 行</small></td><td class="mono">${esc(item.close ?? '—')}<small>${esc(item.last)}</small></td><td class="mono">${esc(item.source)}</td><td class="mono">${esc(item.ohlc_null)}<small>O ${esc(item.open_null)} / H ${esc(item.high_null)} / L ${esc(item.low_null)} / C ${esc(item.close_null)}</small></td><td class="mono">${esc(item.volume_null)} / ${esc(item.amount_null)}</td></tr>`).join('')}</tbody></table></div></details>`;
+}
+function renderRotation() {
+  const data = observation, rows = data?.containers || [], weeks = data?.weeks || [], comparison = data?.comparison || {};
+  const selected = params().get('theme') || data?.detail?.theme_id;
+  $('#overview').innerHTML = `<section class="intro rotation-intro"><div><div class="eyebrow">轮动 · 同一个时间截面</div><h1>变化放在一起，缺口也留在原位。</h1><p>${rows.length} 个容器 · ${weeks.length} 个周截面 · ${comparison.comparison_complete ? comparison.valid > 0 ? '全池名次可用' : '尚无完成相对强弱预热的容器' : '比较池不完整，保留相对强弱，不给全池排名'}</p></div></section>
+    <div class="rotation-meta"><span>格内：21 交易日收益 − H00300 全收益指数同窗收益 / 形态<br>价格与全收益口径逐行标明 · 周五为界，周内最后官方交易日</span><span>红 <span class="positive">＋</span> · 绿 <span class="negative">−</span> · — 不可用</span></div>
+    ${data?.reason ? `<p class="observation-warning">${esc(data.reason)}</p>` : ''}
+    <div class="rotation-scroll" tabindex="0" role="region" aria-label="容器与周截面，可横向滚动"><table class="rotation-table"><caption class="visually-hidden">全部 ${rows.length} 个容器的周截面，点击格子追溯原生序列</caption><thead><tr><th scope="col">容器 / 选定研究</th>${weeks.map(week => `<th scope="col"><span class="mono">${esc(week.date?.slice(5))}</span><small>${week.partial ? '截至当日' : '周截面'}</small></th>`).join('')}</tr></thead><tbody>${rows.map(row => {
+      const cells = data.rotation?.find(item => item.theme_id === row.theme_id)?.cells || [];
+      return `<tr class="${selected === row.theme_id ? 'selected-row' : ''}"><th scope="row">${observationLink(row.theme_id, data.requested_date, `${esc(row.container)}<small class="mono">${esc(row.theme_id)} · ${esc(row.identity?.code || '未选定')}</small><small>${esc(basisText(row.identity))}</small>`)}</th>${weeks.map(week => {const cell = cells.find(item => item.date === week.date); const rs = fieldValue(cell?.rs_1m); return `<td><a data-route class="matrix-cell ${direction(rs)}" href="${esc(route('/rotation',{theme:row.theme_id,as_of:week.date,card:null}))}" aria-label="${esc(row.container)} ${esc(week.date)} 相对强弱 ${reading(cell?.rs_1m,'rs_1m')}，${esc(cell?.state?.state_label || cell?.state?.reason || '形态不可用')}"><span class="mono">${reading(cell?.rs_1m,'rs_1m')}</span><small>${cell?.state?.available ? reading(cell.state,'state') : '条件不足'}</small>${fieldValue(cell?.rank) != null ? `<em>#${reading(cell.rank,'rank')}</em>` : ''}</a></td>`;}).join('')}</tr>`;
+    }).join('')}</tbody></table></div>
+    <div class="observation-bottom"><span>比较池 ${esc(comparison.pool ?? rows.length)} · 合格 ${esc(comparison.valid ?? 0)} · 缺失 ${(comparison.missing || []).length} · 边界排除 ${(comparison.excluded || []).length}；筛选不改变分母。</span><span>${esc(data?.effective_date || '—')}</span></div>
+    ${(comparison.missing || []).length || (comparison.excluded || []).length ? `<details class="disclosure comparison-gaps"><summary>查看比较池缺口与边界</summary>${[...(comparison.missing || []),...(comparison.excluded || [])].map(item=>`<p><span class="mono">${esc(item.theme_id)}</span> ${esc(item.reason)}</p>`).join('')}</details>` : ''}
+    <section id="series-detail" class="series-detail" aria-label="所选容器详情">${renderSeriesDetail(data?.detail)}</section>
+    <section class="limits-section"><div class="section-heading"><h2>从价格到判断，还缺什么</h2><span class="eyebrow">每项证据各有归属</span></div>${renderEvidenceGaps()}</section>${renderRegistry()}`;
+  wireNavigation();
+  $('#series-kind')?.addEventListener('change', event => navigate(route('/rotation',{series:event.target.value,card:null}), true));
+  $('#chart-window')?.addEventListener('change', event => {$('#native-price-chart').innerHTML = priceChart(data.detail.chart || [], Number(event.target.value), data.detail.identity);});
+}
+function renderSeriesDetail(detail) {
+  if (!detail) return '<p class="empty">尚无可追溯的序列详情。</p>';
+  const row = observation.containers?.find(item=>item.theme_id === detail.theme_id), fields = detail.fields || {};
+  return `<div class="section-heading"><div><div class="eyebrow">${esc(detail.theme_id)} · 截至 ${esc(observation.effective_date || '—')}</div><h2 id="series-title" tabindex="-1">${esc(row?.container || detail.container || detail.theme_id)}</h2></div><select id="series-kind" aria-label="选择价格序列">${(detail.options || []).map(option => `<option value="${esc(option.kind)}" ${option.kind === detail.series_kind ? 'selected' : ''}>${kindNames[option.kind] || option.kind} · ${esc(option.identity?.code || '未选定')}</option>`).join('')}</select></div>
+    <p class="series-basis">${esc(kindNames[detail.series_kind] || detail.series_kind)} · <strong>${esc(basisText(detail.identity))}</strong><span>${esc(priceUnit(detail.identity))}</span><span class="mono">${esc(identityText(detail.identity))}</span></p>
+    <div class="price-heading"><h3>价格与窗口</h3><label>显示 <select id="chart-window" aria-label="价格显示窗口"><option value="90">最近 90 行</option><option value="30">最近 30 行</option><option value="0">全部已载入</option></select></label></div>
+    <div id="native-price-chart">${priceChart(detail.chart || [],90,detail.identity)}</div>
+    <details class="disclosure"><summary>逐日价格与原始来源</summary><div class="market-scroll" tabindex="0" role="region" aria-label="原生价格及获取时间"><table class="native-records"><thead><tr><th scope="col">原生日期</th><th scope="col">O / H / L / C</th><th scope="col">来源 / 获取时间</th><th scope="col">字段限制</th></tr></thead><tbody>${(detail.chart || []).map(row=>`<tr><th scope="row" class="mono">${esc(row.date)}</th><td class="mono">${[row.open,row.high,row.low,row.close].map(value=>number(value,3)).join(' / ')}</td><td>${esc(row.source || '—')}<small>${esc(row.fetched_at || '未登记')}</small></td><td>${esc(row.close_reason || row.ohlc_reason || 'OHLC 完整')}</td></tr>`).join('')}</tbody></table></div></details>
+    <p class="volume-qualification"><span>成交量资格</span>${esc(detail.volume?.reason || '尚无已核定单位的同源成交量，不绘制量柱。')} · 单位 ${esc(detail.volume?.unit || '未核定')}</p>
+    <div class="indicator-grid">${Object.entries(labels).map(([key,label])=>`<details class="indicator-fact"><summary><span>${label}${key === 'z_month' && fields[key]?.value_date ? ` <small class="muted mono">${esc(fields[key].value_date.slice(0,7))}</small>` : ''}</span><span class="mono ${key === 'rs_1m' || key === 'z_month' ? direction(fieldValue(fields[key])) : ''}">${reading(fields[key],key)}</span></summary><p>${esc(fields[key]?.reason || '满足当前字段所需条件。')}</p><dl>${fact('截至',`${esc(fields[key]?.observation_date || observation.effective_date)} · 原生 ${esc(fields[key]?.native_date || '—')}`)}${fields[key]?.value_date ? fact('实际值日期',esc(fields[key].value_date)) : ''}${fact('计算窗口',esc(windowText(fields[key])))}${fact('序列身份',`<span class="mono">${esc(identityText(fields[key]))}</span>`)}${fact('价格口径',esc(basisText(fields[key])))}${fact('抓取时间',esc(fields[key]?.fetched_at || '未登记'))}</dl></details>`).join('')}</div>
+    <p class="chart-caption">显示窗口只裁图，不重置指标起点。量源：${esc(detail.volume_source || row?.volume_source || 'none')}；没有完整量条件时，形态须结合其限制阅读。</p>
+    ${detail.unavailable ? `<div class="auxiliary-gaps">${[['nav','净值 NAV'],['premium','折溢价'],['shares','ETF 份额'],['amount','成交额']].map(([key,label])=>`<div><span>${label}</span><p>${esc(detail.unavailable[key] || '尚无合格输入')}</p></div>`).join('')}</div>` : ''}
+    ${(detail.excluded_non_trading_dates || []).length ? `<details class="disclosure"><summary>原库保留的 ${(detail.excluded_non_trading_dates || []).length} 个非交易日</summary><p class="history-note">${detail.excluded_non_trading_dates.map(esc).join('、')}。计算视图按官方日历排除，原记录没有删除或修改。</p></details>` : ''}
+    ${(detail.gaps || []).length ? `<details class="disclosure"><summary>${detail.gaps.length} 条缺口 / 异常日期说明</summary><div class="gap-list">${detail.gaps.map(item=>`<p><span class="mono">${esc(item.date)}</span> ${esc(item.reason)}</p>`).join('')}</div></details>` : ''}
+    <p class="history-note">${esc(observation.history_note || '当前库版本重建截至该日的行情。抓取时间不等于历史可得时点。')}</p>`;
+}
+function priceChart(allRows, count = 90, identity) {
+  const rows = count ? allRows.slice(-count) : allRows;
+  const usable = rows.filter(row => Number.isFinite(row.close) && row.close > 0);
+  if (!usable.length) return '<p class="empty">这个窗口尚无正且有限的真实收盘，价格图保留为空。</p>';
+  const width=1120, height=290, left=58, right=18, top=22, bottom=38;
+  const prices=usable.flatMap(row => [row.close, row.high, row.low].filter(value=>Number.isFinite(value)&&value>0));
+  const low=Math.min(...prices), high=Math.max(...prices), span=Math.max(high-low,high*.01), minimum=low-span*.1, maximum=high+span*.1;
+  const x=index=>left+(width-left-right)*(rows.length===1?.5:index/(rows.length-1));
+  const y=value=>top+(height-top-bottom)*(maximum-value)/(maximum-minimum);
+  let segment=false;
+  const path=rows.map((row,index)=> {if (!Number.isFinite(row.close)||row.close<=0){segment=false;return '';} const command=segment?'L':'M'; segment=true;return `${command}${x(index).toFixed(2)},${y(row.close).toFixed(2)}`;}).join(' ');
+  const candleWidth=Math.max(1,Math.min(7,(width-left-right)/rows.length*.5));
+  const candles=rows.map((row,index)=> {
+    if (![row.open,row.high,row.low,row.close].every(value=>Number.isFinite(value)&&value>0)||row.high<Math.max(row.open,row.close)||row.low>Math.min(row.open,row.close)) return '';
+    return `<g class="${direction(row.close-row.open)}"><line x1="${x(index)}" y1="${y(row.high)}" x2="${x(index)}" y2="${y(row.low)}"/><rect x="${x(index)-candleWidth/2}" y="${y(Math.max(row.open,row.close))}" width="${candleWidth}" height="${Math.max(1,Math.abs(y(row.open)-y(row.close)))}"/></g>`;
+  }).join('');
+  const validVolumes=rows.filter(row=>Number.isFinite(row.volume)&&row.volume>=0&&!row.volume_reason);
+  const volumeMax=Math.max(1,...validVolumes.map(row=>row.volume));
+  const volume=validVolumes.length ? `<svg class="volume-chart" viewBox="0 0 ${width} 75" role="img" aria-label="同日期成交量">${rows.map((row,index)=>Number.isFinite(row.volume)&&row.volume>=0&&!row.volume_reason?`<rect x="${x(index)-candleWidth/2}" y="${65-row.volume/volumeMax*56}" width="${candleWidth}" height="${row.volume/volumeMax*56}"/>`:'').join('')}</svg>`:'';
+  return `<svg class="native-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(identity?.code || '所选序列')} ${esc(rows[0].date)} 至 ${esc(rows.at(-1).date)}原生价格，缺收盘处断开">${[0,.5,1].map(ratio=>{const value=minimum+(maximum-minimum)*ratio;return `<line class="gridline" x1="${left}" y1="${y(value)}" x2="${width-right}" y2="${y(value)}"/><text x="0" y="${y(value)+4}">${number(value,value<20?3:0)}</text>`;}).join('')}<path class="price-line" d="${path}"/><g class="candles">${candles}</g><text x="${left}" y="${height-6}">${esc(rows[0].date)}</text><text x="${width-right}" y="${height-6}" text-anchor="end">${esc(rows.at(-1).date)}</text></svg>${volume}<p class="chart-caption">${rows.length} 个原生日期位置 · 线为真实收盘，仅合格 OHLC 绘制蜡烛；缺收盘处断开。${rows.filter(row=>row.ohlc_reason).length} 处 OHLC 不完整或异常。</p>`;
 }
 
 function renderRules(rules) {
   const enabled = rules.enabled || [];
   const blocked = rules.blocked || [];
-  return `<p class="status-line"><strong>${enabled.length ? esc(enabled.join('、')) : '正式规则未开启'}</strong>${enabled.length ? '已启用' : ''}</p>${blocked.length ? `<p class="status-line">待就绪：${esc(blocked.join('、'))}</p>` : ''}${rules.note ? `<p class="status-line">${esc(rules.note)}</p>` : ''}`;
+  return `<p class="status-line"><strong>${state.mode === 'demo' ? '演示推进已封存样例' : enabled.length ? esc(enabled.join('、')) : '正式规则未开启'}</strong>${enabled.length ? '已启用' : ''}</p>${blocked.length ? `<p class="status-line">待就绪：${esc(blocked.join('、'))}</p>` : ''}${rules.note ? `<p class="status-line">${esc(rules.note)}</p>` : ''}<p class="status-line">${state.scan?.latest_processed_day ? `已登记的每日处理截至 ${esc(state.scan.latest_processed_day)}` : '没有载入已完成的扫描记录'}；配置状态不能证明已执行扫描。</p>`;
 }
 
 function renderDataStatus(data) {
@@ -93,7 +220,7 @@ function renderDataStatus(data) {
 }
 
 function renderReview(report) {
-  if (!report) return '';
+  if (!report || !Object.keys(report).length) return '<div class="section-heading"><h2>这套规则值多少</h2><span class="eyebrow">前向样本尚不足</span></div><p class="lead">尚无可用于评价规则的前向记录。</p><p class="summary-note">配置与行情不能代替封存判断及其后续验证；当前不展示规则胜率、预期收益或旧回放成绩。</p>';
   const buckets = report.calibration?.owner || [];
   const statusText = {triggered:'需人工审查', clear:'未触发', insufficient:'样本不足'};
   return `<div class="section-heading"><h2>评分与审查</h2><span class="eyebrow">${state.mode === 'demo' ? '演示记录' : '前向记录'}</span></div>
@@ -127,19 +254,29 @@ function renderCounterfactual(data) {
 
 function renderShell() {
   $('#loading').hidden = true;
-  $('#mode-label').textContent = state.mode === 'market' ? '真实行情 · 只读' : state.mode === 'demo' ? '演示数据' : '正式台账 · 只读';
-  $('#as-of').textContent = state.mode === 'demo'
-    ? `截至 ${String(state.as_of || '—').replace('T',' ')} · 北京时间`
-    : `读取于 ${String(state.as_of || '—').replace('T',' ')} · 最新${state.mode === 'market' ? '行情' : '观测'} ${state.observation_as_of || '无'} · 北京时间`;
-  $('#footer-source').textContent = state.mode === 'market' ? '真实行情 · 保留原来源与口径' : state.mode === 'demo' ? '隔离演示 · 非真实行情' : '正式数据 · 只读';
+  $('#mode-label').textContent = state.mode === 'market' ? '真实观察 · 只读' : state.mode === 'demo' ? '演示数据 · 合成观察' : '正式台账 · 只读';
+  $('#as-of').textContent = `观察 ${observation?.effective_date || '未能确定'} · ${state.mode === 'market' ? '不载入正式台账' : `台账记账截至 ${String(state.observation_as_of || state.as_of || '—').replace('T',' ')}`}`;
+  $('#footer-source').textContent = state.mode === 'market' ? '真实观察 · 保留来源与口径' : state.mode === 'demo' ? '隔离演示 · 全部为合成数据' : '正式数据 · 只读';
   $('#mode-link').textContent = state.mode === 'demo' ? '正式台账 · 只读 ↗' : '返回演示台账 ↗';
-  $('#mode-link').href = state.mode === 'demo' ? '/?mode=readonly' : '/';
-  $('#mode-link').hidden = state.mode === 'market' || state.mode === 'readonly' && state.demo_available === false;
+  $('#mode-link').href = route(location.pathname, {mode:state.mode === 'demo' ? 'readonly' : 'demo',card:null});
+  $('#mode-link').hidden = state.mode === 'market' || state.mode === 'demo' && state.readonly_available === false || state.mode === 'readonly' && state.demo_available === false;
   $('#mode-link').nextElementSibling.hidden = $('#mode-link').hidden;
+  $('#nav-home').href = route('/', {card:null});
+  $('#nav-rotation').href = route('/rotation', {card:null});
+  $('#nav-home').setAttribute('aria-current',page() === 'home' ? 'page' : 'false');
+  $('#nav-rotation').setAttribute('aria-current',page() === 'rotation' ? 'page' : 'false');
+  $('#observation-controls').hidden = !observation;
+  if (observation) {
+    $('#observation-date').value = params().get('as_of') || observation.requested_date || '';
+    if (observation.completed_date) $('#observation-date').max = observation.completed_date;
+    if (observation.calendar?.first) $('#observation-date').min = observation.calendar.first;
+    $('#observation-theme').innerHTML = (observation.containers || []).map(row=>`<option value="${esc(row.theme_id)}" ${row.theme_id === (params().get('theme') || observation.detail?.theme_id) ? 'selected' : ''}>${esc(row.container)} · ${esc(row.theme_id)}</option>`).join('');
+    $('#observation-context').textContent = `有效日 ${observation.effective_date || '未确定'} · 库内行情末日 ${observation.actual_data_end || '无'}${observation.requested_date !== observation.effective_date ? ` · 请求 ${observation.requested_date}` : ''}`;
+  }
   renderOverview();
   $('#overview').hidden = selectedId !== null;
   $('#detail').hidden = selectedId === null;
-  if (!selectedId) $('#breadcrumb').textContent = '机会台账';
+  if (!selectedId) $('#breadcrumb').textContent = page() === 'rotation' ? '机会台账 › 轮动观察' : '机会台账 › 机会';
 }
 
 function fact(label, value) {
@@ -165,11 +302,14 @@ function renderDetail(data) {
   $('#breadcrumb').innerHTML = `<button id="breadcrumb-back">机会台账</button><span>›</span><strong>${esc(data.status)} · ${esc(card.container)}</strong>`;
   $('#breadcrumb-back').addEventListener('click', showHome);
   $('#detail').innerHTML = `<header class="detail-header"><div><div class="eyebrow">${esc(data.status)} · ${esc(card.instrument_code)} · ${esc(card.trigger_type)}</div><h1 id="detail-title" tabindex="-1">${esc(card.container)}</h1><p class="detail-thesis">${esc(card.thesis)}</p></div><div class="detail-metric"><div class="metric ${direction(value)}">${signed(value)}<span class="metric-unit"> R</span></div><div class="metric-caption">${data.exit ? '出场后跟踪' : '当前浮动'} · ${shortDate(last?.date || card.close_date)} 收盘</div></div></header>
+    <p class="ledger-time-note">这张卡保留台账记账截至 ${time(state.observation_as_of || state.as_of)} 的记录。页面观察日期不回写卡片，也不把后来结果解释为当时已知。</p>
     <div class="detail-grid"><div>
       <section class="detail-section"><div class="section-heading"><h2>当时如何约定</h2><span class="eyebrow">创建时冻结</span></div><dl class="fact-list">${fact('关注时点', `${time(card.created_at)} · 对应 ${esc(card.close_date)} 收盘`)}${fact('量化预期', `${expectation} · 对照 ${esc(card.expectation_benchmark)}`)}${fact('价格失效位', `<span class="mono">${number(card.invalidation_price,3)}</span> · 创建时锁定`)}${fact('风险刻度', `1R = <span class="mono">${number(card.r_unit_per_share,3)}</span> / 份 · 计划仓位 ${number(card.planned_size_pct)}%`)}${fact('跟踪约定', `出场后继续跟踪 ${esc(card.tracking_days)} 个交易日`)}${card.thesis_inval_statement ? fact('论点失效', `${esc(card.thesis_inval_statement)}${card.thesis_inval_deadline ? ` · ${time(card.thesis_inval_deadline)}` : ''}`) : ''}${card.supersedes ? fact('重建自', esc(card.supersedes)) : ''}</dl></section>
+      <section class="detail-section"><div class="section-heading"><h2>价格与窗口</h2><span class="eyebrow">${esc(card.instrument_code)} · 账内收盘</span></div>${priceChart(daily,0,{code:card.instrument_code})}<p class="chart-caption">关注 ${esc(card.close_date)} · 入场 ${esc(data.entry?.entry_date || '未发生')} · 出场 ${esc(data.exit?.exit_date || '未发生')}。只画逐日记账收盘；没有入场前行情与 OHLC，不补画蜡烛。</p></section>
       <section class="detail-section"><div class="section-heading"><h2>现在发生了什么</h2><span class="eyebrow">逐日观测</span></div>${chart(daily)}${daily.length ? `<details class="disclosure"><summary>查看 ${daily.length} 条每日记录</summary><div class="observations"><div class="observation-row observation-heading"><span>日期</span><span>收盘</span><span>浮动 R</span><span>当前止损</span></div>${daily.map(row=>`<div class="observation-row mono"><span>${esc(row.date)}</span><span>${number(row.close,3)}</span><span class="${direction(row.r_current)}">${signed(row.r_current)}</span><span>${number(row.stop_now,3)}</span></div>`).join('')}</div></details>` : ''}</section>
       ${renderCounterfactual(data.counterfactual)}
       <section class="detail-section"><div class="section-heading"><h2>判断从何而来</h2><span class="eyebrow">${esc(card.evidence_status)}</span></div>${(data.evidence || []).length ? data.evidence.map(e => `<article class="evidence-item"><p>${esc(e.summary)}</p><div class="evidence-meta mono">${esc(e.source_id)} · 发布 ${time(e.published_at)}<br>首次看到 ${time(e.first_seen_at)} · 可得 ${time(e.available_at)}</div>${/^https?:\/\//.test(e.url || '') ? `<a href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">查看原始来源 ↗</a>` : ''}</article>`).join('') : `<p class="empty">${card.evidence_status === '未检索' ? '这是一条机械触发的记录，创建时未检索外部证据。' : '创建时已检索，没有登记可用证据。'}</p>`}</section>
+      <section class="detail-section"><div class="section-heading"><h2>同类历史</h2><span class="eyebrow">证据尚不足</span></div><p class="summary-note">尚未形成可靠的结果盲选样口径，不能判断哪些历史记录可作同类。这里不挑选盈利案例，也不把旧回放成绩当成这张卡的预期。</p></section>
       <section class="detail-section"><div class="section-heading"><h2>后续观察</h2><span class="eyebrow">原记录保留</span></div>${renderEvents(data)}</section>
     </div><aside aria-label="独立判断与操作">${renderScores(scores, actions, card)}${renderActions(data)}<div class="action-section"><h2>下一观察点</h2><p>${esc(observed({...card,status:data.status,next_observation:data.next_observation}))}</p>${data.tracking ? `<p class="space-top">出场后跟踪 <span class="mono">${esc(data.tracking.completed)} / ${esc(data.tracking.required)}</span> 个交易日</p>` : ''}</div><button class="detail-back" id="detail-back">← 返回全部机会</button></aside></div>`;
   $('#detail-back').addEventListener('click', showHome);
@@ -211,22 +351,62 @@ function renderEvents(data) {
   return events.length ? events.map(([at, text])=>`<div class="event-line"><span class="mono">${time(at)}</span>${esc(text)}</div>`).join('') : '<p class="empty">尚无成交或出场记录，等待下一观察点。</p>';
 }
 
-async function openCard(id, focus = true) {
+async function openCard(id, focus = true, updateUrl = true) {
   try {
     const data = await api(`/api/cards/${encodeURIComponent(id)}`);
     selectedId = id;
+    if (updateUrl) history.pushState(null,'',route(location.pathname,{card:id}));
     renderDetail(data);
     $('#overview').hidden = true;
     $('#detail').hidden = false;
     if (focus) { window.scrollTo({top:0}); $('#detail-title').focus({preventScroll:true}); }
-  } catch (error) { notify(error.message); }
+  } catch (error) { selectedId=null; $('#overview').hidden=false; $('#detail').hidden=true; notify(error.message); }
 }
-
 function showHome() {
   selectedId = null;
+  history.pushState(null,'',route('/',{card:null}));
   renderShell();
   window.scrollTo({top:0});
   $('#main').focus({preventScroll:true});
+}
+function wireNavigation() {
+  document.querySelectorAll('[data-route]').forEach(link=>link.addEventListener('click',event=> {
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return;
+    event.preventDefault(); navigate(link.href, page() === 'rotation' && new URL(link.href).pathname === '/rotation');
+  }));
+}
+async function navigate(url, focusDetail = false) {
+  history.pushState(null,'',url);
+  selectedId = params().get('card');
+  await loadPage(focusDetail);
+}
+async function loadPage(focusDetail = false) {
+  const sequence=++loadSequence;
+  $('#loading').hidden=false;
+  $('#loading').textContent='正在读取观察与台账…';
+  $('#overview').setAttribute('aria-busy','true');
+  try {
+    const currentState=await api('/api/state');
+    if (sequence !== loadSequence) return;
+    state=currentState;
+    const search=params();
+    const observationQuery=new URLSearchParams({weeks:'12'});
+    ['as_of','theme','series'].forEach(key=>{if(search.get(key)) observationQuery.set(key,search.get(key));});
+    let currentObservation;
+    try { currentObservation=await api(`/api/observation?${observationQuery}`); }
+    catch(error) { currentObservation={reason:error.message,containers:[],weeks:[],rotation:[],detail:null}; notify(error.message); }
+    if (sequence !== loadSequence) return;
+    observation=currentObservation;
+    const normalized=params(); normalized.set('mode',state.mode);
+    if (!normalized.get('as_of') && observation.requested_date) normalized.set('as_of',observation.requested_date);
+    if (!normalized.get('theme') && observation.detail?.theme_id) normalized.set('theme',observation.detail.theme_id);
+    history.replaceState(null,'',location.pathname+`?${normalized}`);
+    renderShell();
+    if (selectedId) await openCard(selectedId,false,false);
+    else if (focusDetail && $('#series-title')) { $('#series-title').focus({preventScroll:true}); $('#series-detail').scrollIntoView({block:'start'}); }
+    else window.scrollTo({top:0});
+  } catch(error) { $('#loading').textContent=`暂时无法读取观察。${error.message}`; notify(error.message); }
+  finally {if(sequence === loadSequence) $('#overview').removeAttribute('aria-busy');}
 }
 
 async function mutate(path, body, message, returnHome = false) {
@@ -235,15 +415,15 @@ async function mutate(path, body, message, returnHome = false) {
   document.querySelectorAll('form button, #advance-demo, #reset-demo').forEach(button => {button.disabled = true;});
   try {
     state = await api(path, body);
-    if (returnHome) selectedId = null;
-    renderShell();
-    if (selectedId) await openCard(selectedId, false);
+    if (returnHome) {
+      selectedId = null;
+      history.replaceState(null,'',route('/',{card:null,as_of:null}));
+    }
+    await loadPage();
     notify(message);
   } catch (error) {
     if (error.status === 409) {
-      state = await api('/api/state');
-      renderShell();
-      if (selectedId) await openCard(selectedId, false);
+      await loadPage();
     }
     notify(error.message);
   } finally {
@@ -259,9 +439,9 @@ function setTheme(theme) {
 }
 try { setTheme(localStorage.getItem('etf-ledger-theme') === 'light' ? 'light' : 'dark'); } catch (_) { setTheme('dark'); }
 $('#theme-toggle').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
-$('#home-button').addEventListener('click', () => { if (state) showHome(); });
+$('#home-button').addEventListener('click', () => { if (state) navigate(route('/',{card:null})); });
+['nav-home','nav-rotation'].forEach(id=>$('#'+id).addEventListener('click',event=> {if(event.ctrlKey||event.metaKey||event.shiftKey||event.altKey||event.button!==0)return;event.preventDefault();navigate(route(id==='nav-home'?'/':'/rotation',{card:null}));}));
+$('#observation-controls').addEventListener('submit',event=> {event.preventDefault();navigate(route(location.pathname,{as_of:$('#observation-date').value,theme:$('#observation-theme').value,card:null}));});
+window.addEventListener('popstate',()=> {selectedId=params().get('card');loadPage();});
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && selectedId) showHome(); });
-api('/api/state').then(data => {state = data; renderShell();}).catch(error => {
-  $('#loading').textContent = `暂时无法读取台账。${error.message}`;
-  $('#mode-label').textContent = '数据 · 未连接';
-});
+loadPage();

@@ -1,21 +1,26 @@
 """HTTP 无关的薄应用层；不改冻结字段，不向浏览器投影 agent 个体评分。"""
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime, time
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from src.data import db as MarketDB
 from src.data.quality import preflight
+from src.data.universe import PANEL_STATUSES
 from src.jobs.rules import ACTIVE_BEFORE_V1, load_rule_config
 from src.ledger.read import summary
 from src.ledger.store import CARD_FIELDS, DEFAULT_DB, ROOT, SCHEMA_VERSION, LedgerError, beijing_now
 from src.scoring.review import counterfactual, review_report
+from src.observation import observe
 from .demo import DemoStore
+from .demo_observation import demo_market
 
 
 class RequestError(ValueError):
@@ -135,6 +140,7 @@ class Application:
                     raise LedgerError("演示与正式路径不能重合")
             self.demo.ensure()
         self._data_cache = None
+        self._observation_cache = {}
 
     def effective_mode(self, mode):
         if mode not in (None, "demo", "readonly", "market"):
@@ -180,15 +186,17 @@ class Application:
                 market = read_market(self.market_path)
                 return {"mode": "market", "as_of": beijing_now(), "observation_as_of": market["last"],
                         "writable": False, "demo_available": False, "cards": [], "market": market,
-                        "ledger_note": "只读行情模式没有真实机会记录；不读取正式台账，也不使用演示卡。"}
+                        "ledger_note": "此观察入口不载入正式判断/扫描结果。"}
             now = self.demo.now() if mode == "demo" else beijing_now()
             cards = []
             observation_as_of = None
             review = None
+            latest_processed_day = None
             totals = {"denominator": 0, "terminal": 0, "by_status": {}, "by_final_score": {},
                       "hit_rate_over_terminal": None, "manual_exit_share": None}
             with self._reader(mode) as con:
                 if con:
+                    latest_processed_day = con.execute("SELECT max(day) FROM job_days").fetchone()[0]
                     totals = summary(con)
                     review = review_report(con)
                     observation_as_of = con.execute("SELECT max(date) FROM daily").fetchone()[0]
@@ -197,6 +205,7 @@ class Application:
                         c.thesis_inval_deadline AS next_observation,e.entry_date,x.exit_date,f.final_score,
                         (SELECT r_current FROM daily WHERE card_id=c.id ORDER BY date DESC LIMIT 1) AS r_current,
                         (SELECT close FROM daily WHERE card_id=c.id ORDER BY date DESC LIMIT 1) AS daily_close,
+                        (SELECT date FROM daily WHERE card_id=c.id ORDER BY date DESC LIMIT 1) AS daily_date,
                         EXISTS(SELECT 1 FROM strength_scores WHERE card_id=c.id AND rater='owner') AS owner_scored,
                         c.evidence_status
                         FROM cards c JOIN card_status s ON s.id=c.id
@@ -207,15 +216,75 @@ class Application:
                     "不适用" if card["evidence_status"] == "未检索" else
                     "已过期" if now >= card["owner_score_deadline"] else "待独立评分")
             problems = []
-            enabled = ["事件驱动"] if self.demo_only else list(load_rule_config(ROOT / "config" / "ledger-rules.json", problems))
+            enabled = ["事件驱动"] if mode == "demo" else list(load_rule_config(ROOT / "config" / "ledger-rules.json", problems))
             return {"mode": mode, "as_of": now, "observation_as_of": observation_as_of,
-                    "demo_available": self.demo is not None, "writable": mode == "demo", "revision": self.revision,
+                    "demo_available": self.demo is not None, "readonly_available": self.mode != "market" and not self.demo_only,
+                    "writable": mode == "demo", "revision": self.revision,
                     "csrf_token": self.csrf_token, "cards": cards, "summary": totals, "review": review,
-                    "rules": {"enabled": enabled, "blocked": [] if self.demo_only else [r for r in ACTIVE_BEFORE_V1 if r not in enabled] + ["形态突破"],
-                              "note": "纯演示：仅使用独立合成事件输入，不读取正式规则。" if self.demo_only else
-                                      "；".join(problems) or "正式规则配置仅供查看。演示推进使用独立合成输入。"},
+                    "scan": {"latest_processed_day": latest_processed_day,
+                             "note": "配置启用不表示已扫描；此处仅报告台账已处理日。"},
+                    "rules": {"enabled": enabled, "blocked": [] if mode == "demo" else [r for r in ACTIVE_BEFORE_V1 if r not in enabled] + ["形态突破"],
+                              "note": "纯演示：仅使用独立合成事件输入，不读取正式规则。" if mode == "demo" else
+                                      "；".join(problems) or "正式规则配置仅供查看，不表示已执行扫描。"},
                     "data_status": {"benchmark_ready": False, "research_ready": False,
-                                    "note": "纯演示：行情全部合成，不读取正式数据库。"} if self.demo_only else self.data_status()}
+                                    "note": "纯演示：行情全部合成，不读取正式数据库。"} if mode == "demo" else self.data_status()}
+
+    def observation(self, mode=None, *, as_of=None, theme=None, series="research", weeks=12):
+        """页面只读投影；请求不能选择数据库、修改 coverage 或执行研究。"""
+        mode = self.effective_mode(mode)
+        try:
+            requested = date.fromisoformat(as_of) if as_of else None
+            if as_of and requested.isoformat() != as_of:
+                raise ValueError()
+        except (TypeError, ValueError):
+            raise RequestError("观察日期须为有效的 YYYY-MM-DD") from None
+        if series not in ("research", "execution", "price_candidate"):
+            raise RequestError("未知价格序列用途")
+        if not isinstance(weeks, int) or not 1 <= weeks <= 26:
+            raise RequestError("周窗口须为 1–26")
+        with self.lock:
+            now = datetime.fromisoformat(self.demo.now() if mode == "demo" else beijing_now()).replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+            stamp = None
+            if mode != "demo":
+                MarketDB.refuse_default_in_tests(self.market_path, MarketDB.MARKET_DB)
+                if not self.market_path.exists():
+                    raise RequestError("行情库不存在；只读入口未创建文件。", 503)
+                stat = self.market_path.stat()
+                stamp = (stat.st_mtime_ns, stat.st_size)
+            # 模型只区分北京时间日期与 15:00 收盘边界，文件变化即失效。
+            key = (mode, stamp, now.date(), now.time() >= time(15), as_of, theme, series, weeks)
+            if key in self._observation_cache:
+                return self._observation_cache[key]
+            if mode == "demo":
+                with demo_market() as con:
+                    self._check_theme(con, theme)
+                    result = observe(con, requested, now=now, weeks=weeks, theme_id=theme, series_kind=series)
+                result["history_note"] = "全部行情为合成演示；日历为合成工作日，不是交易所日历。" + result.get("history_note", "")
+            else:
+                try:
+                    con = MarketDB.connect(self.market_path, readonly=True)
+                except MarketDB.DbError:
+                    raise RequestError("行情版本不符；只读观察不执行迁移。", 503) from None
+                try:
+                    con.execute("PRAGMA query_only = ON")
+                    con.execute("BEGIN")
+                    self._check_theme(con, theme)
+                    result = observe(con, requested, now=now, weeks=weeks, theme_id=theme, series_kind=series)
+                finally:
+                    con.close()
+            result["mode"] = mode
+            if len(self._observation_cache) >= 16:
+                self._observation_cache.clear()
+            self._observation_cache[key] = result
+            return result
+
+    @staticmethod
+    def _check_theme(con, theme):
+        if theme is not None:
+            # 只读版本化声明；无效 ID 属于请求错误，不冒充库故障。
+            row = con.execute("SELECT row FROM universe WHERE theme_id=?", (theme,)).fetchone()
+            if row is None or json.loads(row[0]).get("status") not in PANEL_STATUSES:
+                raise RequestError("未知容器编号")
 
     def detail(self, card_id, mode=None):
         with self.lock:
