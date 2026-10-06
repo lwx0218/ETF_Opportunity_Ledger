@@ -1,0 +1,2622 @@
+{
+  "format": "market-anomaly-and-volume-unit-verification-v1",
+  "metadata": {
+    "project": "ETF_Opportunity-Ledger",
+    "task": "2026-10-06-observation-and-pages.md section4 Pi forensic evidence only",
+    "created_at": "2026-10-06T11:21:12.251487+00:00",
+    "head": "ae7b63d89967267bbb4d1f1cb0ea077fb86f56a7",
+    "source_of_truth": "operations/planning/2026-10-06-observation-and-pages.md §4",
+    "execution_run1_run2_commit": "5fcec9dfc78390611c56ebd07681db6d816a8f71"
+  },
+  "baseline": {
+    "head": "ae7b63d89967267bbb4d1f1cb0ea077fb86f56a7",
+    "at": "2026-10-06T11:09:39.651570+00:00",
+    "market_sha256": "448c8f1f3a9568b7cde5ebcf8a4dc5eb8392ca59c9681cea938235430ef8d150",
+    "size": 20000768,
+    "ledger_exists": false,
+    "git_status": "",
+    "integrity": "ok"
+  },
+  "postcheck": {
+    "market_sha256": "448c8f1f3a9568b7cde5ebcf8a4dc5eb8392ca59c9681cea938235430ef8d150",
+    "market_unchanged": true,
+    "ledger_exists": false,
+    "formal_writes": false,
+    "product_or_rules_changes": false,
+    "research_runs": false,
+    "service_restarts": false
+  },
+  "summary": {
+    "399006": {
+      "stored_anomalies": 8,
+      "high_below_low": 0,
+      "matching_write_originals": 0,
+      "historical_probe_matched": 8,
+      "new_short_window_matched": 8,
+      "no_corroboration": 0
+    },
+    "BRENT": {
+      "stored_anomalies": 69,
+      "high_below_low": 6,
+      "matching_write_originals": 0,
+      "historical_probe_matched": 69,
+      "new_short_window_matched": 10,
+      "no_corroboration": 0
+    },
+    "510880": {
+      "stored_anomalies": 18,
+      "high_below_low": 0,
+      "matching_write_originals": 0,
+      "historical_probe_matched": 0,
+      "new_short_window_matched": 1,
+      "no_corroboration": 17
+    }
+  },
+  "csv": {
+    "path": "operations/work_logs/2026-10-06-market-source-verification.csv",
+    "bytes": 50104,
+    "sha256": "3554bf93a68ef5c25c22af1f9202195896892d98b8549a5ceec06bc4f68a9445",
+    "rows": 95,
+    "classifications": {
+      "probe_and_new_corroboration": 18,
+      "probe_corroboration_only": 59,
+      "new_corroboration_only": 1,
+      "unknown_no_original_or_corroboration": 17
+    }
+  },
+  "write_originals": {
+    "matched": 0,
+    "run2_requests": 1036,
+    "run2_empty_file": 1036,
+    "search": {
+      "scope": "project files including all outputs; excludes .git/.pi/.venv/node_modules/__pycache__",
+      "files_examined": 4842,
+      "size_candidates": 3,
+      "errors": []
+    },
+    "limit": "仅项目文件及outputs中按bytes/SHA256检索；不是服务器全盘搜索。没有找到四个写库请求匹配哈希，不以probe/new短窗替代。"
+  },
+  "association_basis": "source与symbol、原run2分段窗口、bars整序列fetched_at及runner/store历史代码关联；bars.fetched_at不是单请求获取时刻。CSV的write_request_id连接本索引，非数据采集时点证明。",
+  "legacy_requests": [
+    {
+      "run_id": 1,
+      "seq": 64,
+      "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz399006%2Cday%2C2009-08-01%2C2010-12-13%2C400%2C",
+      "fetched_at": "2026-10-02T14:49:35+00:00",
+      "bytes": 10813,
+      "sha256": "fa1899fb5890db1b2671f64409f7a1165b19897c48731db410818b75289fe40c",
+      "recorded_file": "4715927eb228.body",
+      "http_status": null,
+      "http_status_basis": "legacy http.get did not record numerical status",
+      "matching_files": [
+        "outputs/data/recorded/4715927eb228.body"
+      ],
+      "found": true,
+      "evidence_class": "probe_corroboration",
+      "identity": {
+        "symbol": "sz399006",
+        "identity": [
+          "51",
+          "创业板指",
+          "399006"
+        ],
+        "field_order": [
+          "date",
+          "open",
+          "close",
+          "high",
+          "low",
+          "volume"
+        ]
+      },
+      "raw_rows": 128,
+      "id": "run1-seq64",
+      "window": {
+        "symbol": "sz399006",
+        "frequency": "day",
+        "start": "2009-08-01",
+        "end": "2010-12-13",
+        "limit": "400",
+        "adjustment": ""
+      },
+      "fields_checked": 7
+    },
+    {
+      "run_id": 1,
+      "seq": 68,
+      "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz399006%2Cday%2C2015-01-22%2C2016-06-04%2C400%2C",
+      "fetched_at": "2026-10-02T14:49:45+00:00",
+      "bytes": 26415,
+      "sha256": "46184f4c0a113842dbe4745a898923d9d595ff634df49adf58963ab8892f5bcc",
+      "recorded_file": "c3609cd6c56e.body",
+      "http_status": null,
+      "http_status_basis": "legacy http.get did not record numerical status",
+      "matching_files": [
+        "outputs/data/recorded/c3609cd6c56e.body"
+      ],
+      "found": true,
+      "evidence_class": "probe_corroboration",
+      "identity": {
+        "symbol": "sz399006",
+        "identity": [
+          "51",
+          "创业板指",
+          "399006"
+        ],
+        "field_order": [
+          "date",
+          "open",
+          "close",
+          "high",
+          "low",
+          "volume"
+        ]
+      },
+      "raw_rows": 334,
+      "id": "run1-seq68",
+      "window": {
+        "symbol": "sz399006",
+        "frequency": "day",
+        "start": "2015-01-22",
+        "end": "2016-06-04",
+        "limit": "400",
+        "adjustment": ""
+      },
+      "fields_checked": 1
+    },
+    {
+      "run_id": 1,
+      "seq": 121,
+      "url": "https://query1.finance.yahoo.com/v8/finance/chart/BZ=F?period1=946684800&period2=1790812800&interval=1d&events=div%2Csplits",
+      "fetched_at": "2026-10-02T14:51:46+00:00",
+      "bytes": 502424,
+      "sha256": "59ea1bad942461a7ad15987d0a3d7257e1a02e40493c1e07ba9e0dc4fca26fe2",
+      "recorded_file": "75ed64377f29.body",
+      "http_status": null,
+      "http_status_basis": "legacy http.get did not record numerical status",
+      "matching_files": [
+        "outputs/data/recorded/75ed64377f29.body"
+      ],
+      "found": true,
+      "evidence_class": "probe_corroboration",
+      "identity": {
+        "symbol": "BZ=F",
+        "exchange_timezone": "America/New_York",
+        "field_order": "indicators.quote.[0]:open/high/low/close/volume; timestamp mapped per exchangeTimezoneName"
+      },
+      "raw_rows": 4830,
+      "id": "run1-seq121",
+      "window": {
+        "symbol": "BZ=F",
+        "period1": "946684800",
+        "period2": "1790812800",
+        "interval": "1d",
+        "events": "div,splits"
+      },
+      "fields_checked": 69
+    },
+    {
+      "run_id": 2,
+      "seq": 140,
+      "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz399006%2Cday%2C2009-08-01%2C2010-12-13%2C400%2C",
+      "fetched_at": "2026-10-02T15:02:26+00:00",
+      "bytes": 10813,
+      "sha256": "7524e1cc532366004f89418d5e89894a1dfab7502b990a04d4eaa1adad8f63fe",
+      "recorded_file": null,
+      "http_status": null,
+      "http_status_basis": "legacy http.get did not record numerical status",
+      "matching_files": [],
+      "found": false,
+      "evidence_class": "write_original_not_found",
+      "id": "run2-seq140",
+      "window": {
+        "symbol": "sz399006",
+        "frequency": "day",
+        "start": "2009-08-01",
+        "end": "2010-12-13",
+        "limit": "400",
+        "adjustment": ""
+      },
+      "fields_checked": 0
+    },
+    {
+      "run_id": 2,
+      "seq": 144,
+      "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz399006%2Cday%2C2015-01-22%2C2016-06-04%2C400%2C",
+      "fetched_at": "2026-10-02T15:02:36+00:00",
+      "bytes": 26415,
+      "sha256": "5b478193c534a90416c43e02747d1ca1be87ce34515d1f2d4b641564055d6309",
+      "recorded_file": null,
+      "http_status": null,
+      "http_status_basis": "legacy http.get did not record numerical status",
+      "matching_files": [],
+      "found": false,
+      "evidence_class": "write_original_not_found",
+      "id": "run2-seq144",
+      "window": {
+        "symbol": "sz399006",
+        "frequency": "day",
+        "start": "2015-01-22",
+        "end": "2016-06-04",
+        "limit": "400",
+        "adjustment": ""
+      },
+      "fields_checked": 0
+    },
+    {
+      "run_id": 2,
+      "seq": 413,
+      "url": "https://query1.finance.yahoo.com/v8/finance/chart/BZ=F?period1=946684800&period2=1790812800&interval=1d&events=div%2Csplits",
+      "fetched_at": "2026-10-02T15:12:24+00:00",
+      "bytes": 502424,
+      "sha256": "e99cd69858443c3c99f760ad08a5023cf9d2d8f06f60852f3195dfa6310eeeac",
+      "recorded_file": null,
+      "http_status": null,
+      "http_status_basis": "legacy http.get did not record numerical status",
+      "matching_files": [],
+      "found": false,
+      "evidence_class": "write_original_not_found",
+      "id": "run2-seq413",
+      "window": {
+        "symbol": "BZ=F",
+        "period1": "946684800",
+        "period2": "1790812800",
+        "interval": "1d",
+        "events": "div,splits"
+      },
+      "fields_checked": 0
+    },
+    {
+      "run_id": 2,
+      "seq": 839,
+      "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh510880%2Cday%2C2009-08-01%2C2010-12-13%2C400%2C",
+      "fetched_at": "2026-10-02T15:27:27+00:00",
+      "bytes": 21596,
+      "sha256": "f750ab71a4ae591c09c77f785f5dd6c5ae22cb31fa42878aba5d694ef4c417a4",
+      "recorded_file": null,
+      "http_status": null,
+      "http_status_basis": "legacy http.get did not record numerical status",
+      "matching_files": [],
+      "found": false,
+      "evidence_class": "write_original_not_found",
+      "id": "run2-seq839",
+      "window": {
+        "symbol": "sh510880",
+        "frequency": "day",
+        "start": "2009-08-01",
+        "end": "2010-12-13",
+        "limit": "400",
+        "adjustment": ""
+      },
+      "fields_checked": 0
+    }
+  ],
+  "new_short_windows": [
+    {
+      "code": "399006",
+      "symbol": "sz399006",
+      "start": "2010-05-31",
+      "end": "2010-08-06",
+      "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz399006%2Cday%2C2010-05-31%2C2010-08-06%2C400%2C",
+      "evidence_class": "new_short_window_corroboration",
+      "replaces_write_original": false,
+      "attempts": [
+        {
+          "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz399006%2Cday%2C2010-05-31%2C2010-08-06%2C400%2C",
+          "attempt": 1,
+          "requested_at": "2026-10-06T11:12:33.363690+00:00",
+          "http_status": 200,
+          "error": null,
+          "fetched_at": "2026-10-06T11:12:35.219109+00:00",
+          "bytes": 4860,
+          "sha256": "1ce31724084948d0a48f65d2ebcd72c19d2af6cc8dce40a3dccbe7f219ecda4d",
+          "file": "outputs/market-source-verification-20261006/short-windows/00-1-e668600c51e2.body",
+          "response_headers": {
+            "Content-Type": "text/html; charset=UTF-8",
+            "Content-Encoding": null,
+            "Date": "Tue, 06 Oct 2026 11:12:35 GMT",
+            "Last-Modified": null
+          }
+        }
+      ],
+      "http_status": 200,
+      "identity": [
+        "51",
+        "创业板指",
+        "399006"
+      ],
+      "outcome": "captured",
+      "raw_rows": 45,
+      "window_rows": 45,
+      "id": "short-01",
+      "anomaly_extractions": [
+        {
+          "date": "2010-06-04",
+          "raw": {
+            "raw_fields": [
+              "2010-06-04",
+              "989.681",
+              "1027.681",
+              "1027.680",
+              "986.500",
+              "1500295.000"
+            ],
+            "open": 989.681,
+            "close": 1027.681,
+            "high": 1027.68,
+            "low": 986.5,
+            "volume": 1500295.0,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        },
+        {
+          "date": "2010-06-17",
+          "raw": {
+            "raw_fields": [
+              "2010-06-17",
+              "1126.130",
+              "1064.839",
+              "1129.680",
+              "1064.840",
+              "1764283.000"
+            ],
+            "open": 1126.13,
+            "close": 1064.839,
+            "high": 1129.68,
+            "low": 1064.84,
+            "volume": 1764283.0,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        },
+        {
+          "date": "2010-06-25",
+          "raw": {
+            "raw_fields": [
+              "2010-06-25",
+              "1046.212",
+              "1016.283",
+              "1046.210",
+              "999.160",
+              "1237298.000"
+            ],
+            "open": 1046.212,
+            "close": 1016.283,
+            "high": 1046.21,
+            "low": 999.16,
+            "volume": 1237298.0,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        },
+        {
+          "date": "2010-07-15",
+          "raw": {
+            "raw_fields": [
+              "2010-07-15",
+              "920.046",
+              "892.557",
+              "930.550",
+              "892.560",
+              "1175880.000"
+            ],
+            "open": 920.046,
+            "close": 892.557,
+            "high": 930.55,
+            "low": 892.56,
+            "volume": 1175880.0,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        },
+        {
+          "date": "2010-07-28",
+          "raw": {
+            "raw_fields": [
+              "2010-07-28",
+              "955.188",
+              "972.534",
+              "972.530",
+              "954.520",
+              "1566182.000"
+            ],
+            "open": 955.188,
+            "close": 972.534,
+            "high": 972.53,
+            "low": 954.52,
+            "volume": 1566182.0,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        },
+        {
+          "date": "2010-07-30",
+          "raw": {
+            "raw_fields": [
+              "2010-07-30",
+              "971.663",
+              "968.431",
+              "971.660",
+              "955.920",
+              "1458486.000"
+            ],
+            "open": 971.663,
+            "close": 968.431,
+            "high": 971.66,
+            "low": 955.92,
+            "volume": 1458486.0,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        },
+        {
+          "date": "2010-08-04",
+          "raw": {
+            "raw_fields": [
+              "2010-08-04",
+              "971.407",
+              "978.014",
+              "978.010",
+              "955.930",
+              "1446165.000"
+            ],
+            "open": 971.407,
+            "close": 978.014,
+            "high": 978.01,
+            "low": 955.93,
+            "volume": 1446165.0,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        }
+      ]
+    },
+    {
+      "code": "399006",
+      "symbol": "sz399006",
+      "start": "2015-03-23",
+      "end": "2015-03-31",
+      "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz399006%2Cday%2C2015-03-23%2C2015-03-31%2C400%2C",
+      "evidence_class": "new_short_window_corroboration",
+      "replaces_write_original": false,
+      "attempts": [
+        {
+          "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz399006%2Cday%2C2015-03-23%2C2015-03-31%2C400%2C",
+          "attempt": 1,
+          "requested_at": "2026-10-06T11:12:35.523815+00:00",
+          "http_status": 200,
+          "error": null,
+          "fetched_at": "2026-10-06T11:12:37.091315+00:00",
+          "bytes": 2224,
+          "sha256": "dcec2229ebafdf4bbf95a9af9adb2e9e2af65ceaea847410afafa0ee50267747",
+          "file": "outputs/market-source-verification-20261006/short-windows/01-1-e2d20f738ee8.body",
+          "response_headers": {
+            "Content-Type": "text/html; charset=UTF-8",
+            "Content-Encoding": null,
+            "Date": "Tue, 06 Oct 2026 11:12:36 GMT",
+            "Last-Modified": null
+          }
+        }
+      ],
+      "http_status": 200,
+      "identity": [
+        "51",
+        "创业板指",
+        "399006"
+      ],
+      "outcome": "captured",
+      "raw_rows": 7,
+      "window_rows": 7,
+      "id": "short-02",
+      "anomaly_extractions": [
+        {
+          "date": "2015-03-27",
+          "raw": {
+            "raw_fields": [
+              "2015-03-27",
+              "2274.677",
+              "2323.819",
+              "2326.418",
+              "2326.418",
+              "31041900.840"
+            ],
+            "open": 2274.677,
+            "close": 2323.819,
+            "high": 2326.418,
+            "low": 2326.418,
+            "volume": 31041900.84,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        }
+      ]
+    },
+    {
+      "code": "510880",
+      "symbol": "sh510880",
+      "start": "2010-01-11",
+      "end": "2010-01-15",
+      "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh510880%2Cday%2C2010-01-11%2C2010-01-15%2C400%2C",
+      "evidence_class": "new_short_window_corroboration",
+      "replaces_write_original": false,
+      "attempts": [
+        {
+          "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh510880%2Cday%2C2010-01-11%2C2010-01-15%2C400%2C",
+          "attempt": 1,
+          "requested_at": "2026-10-06T11:12:37.402287+00:00",
+          "http_status": 200,
+          "error": null,
+          "fetched_at": "2026-10-06T11:12:39.079785+00:00",
+          "bytes": 2016,
+          "sha256": "13de83fa807ba9c30e27d5fdd2841a6cc6df246d6ca34ad0557db4e931772d67",
+          "file": "outputs/market-source-verification-20261006/short-windows/02-1-d1d758ec7b45.body",
+          "response_headers": {
+            "Content-Type": "text/html; charset=UTF-8",
+            "Content-Encoding": null,
+            "Date": "Tue, 06 Oct 2026 11:12:38 GMT",
+            "Last-Modified": null
+          }
+        }
+      ],
+      "http_status": 200,
+      "identity": [
+        "1",
+        "红利ETF华泰柏瑞",
+        "510880"
+      ],
+      "outcome": "captured",
+      "raw_rows": 5,
+      "window_rows": 5,
+      "id": "short-03",
+      "anomaly_extractions": [
+        {
+          "date": "2010-01-12",
+          "raw": {
+            "raw_fields": [
+              "2010-01-12",
+              "2.735",
+              "2.782",
+              "2.780",
+              "2.700",
+              "880106.740"
+            ],
+            "open": 2.735,
+            "close": 2.782,
+            "high": 2.78,
+            "low": 2.7,
+            "volume": 880106.74,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        }
+      ]
+    },
+    {
+      "code": "BRENT",
+      "symbol": "BZ=F",
+      "start": "2007-12-20",
+      "end": "2007-12-28",
+      "url": "https://query1.finance.yahoo.com/v8/finance/chart/BZ=F?period1=1198108800&period2=1198886400&interval=1d&events=div%2Csplits",
+      "evidence_class": "new_short_window_corroboration",
+      "replaces_write_original": false,
+      "attempts": [
+        {
+          "url": "https://query1.finance.yahoo.com/v8/finance/chart/BZ=F?period1=1198108800&period2=1198886400&interval=1d&events=div%2Csplits",
+          "attempt": 1,
+          "requested_at": "2026-10-06T11:12:39.383779+00:00",
+          "http_status": 200,
+          "error": null,
+          "fetched_at": "2026-10-06T11:12:40.374800+00:00",
+          "bytes": 1867,
+          "sha256": "d7226f7f398a04fd8c36778f62f4c321a2ae6446e0028473199aa26bd3c18382",
+          "file": "outputs/market-source-verification-20261006/short-windows/03-1-81040cdb9dc6.body",
+          "response_headers": {
+            "Content-Type": "application/json;charset=utf-8",
+            "Content-Encoding": null,
+            "Date": "Tue, 06 Oct 2026 11:12:39 GMT",
+            "Last-Modified": null
+          }
+        }
+      ],
+      "http_status": 200,
+      "identity": {
+        "symbol": "BZ=F",
+        "exchange_timezone": "America/New_York"
+      },
+      "outcome": "captured",
+      "raw_rows": 6,
+      "window_rows": 6,
+      "id": "short-04",
+      "anomaly_extractions": [
+        {
+          "date": "2007-12-24",
+          "raw": {
+            "raw_fields": {
+              "timestamp": 1198506600,
+              "open": 92.2699966430664,
+              "high": 92.3499984741211,
+              "low": 91.37999725341797,
+              "close": 92.69999694824219,
+              "volume": 87
+            },
+            "open": 92.2699966430664,
+            "high": 92.3499984741211,
+            "low": 91.37999725341797,
+            "close": 92.69999694824219,
+            "volume": 87,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        }
+      ]
+    },
+    {
+      "code": "BRENT",
+      "symbol": "BZ=F",
+      "start": "2009-12-21",
+      "end": "2010-01-15",
+      "url": "https://query1.finance.yahoo.com/v8/finance/chart/BZ=F?period1=1261353600&period2=1263600000&interval=1d&events=div%2Csplits",
+      "evidence_class": "new_short_window_corroboration",
+      "replaces_write_original": false,
+      "attempts": [
+        {
+          "url": "https://query1.finance.yahoo.com/v8/finance/chart/BZ=F?period1=1261353600&period2=1263600000&interval=1d&events=div%2Csplits",
+          "attempt": 1,
+          "requested_at": "2026-10-06T11:12:40.682034+00:00",
+          "http_status": 200,
+          "error": null,
+          "fetched_at": "2026-10-06T11:12:41.623416+00:00",
+          "bytes": 3081,
+          "sha256": "754ab38516b69e032e562668b600024dcb6a6dcdcb895c686e5e4a7c3fb2d95a",
+          "file": "outputs/market-source-verification-20261006/short-windows/04-1-91607a1e3070.body",
+          "response_headers": {
+            "Content-Type": "application/json;charset=utf-8",
+            "Content-Encoding": null,
+            "Date": "Tue, 06 Oct 2026 11:12:41 GMT",
+            "Last-Modified": null
+          }
+        }
+      ],
+      "http_status": 200,
+      "identity": {
+        "symbol": "BZ=F",
+        "exchange_timezone": "America/New_York"
+      },
+      "outcome": "captured",
+      "raw_rows": 18,
+      "window_rows": 18,
+      "id": "short-05",
+      "anomaly_extractions": [
+        {
+          "date": "2009-12-23",
+          "raw": {
+            "raw_fields": {
+              "timestamp": 1261544400,
+              "open": 75.44999694824219,
+              "high": 75.12999725341797,
+              "low": 75.44999694824219,
+              "close": 75.44999694824219,
+              "volume": 1
+            },
+            "open": 75.44999694824219,
+            "high": 75.12999725341797,
+            "low": 75.44999694824219,
+            "close": 75.44999694824219,
+            "volume": 1,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        },
+        {
+          "date": "2009-12-24",
+          "raw": {
+            "raw_fields": {
+              "timestamp": 1261665000,
+              "open": 76.30999755859375,
+              "high": 75.93000030517578,
+              "low": 76.30999755859375,
+              "close": 76.30999755859375,
+              "volume": 1
+            },
+            "open": 76.30999755859375,
+            "high": 75.93000030517578,
+            "low": 76.30999755859375,
+            "close": 76.30999755859375,
+            "volume": 1,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        },
+        {
+          "date": "2010-01-04",
+          "raw": {
+            "raw_fields": {
+              "timestamp": 1262581200,
+              "open": 80.12000274658203,
+              "high": 79.81999969482422,
+              "low": 80.12000274658203,
+              "close": 80.12000274658203,
+              "volume": 97
+            },
+            "open": 80.12000274658203,
+            "high": 79.81999969482422,
+            "low": 80.12000274658203,
+            "close": 80.12000274658203,
+            "volume": 97,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        },
+        {
+          "date": "2010-01-05",
+          "raw": {
+            "raw_fields": {
+              "timestamp": 1262667600,
+              "open": 80.58999633789062,
+              "high": 80.26000213623047,
+              "low": 80.58999633789062,
+              "close": 80.58999633789062,
+              "volume": 97
+            },
+            "open": 80.58999633789062,
+            "high": 80.26000213623047,
+            "low": 80.58999633789062,
+            "close": 80.58999633789062,
+            "volume": 97,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        },
+        {
+          "date": "2010-01-06",
+          "raw": {
+            "raw_fields": {
+              "timestamp": 1262754000,
+              "open": 81.12999725341797,
+              "high": 81.69999694824219,
+              "low": 80.12999725341797,
+              "close": 81.88999938964844,
+              "volume": 7
+            },
+            "open": 81.12999725341797,
+            "high": 81.69999694824219,
+            "low": 80.12999725341797,
+            "close": 81.88999938964844,
+            "volume": 7,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        },
+        {
+          "date": "2010-01-07",
+          "raw": {
+            "raw_fields": {
+              "timestamp": 1262840400,
+              "open": 81.51000213623047,
+              "high": 81.51000213623047,
+              "low": 81.62999725341797,
+              "close": 81.51000213623047,
+              "volume": 7
+            },
+            "open": 81.51000213623047,
+            "high": 81.51000213623047,
+            "low": 81.62999725341797,
+            "close": 81.51000213623047,
+            "volume": 7,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        },
+        {
+          "date": "2010-01-11",
+          "raw": {
+            "raw_fields": {
+              "timestamp": 1263186000,
+              "open": 80.97000122070312,
+              "high": 81.70999908447266,
+              "low": 81.01000213623047,
+              "close": 80.97000122070312,
+              "volume": 7
+            },
+            "open": 80.97000122070312,
+            "high": 81.70999908447266,
+            "low": 81.01000213623047,
+            "close": 80.97000122070312,
+            "volume": 7,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        },
+        {
+          "date": "2010-01-14",
+          "raw": {
+            "raw_fields": {
+              "timestamp": 1263445200,
+              "open": 77.81999969482422,
+              "high": 78.47000122070312,
+              "low": 78.01000213623047,
+              "close": 77.81999969482422,
+              "volume": 6
+            },
+            "open": 77.81999969482422,
+            "high": 78.47000122070312,
+            "low": 78.01000213623047,
+            "close": 77.81999969482422,
+            "volume": 6,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        }
+      ]
+    },
+    {
+      "code": "BRENT",
+      "symbol": "BZ=F",
+      "start": "2015-07-13",
+      "end": "2015-07-20",
+      "url": "https://query1.finance.yahoo.com/v8/finance/chart/BZ=F?period1=1436745600&period2=1437436800&interval=1d&events=div%2Csplits",
+      "evidence_class": "new_short_window_corroboration",
+      "replaces_write_original": false,
+      "attempts": [
+        {
+          "url": "https://query1.finance.yahoo.com/v8/finance/chart/BZ=F?period1=1436745600&period2=1437436800&interval=1d&events=div%2Csplits",
+          "attempt": 1,
+          "requested_at": "2026-10-06T11:12:41.932890+00:00",
+          "http_status": 200,
+          "error": null,
+          "fetched_at": "2026-10-06T11:12:42.790872+00:00",
+          "bytes": 1881,
+          "sha256": "32427b7d17f511e403362df44200ee0f58eff4f82b597554538fa82dd979c5fd",
+          "file": "outputs/market-source-verification-20261006/short-windows/05-1-65942f12e5ce.body",
+          "response_headers": {
+            "Content-Type": "application/json;charset=utf-8",
+            "Content-Encoding": null,
+            "Date": "Tue, 06 Oct 2026 11:12:42 GMT",
+            "Last-Modified": null
+          }
+        }
+      ],
+      "http_status": 200,
+      "identity": {
+        "symbol": "BZ=F",
+        "exchange_timezone": "America/New_York"
+      },
+      "outcome": "captured",
+      "raw_rows": 6,
+      "window_rows": 6,
+      "id": "short-06",
+      "anomaly_extractions": [
+        {
+          "date": "2015-07-17",
+          "raw": {
+            "raw_fields": {
+              "timestamp": 1437105600,
+              "open": 57.720001220703125,
+              "high": 57.720001220703125,
+              "low": 57.720001220703125,
+              "close": 57.52000045776367,
+              "volume": 18931
+            },
+            "open": 57.720001220703125,
+            "high": 57.720001220703125,
+            "low": 57.720001220703125,
+            "close": 57.52000045776367,
+            "volume": 18931,
+            "amount": null
+          },
+          "matches_stored_fields": true,
+          "envelope_anomaly": true
+        }
+      ]
+    }
+  ],
+  "volume_unit": {
+    "scope": {
+      "endpoint": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
+      "param": "sh510880,day,<start>,<end>,400,",
+      "adjustment": "empty/raw",
+      "field": "data.sh510880.day[i][5] (sixth field)",
+      "row_order": [
+        "date",
+        "open",
+        "close",
+        "high",
+        "low",
+        "volume"
+      ]
+    },
+    "unit": "unverified",
+    "conclusion_zh": "unverified：未取得同时覆盖执行ETF、fqkline/get、day第六字段、空复权参数的上游单位定义。不得认定手。",
+    "verified_definition": [],
+    "corroboration": [
+      {
+        "source": "tencent-chart-js",
+        "classification": "提供方JS旁证",
+        "facts": [
+          "STOCK_UNIT 映射 sh/sz/jj 为手；K线 volumeArea 轴标签使用该映射。",
+          "kline 解析取 y[5] 为 T，C.push(T)，输出 volume: C。",
+          "该JS请求构造使用 proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get（有复权）或 newkline/newkline（无复权）；不是执行ETF的 web.ifzq.gtimg.cn/appstock/app/fqkline/get。"
+        ],
+        "limit": "提供方身份、字段消费和单位标签可追溯，但接口合同与空复权执行ETF未闭合，不能跨接口认证。"
+      },
+      {
+        "source": "akshare-stock-doc",
+        "classification": "第三方包装接口旁证（弱）",
+        "facts": [
+          "stock_zh_a_hist_tx 文档限定沪深京A股上市公司，adjust默认不复权。",
+          "现行文档 volume 描述为 成交量；单位：股，并明确 volume 已统一为股。"
+        ],
+        "limit": "这是第三方转换后输出单位，不是腾讯原字段，更不是ETF定义；不得反推原字段手/股。"
+      }
+    ],
+    "local_contract_declarations": [
+      {
+        "path": "docs/project-intake/etf-opportunity-ledger.md",
+        "line": 121,
+        "verbatim": "- 腾讯日线/月线：`https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=<sym>,day|month,<start>,<end>,<n>,[qfq]` — 单次上限 400 行；返回行格式 `[date, open, close, high, low, vol]`（注意是 open,close,high,low 的顺序）；成交量单位「手」",
+        "classification": "本地合同/实现声明，不是上游认证"
+      },
+      {
+        "path": "docs/data-layer.md",
+        "line": 75,
+        "verbatim": "| `bars` | `code, adj, date, open, high, low, close, volume, amount, source, fetched_at`，主键 `(code, adj, date)`。`adj = hfq` 只给后复权路由 `eastmoney_etf_hfq`（CHECK 约束），其余（指数点位、不复权执行价）都是 `raw`；一条序列 `(code, adj)` 只来自一个路由（触发器：已有别的来源即拒绝插入），增量换源即拒绝合并；后复权序列与采用的全收益序列在重叠区被改写（复权基准可能变了）时也拒绝合并，需重新全量 backfill。backfill 整条替换，update 按日覆盖（INSERT OR REPLACE）；UPDATE 一律拒绝（触发器），改来源只能整条重写。量额保留各源原始单位（东财 / 腾讯成交量为「手」；中证量额单位未核实）。EIA 只有收盘值 |",
+        "classification": "本地合同/实现声明，不是上游认证"
+      },
+      {
+        "path": "docs/etf-rotation-framework-v0.md",
+        "line": 210,
+        "verbatim": "| ETF/LOF 日线 OHLCV | 腾讯 `web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh588000,day,起,止,条数,` | 任意代码、任意区间；成交量单位\"手\" |",
+        "classification": "本地合同/实现声明，不是上游认证"
+      },
+      {
+        "path": "src/data/sources.py",
+        "line": 6,
+        "verbatim": "成交量 / 成交额保留各源原始单位，不做换算（东财、腾讯成交量是「手」；中证的量额单位未核实）。",
+        "classification": "本地合同/实现声明，不是上游认证"
+      },
+      {
+        "path": "src/data/sources.py",
+        "line": 160,
+        "verbatim": "def fetch_tencent(sym: str, start: date, end: date) -> Fetched:",
+        "classification": "本地合同/实现声明，不是上游认证"
+      },
+      {
+        "path": "src/data/sources.py",
+        "line": 179,
+        "verbatim": "                rows.append(_row(p[0], p[1], p[3], p[4], p[2], p[5]))",
+        "classification": "本地合同/实现声明，不是上游认证"
+      }
+    ],
+    "sources": [
+      {
+        "id": "tencent-etf-page",
+        "url": "https://gu.qq.com/sh510880",
+        "kind": "provider_page",
+        "attempts": [
+          {
+            "time_utc": "2026-10-06T11:10:14.860567+00:00",
+            "status": 200
+          }
+        ],
+        "fetched_at_utc": "2026-10-06T11:10:14.860567+00:00",
+        "http_status": 200,
+        "final_url": "https://gu.qq.com/sh510880",
+        "bytes": 4310,
+        "sha256": "b4b1eed6047eb4e6d54980a6cf6aebaa2a20253670c665f0fc8d47a09502e114",
+        "path": "outputs/market-source-verification-20261006/units/tencent-etf-page.body",
+        "preservation": "original_HTTP_response_body_bytes"
+      },
+      {
+        "id": "akshare-stock-doc",
+        "url": "https://akshare.akfamily.xyz/data/stock/stock.html",
+        "kind": "third_party",
+        "attempts": [
+          {
+            "time_utc": "2026-10-06T11:10:16.553655+00:00",
+            "status": 200
+          }
+        ],
+        "fetched_at_utc": "2026-10-06T11:10:16.553655+00:00",
+        "http_status": 200,
+        "final_url": "https://akshare.akfamily.xyz/data/stock/stock.html",
+        "bytes": 3285546,
+        "sha256": "4d2c3204e2476ef9cd434621de217fcdf94308fc4659d83e8183f81c838d93b1",
+        "path": "outputs/market-source-verification-20261006/units/akshare-stock-doc.body",
+        "preservation": "original_HTTP_response_body_bytes"
+      },
+      {
+        "id": "akshare-tencent-source",
+        "url": "https://raw.githubusercontent.com/akfamily/akshare/master/akshare/stock/stock_zh_a_tx.py",
+        "kind": "third_party",
+        "attempts": [
+          {
+            "time_utc": "2026-10-06T11:10:23.335694+00:00",
+            "status": 200
+          }
+        ],
+        "fetched_at_utc": "2026-10-06T11:10:23.335694+00:00",
+        "http_status": 200,
+        "final_url": "https://raw.githubusercontent.com/akfamily/akshare/master/akshare/stock/stock_zh_a_tx.py",
+        "bytes": 1678,
+        "sha256": "652597207a65e2df253b9b3b97ae14609b584796bf8779ce9056d58fd810cbdd",
+        "path": "outputs/market-source-verification-20261006/units/akshare-tencent-source.body",
+        "preservation": "original_HTTP_response_body_bytes"
+      },
+      {
+        "id": "tencent-chart-js",
+        "url": "https://st.gtimg.com/quotes/hs-fund/zxgweb-chart-5878585c4a61.js",
+        "kind": "provider_JS",
+        "attempts": [
+          {
+            "time_utc": "2026-10-06T11:10:40.936317+00:00",
+            "status": 200
+          }
+        ],
+        "fetched_at_utc": "2026-10-06T11:10:40.936317+00:00",
+        "http_status": 200,
+        "final_url": "https://st.gtimg.com/quotes/hs-fund/zxgweb-chart-5878585c4a61.js",
+        "bytes": 814220,
+        "sha256": "01ed18a4939ad01195896ab3063d2fdbf6ae5adc69836d308aabb1be04aa8c08",
+        "path": "outputs/market-source-verification-20261006/units/tencent-chart-js.body",
+        "preservation": "original_HTTP_response_body_bytes"
+      }
+    ],
+    "gaps": [
+      "未找到精确接口和空复权参数的ETF原始volume单位定义。",
+      "已读JS不提供执行fqkline/get与newkline/newfqkline之间字段单位一致性保证。",
+      "第三方包装转换实现不在本次四原件预算内，亦不能取代提供方认证。"
+    ],
+    "discarded": [
+      {
+        "source": "akshare-tencent-source",
+        "reason": "当前stock_zh_a_tx.py只含stock_zh_a_spot_tx实时接口，保全后发现不相关；不能代替日线定义。"
+      },
+      {
+        "url": "https://deepwiki.com/1ack/quant-system/7.1-data-sources-and-apis",
+        "reason": "第三方自动文档，搜索摘要的手无上游映射；未获取全文。"
+      },
+      {
+        "url": "https://cloud.tencent.com/developer/article/2056514",
+        "reason": "开发者社区第三方文章，腾讯域名不等于接口提供方定义；未获取全文。"
+      },
+      {
+        "source": "qt.gtimg.cn 实时定义 / newfqkline qfq指数候选 / 搜索结果指数与港股行情",
+        "reason": "接口、对象或复权范围不同，不用于认证执行ETF day；未发行情请求。"
+      }
+    ]
+  },
+  "recent_etf_probe": {
+    "containers": 37,
+    "unique_exec_codes": 37,
+    "window": "2026-08-16～2026-09-30",
+    "unit": "unverified",
+    "limit": "2026-08-16～09-30的既有run1采集；不是run2写库原件，也不认证量单位或全部历史。未重抓近期或全历史。",
+    "reports": [
+      {
+        "theme_id": "T01",
+        "container": "沪深300",
+        "exec_code": "510300",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 29,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh510300%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:48:24+00:00",
+            "http_status": null,
+            "bytes": 3677,
+            "sha256": "fb2d58a8769dc81c9969002d4aad5155c8fdb6adfe9fd71edfbbfce9798c15f6",
+            "path": "outputs/data/recorded/d1011b1b5045.body",
+            "hash_verified": true,
+            "symbol": "sh510300",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "4.421",
+              "4.432",
+              "4.444",
+              "4.415",
+              "4958544.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T02",
+        "container": "中证500",
+        "exec_code": "510500",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 45,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh510500%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:48:52+00:00",
+            "http_status": null,
+            "bytes": 3648,
+            "sha256": "4e23de24edb61b2bb652ef047dcf924e844e71740e461f4091b5b9fa59c677ee",
+            "path": "outputs/data/recorded/c02c93e7a13b.body",
+            "hash_verified": true,
+            "symbol": "sh510500",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "7.498",
+              "7.472",
+              "7.513",
+              "7.450",
+              "2232233.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T03",
+        "container": "中证1000",
+        "exec_code": "512100",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 49,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh512100%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:49:01+00:00",
+            "http_status": null,
+            "bytes": 3675,
+            "sha256": "d8eddfba3fba9ac71e9ace282a6c5f5a9808dbba717edaa06e32dbd584e673af",
+            "path": "outputs/data/recorded/447fcf5903ba.body",
+            "hash_verified": true,
+            "symbol": "sh512100",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "2.987",
+              "2.971",
+              "2.997",
+              "2.964",
+              "6120738.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T04",
+        "container": "科创50",
+        "exec_code": "588000",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 54,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh588000%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:49:11+00:00",
+            "http_status": null,
+            "bytes": 3715,
+            "sha256": "eb8afef4128f119b6bf93437161c1b9d8781b6c49d8c1fa03869d9a9aba66a5f",
+            "path": "outputs/data/recorded/57ee179dadbe.body",
+            "hash_verified": true,
+            "symbol": "sh588000",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "1.662",
+              "1.616",
+              "1.668",
+              "1.613",
+              "42024446.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T05",
+        "container": "创业板",
+        "exec_code": "159915",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 78,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz159915%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:50:10+00:00",
+            "http_status": null,
+            "bytes": 3703,
+            "sha256": "cec4807e1f148f0cb09f3e0adcee258251bb7e365e31e2710f2509516c5eeaa9",
+            "path": "outputs/data/recorded/77cb058b6c7a.body",
+            "hash_verified": true,
+            "symbol": "sz159915",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "3.174",
+              "3.154",
+              "3.192",
+              "3.142",
+              "13081793.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T06",
+        "container": "半导体",
+        "exec_code": "512480",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 83,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh512480%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:50:22+00:00",
+            "http_status": null,
+            "bytes": 3709,
+            "sha256": "c8028e92b5f58b9b870ade45ab4793506a065cd23b47743cbec53baedae26bb2",
+            "path": "outputs/data/recorded/bf6d81ab1ec2.body",
+            "hash_verified": true,
+            "symbol": "sh512480",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "0.988",
+              "0.955",
+              "0.992",
+              "0.952",
+              "11941560.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T07",
+        "container": "半导体设备",
+        "exec_code": "159516",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 87,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz159516%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:50:31+00:00",
+            "http_status": null,
+            "bytes": 3723,
+            "sha256": "611019ab45f629ab1d36fdb2e1a349b9992b26f64670984468711335c4cb2640",
+            "path": "outputs/data/recorded/a9d4ce461d73.body",
+            "hash_verified": true,
+            "symbol": "sz159516",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "0.674",
+              "0.651",
+              "0.679",
+              "0.649",
+              "40580177.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T08",
+        "container": "AI/算力",
+        "exec_code": "159819",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 92,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz159819%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:50:41+00:00",
+            "http_status": null,
+            "bytes": 3659,
+            "sha256": "4c7f96ba5f6f6c342282e338364822d5633c3efc1bd09cf8704b27ca83e71cce",
+            "path": "outputs/data/recorded/2d8b56b6e975.body",
+            "hash_verified": true,
+            "symbol": "sz159819",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "1.693",
+              "1.659",
+              "1.699",
+              "1.654",
+              "1745524.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T09",
+        "container": "通信/光模块",
+        "exec_code": "515880",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 96,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh515880%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:50:50+00:00",
+            "http_status": null,
+            "bytes": 3717,
+            "sha256": "592af8070ae7cfafb9d64236f100088c30d1a243efceec45f36cbef043792fba",
+            "path": "outputs/data/recorded/6adf3d3f9662.body",
+            "hash_verified": true,
+            "symbol": "sh515880",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "0.635",
+              "0.626",
+              "0.639",
+              "0.624",
+              "31176063.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T10",
+        "container": "软件/信创",
+        "exec_code": "515230",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 101,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh515230%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:51:02+00:00",
+            "http_status": null,
+            "bytes": 3653,
+            "sha256": "218e52da60e36cb3fc90e1cca4ba1a28ce59e44f80996e38d4cbb297c30c4bc6",
+            "path": "outputs/data/recorded/5ffa8dad765c.body",
+            "hash_verified": true,
+            "symbol": "sh515230",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "0.659",
+              "0.651",
+              "0.660",
+              "0.650",
+              "1414846.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T11",
+        "container": "机器人",
+        "exec_code": "562500",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 106,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh562500%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:51:12+00:00",
+            "http_status": null,
+            "bytes": 3671,
+            "sha256": "be8d8ba2a4dbd1c7317017982874a58fbee0e0707cd7dacbc2fd376671f4c71c",
+            "path": "outputs/data/recorded/a1e386184d63.body",
+            "hash_verified": true,
+            "symbol": "sh562500",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "0.903",
+              "0.897",
+              "0.908",
+              "0.896",
+              "2371644.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T12",
+        "container": "消费电子",
+        "exec_code": "159732",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 110,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz159732%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:51:21+00:00",
+            "http_status": null,
+            "bytes": 3645,
+            "sha256": "97b63c2fa6ad9bf84416cf3b726b17f4babaf387f62ce4a3c04d0befa36c5c69",
+            "path": "outputs/data/recorded/275024dc67e2.body",
+            "hash_verified": true,
+            "symbol": "sz159732",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "1.291",
+              "1.266",
+              "1.291",
+              "1.262",
+              "1259552.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T13",
+        "container": "有色",
+        "exec_code": "512400",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 115,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh512400%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:51:31+00:00",
+            "http_status": null,
+            "bytes": 3672,
+            "sha256": "21475ec80bf6e835b42e5698e15f015d1edb7f2dcb564f73c7924bede998521b",
+            "path": "outputs/data/recorded/0dd2ab103564.body",
+            "hash_verified": true,
+            "symbol": "sh512400",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "1.617",
+              "1.621",
+              "1.629",
+              "1.612",
+              "2074424.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T14",
+        "container": "煤炭",
+        "exec_code": "515220",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 120,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh515220%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:51:44+00:00",
+            "http_status": null,
+            "bytes": 3655,
+            "sha256": "b11a6b2bb80b10bfba257a818928a016f61e69b9a5b4438a4e4a8ea57a089206",
+            "path": "outputs/data/recorded/b36245d681e2.body",
+            "hash_verified": true,
+            "symbol": "sh515220",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "1.243",
+              "1.256",
+              "1.265",
+              "1.235",
+              "3579809.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T15",
+        "container": "原油",
+        "exec_code": "501018",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 123,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh501018%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:51:52+00:00",
+            "http_status": null,
+            "bytes": 3634,
+            "sha256": "c49474e8f39582fea682f723d75a9261b8f3aea037e7e601a05999073f27a12c",
+            "path": "outputs/data/recorded/7419491a13d1.body",
+            "hash_verified": true,
+            "symbol": "sh501018",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "1.963",
+              "1.957",
+              "1.972",
+              "1.946",
+              "1528751.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T16",
+        "container": "黄金",
+        "exec_code": "518880",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 126,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh518880%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:52:03+00:00",
+            "http_status": null,
+            "bytes": 3655,
+            "sha256": "35386a5332bd6eee456fbd416176ddd10ad539e2ad96039ae3dee69eb6eb550b",
+            "path": "outputs/data/recorded/200d6d8225ac.body",
+            "hash_verified": true,
+            "symbol": "sh518880",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "8.567",
+              "8.633",
+              "8.633",
+              "8.562",
+              "3137814.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T17",
+        "container": "钢铁",
+        "exec_code": "515210",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 131,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh515210%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:52:13+00:00",
+            "http_status": null,
+            "bytes": 3607,
+            "sha256": "029dc77f30a65dc32e1720d3f5f6b4890eb8ba5c412c4ad83a2492dd46331f02",
+            "path": "outputs/data/recorded/f07222c53328.body",
+            "hash_verified": true,
+            "symbol": "sh515210",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "1.113",
+              "1.127",
+              "1.129",
+              "1.111",
+              "886709.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T18",
+        "container": "化工",
+        "exec_code": "159870",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 136,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz159870%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:52:23+00:00",
+            "http_status": null,
+            "bytes": 3649,
+            "sha256": "166ffed8bfe95d32d0185da4f13cbe9a1118da8558e145555f1d77ea564a9d4e",
+            "path": "outputs/data/recorded/10190519535b.body",
+            "hash_verified": true,
+            "symbol": "sz159870",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "0.735",
+              "0.740",
+              "0.745",
+              "0.735",
+              "2443623.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T19",
+        "container": "新能源车",
+        "exec_code": "515030",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 141,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh515030%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:52:33+00:00",
+            "http_status": null,
+            "bytes": 3622,
+            "sha256": "24f25436b24614cfd1a4568d4a60778fe0153e48977e486d8829e2e40f919f3d",
+            "path": "outputs/data/recorded/769751ea60c4.body",
+            "hash_verified": true,
+            "symbol": "sh515030",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "1.450",
+              "1.456",
+              "1.469",
+              "1.438",
+              "667487.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T20",
+        "container": "光伏",
+        "exec_code": "515790",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 145,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh515790%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:52:45+00:00",
+            "http_status": null,
+            "bytes": 3660,
+            "sha256": "a8773e1f9ba3c5eea4fbd8cd6cbf7fce94469693a0ec720180b4640c26e97d14",
+            "path": "outputs/data/recorded/0465bd46aa10.body",
+            "hash_verified": true,
+            "symbol": "sh515790",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "0.773",
+              "0.776",
+              "0.781",
+              "0.771",
+              "1108776.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T21",
+        "container": "军工",
+        "exec_code": "512660",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 150,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh512660%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:52:55+00:00",
+            "http_status": null,
+            "bytes": 3655,
+            "sha256": "f29ad60210f0a0a6305baeb4f78f9e8825708104d3c4f541638969fbc9553bdc",
+            "path": "outputs/data/recorded/a7a180d2591c.body",
+            "hash_verified": true,
+            "symbol": "sh512660",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "1.105",
+              "1.101",
+              "1.112",
+              "1.098",
+              "1206092.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T22",
+        "container": "医药",
+        "exec_code": "512010",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 154,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh512010%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:53:05+00:00",
+            "http_status": null,
+            "bytes": 3695,
+            "sha256": "75aff571dc15aa48a389e9d3fb64e45e9e514530ab9ae77e18ed7ce2355014b5",
+            "path": "outputs/data/recorded/7f36aa9da677.body",
+            "hash_verified": true,
+            "symbol": "sh512010",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "0.376",
+              "0.388",
+              "0.390",
+              "0.375",
+              "13421349.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T23",
+        "container": "创新药",
+        "exec_code": "159992",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 158,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz159992%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:53:15+00:00",
+            "http_status": null,
+            "bytes": 3676,
+            "sha256": "537dbf0722297afc9e1e6bd2fd66b757cff14e60b6c407b8ce022c0dd6a79aa0",
+            "path": "outputs/data/recorded/5b43ea18453f.body",
+            "hash_verified": true,
+            "symbol": "sz159992",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "0.841",
+              "0.872",
+              "0.878",
+              "0.839",
+              "12682935.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T24",
+        "container": "消费",
+        "exec_code": "159928",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 162,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz159928%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:53:24+00:00",
+            "http_status": null,
+            "bytes": 3659,
+            "sha256": "195b1a440ca119f589eba6e7184c26475a09c68387d1ee751f488eb40187b718",
+            "path": "outputs/data/recorded/630509a7b1d2.body",
+            "hash_verified": true,
+            "symbol": "sz159928",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "0.648",
+              "0.658",
+              "0.660",
+              "0.647",
+              "3000040.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T25",
+        "container": "白酒",
+        "exec_code": "512690",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 167,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh512690%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:53:35+00:00",
+            "http_status": null,
+            "bytes": 3677,
+            "sha256": "d0bab08b412e887ef722a9802489d2abef170ead39fc2e48d05c71e1aece5b47",
+            "path": "outputs/data/recorded/871341c3cbce.body",
+            "hash_verified": true,
+            "symbol": "sh512690",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "0.406",
+              "0.417",
+              "0.420",
+              "0.405",
+              "14081644.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T26",
+        "container": "农业",
+        "exec_code": "159825",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 171,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz159825%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:53:43+00:00",
+            "http_status": null,
+            "bytes": 3628,
+            "sha256": "b7fba4cc96aaf642bc032483733f6af09de2a0b357ce06a5c721ba929e86702e",
+            "path": "outputs/data/recorded/768a253bcf26.body",
+            "hash_verified": true,
+            "symbol": "sz159825",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "0.713",
+              "0.722",
+              "0.724",
+              "0.713",
+              "1046268.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T27",
+        "container": "银行",
+        "exec_code": "512800",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 176,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh512800%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:53:55+00:00",
+            "http_status": null,
+            "bytes": 3675,
+            "sha256": "8f07ef1dc79d1f6a9c6a3bac5935e92d466cd07f74513681f8d3df9efdde5668",
+            "path": "outputs/data/recorded/0b99cfe4c105.body",
+            "hash_verified": true,
+            "symbol": "sh512800",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "0.839",
+              "0.853",
+              "0.853",
+              "0.838",
+              "8553513.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T28",
+        "container": "券商",
+        "exec_code": "512880",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 181,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh512880%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:54:07+00:00",
+            "http_status": null,
+            "bytes": 3700,
+            "sha256": "d85e20d6ef95eb0366148291c0ce46d329d34900c2c2613a1b4c40bdc913c6e9",
+            "path": "outputs/data/recorded/f2dfa8c2e85f.body",
+            "hash_verified": true,
+            "symbol": "sh512880",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "1.028",
+              "1.029",
+              "1.031",
+              "1.024",
+              "9616569.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T30",
+        "container": "地产",
+        "exec_code": "512200",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 185,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh512200%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:54:17+00:00",
+            "http_status": null,
+            "bytes": 3642,
+            "sha256": "db1746ac6da5ce2cb977bde3a645232f2e2276cf9591689cf3b54cde67bb6103",
+            "path": "outputs/data/recorded/406696d79616.body",
+            "hash_verified": true,
+            "symbol": "sh512200",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "1.267",
+              "1.300",
+              "1.318",
+              "1.221",
+              "7117604.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T31",
+        "container": "红利",
+        "exec_code": "510880",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 189,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh510880%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:54:25+00:00",
+            "http_status": null,
+            "bytes": 3655,
+            "sha256": "a348b84f4e39602f6ed526729a009c1bc38c7a7c8a8e119ee4328cb2818db3cd",
+            "path": "outputs/data/recorded/57a3d68ea73f.body",
+            "hash_verified": true,
+            "symbol": "sh510880",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "3.325",
+              "3.368",
+              "3.372",
+              "3.324",
+              "1532932.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T32",
+        "container": "红利低波",
+        "exec_code": "512890",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 194,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh512890%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:54:35+00:00",
+            "http_status": null,
+            "bytes": 3685,
+            "sha256": "773556b1bbf4c5b8fe667f0e3dd85a1407823cc06af55d3baeea4e8e53a61de1",
+            "path": "outputs/data/recorded/6cbb5381c01d.body",
+            "hash_verified": true,
+            "symbol": "sh512890",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "1.182",
+              "1.196",
+              "1.200",
+              "1.180",
+              "8280360.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T33",
+        "container": "国债",
+        "exec_code": "511260",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 200,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh511260%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:54:51+00:00",
+            "http_status": null,
+            "bytes": 3891,
+            "sha256": "cf1f625ce7f622bafdb3e0db4c31fc08601e7cd3665ba753679b1454db11b3f9",
+            "path": "outputs/data/recorded/d167976c2305.body",
+            "hash_verified": true,
+            "symbol": "sh511260",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "134.940",
+              "134.804",
+              "134.964",
+              "134.777",
+              "84064.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T35",
+        "container": "纳指100",
+        "exec_code": "513100",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 206,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh513100%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:55:05+00:00",
+            "http_status": null,
+            "bytes": 3644,
+            "sha256": "6c6dbd4d92f82a28dc5f608a3a2c6514604fb95495030e68c2812a7fc37ca56d",
+            "path": "outputs/data/recorded/a60782bea7dc.body",
+            "hash_verified": true,
+            "symbol": "sh513100",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "2.326",
+              "2.352",
+              "2.354",
+              "2.325",
+              "2548283.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T36",
+        "container": "纳指科技",
+        "exec_code": "159509",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 210,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz159509%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:55:14+00:00",
+            "http_status": null,
+            "bytes": 3653,
+            "sha256": "40acbe649d8278655b49a17afcf38cc74b3b218a9c3c44917541fcedcef37d0b",
+            "path": "outputs/data/recorded/beb0815c3238.body",
+            "hash_verified": true,
+            "symbol": "sz159509",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "3.145",
+              "3.194",
+              "3.228",
+              "3.145",
+              "6297630.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T37",
+        "container": "标普500",
+        "exec_code": "513500",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 214,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh513500%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:55:24+00:00",
+            "http_status": null,
+            "bytes": 3626,
+            "sha256": "8dec63e47e5efe09123db9c060a3d6252f01f23a8d5865fe50b1c99233161a21",
+            "path": "outputs/data/recorded/a2210bea8b89.body",
+            "hash_verified": true,
+            "symbol": "sh513500",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "2.687",
+              "2.688",
+              "2.711",
+              "2.686",
+              "994951.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T38",
+        "container": "恒生科技",
+        "exec_code": "513180",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 217,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh513180%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:55:31+00:00",
+            "http_status": null,
+            "bytes": 3737,
+            "sha256": "89659e3788bebfe44f3b1ab93d85185b82a14d62af344e49dd060640a41bf9bd",
+            "path": "outputs/data/recorded/eae51f6ac5be.body",
+            "hash_verified": true,
+            "symbol": "sh513180",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "0.533",
+              "0.534",
+              "0.537",
+              "0.531",
+              "26183881.000"
+            ]
+          }
+        ]
+      },
+      {
+        "theme_id": "T39",
+        "container": "日经",
+        "exec_code": "513520",
+        "unit": "unverified",
+        "evidence_class": "historical_probe_not_write_original",
+        "requests": [
+          {
+            "run_id": 1,
+            "seq": 220,
+            "url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh513520%2Cday%2C2026-08-16%2C2026-09-30%2C400%2C",
+            "fetched_at": "2026-10-02T14:55:43+00:00",
+            "http_status": null,
+            "bytes": 3620,
+            "sha256": "10fbb8a67c0cf6c357b264228fec0d106936fe5b05cf267f8c437a9fd661087f",
+            "path": "outputs/data/recorded/313828d252fc.body",
+            "hash_verified": true,
+            "symbol": "sh513520",
+            "request_adjustment": "",
+            "window_start": "2026-08-16",
+            "window_end": "2026-09-30",
+            "raw_rows": 32,
+            "window_rows": 32,
+            "calendar_rows": 32,
+            "dates_equal_official_calendar": true,
+            "duplicate_dates": 0,
+            "invalid_ohlc_dates": [],
+            "nonpositive_volume_dates": [],
+            "rows_matching_stored_ohlcv": 32,
+            "last_raw_fields": [
+              "2026-09-30",
+              "2.310",
+              "2.352",
+              "2.353",
+              "2.308",
+              "1805568.000"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "offline_validation": {
+    "passed": true,
+    "probe_original_execution_parser_matches": 77,
+    "new_short_window_matched_anomalies": 19,
+    "hash_verified_unit_bodies": 4,
+    "recent_etf_containers": 37,
+    "market_unchanged": true,
+    "market_sha256": "448c8f1f3a9568b7cde5ebcf8a4dc5eb8392ca59c9681cea938235430ef8d150"
+  },
+  "artifacts_root": "outputs/market-source-verification-20261006",
+  "viewed_data_disclosure": "查看95条历史异常及run1三份源响应对应77行、六个批准短窗(3990068/5108801/BRENT10条异常)，37容器近期run1 ETF OHLCV与官方日期；仅描述性源取证，没有收益/指标/策略效力或买卖判断。单位定义材料4份。",
+  "remaining_unknowns": [
+    "四份run2实际写库原件未找到，95行写库原字段链仍未闭合。",
+    "510880另17行没有匹配写库原件/历史probe/本轮短窗旁证，未复验。",
+    "BRENT69行异常的经济字段定义/根因未知，high<low六行不能统一解释为结算价。",
+    "腾讯fqkline/get空复权ETF day[5]上游定义未取得，unit=unverified；提供方其它接口JS与第三方包装不跨接口认证。",
+    "七条创业板2010年小包络差与精度差形态一致，不授权扩价/容差；2015-03-27与BRENT高低倒置不能用同一解释结案。"
+  ],
+  "not_authorized": "不扩价、删行、换源、修行情、写回量或改字段资格；由编排另行裁定。",
+  "independent_review": {
+    "run_id": "sa-9df0dc57",
+    "verdict": "approve",
+    "merge_verdict": "OK",
+    "findings": [],
+    "scope": "只读离线复核SQL/CSV/真实原件及单位引用；不写库不联网"
+  }
+}
