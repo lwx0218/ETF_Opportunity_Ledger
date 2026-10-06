@@ -27,7 +27,7 @@ Owner 只在规划阶段介入。已有 baseline 后，清楚的 bounded task �
 
 A prospective opportunity ledger for A-share ETFs/LOFs and cross-asset exposures. Freeze theses, evidence, and quantitative expectations at creation; append observations and score outcomes under precommitted rules to build a verifiable decision record.
 
-已提供可运行的三态机会台账、同页详情和隔离演示：独立评分、候选作废、出场信号及逐日推进复用现有台账和每日任务。正式台账仅开放只读；研究与正式规则尚未放行。
+当前提供三态台账及同页详情的隔离演示，独立评分、候选作废、出场信号及逐日推进复用现有领域代码。**完整产品尚未交付**：轮动页、证据到判断的工作流及部分评分复盘仍缺；`market` 是行情检查入口，不读取正式台账。正式台账仅有只读入口，研究与正式规则尚未放行。详见[产品完整性审计](operations/reviews/2026-10-06-product-completeness-audit.md)。
 
 ```bash
 python3 -m venv .venv
@@ -41,7 +41,7 @@ python3 -m venv .venv
 
 1. 读 `AGENTS.md` 和 [完整初始化文档](docs/project-intake/etf-opportunity-ledger.md)，尤其 §1 已证伪方向与 §3 研究纪律。
 2. 读仓库权威 [卡片 schema](docs/etf-card-schema-v1.md)、[每日任务](docs/jobs-daily.md) 与 `docs/design/` 设计规范；初始化材料已导入，旧 Project 副本仅供参考。
-3. 当前交付范围见 [数据与产品并行计划](operations/planning/2026-10-06-parallel-data-and-product.md)。正式数据应用、研究和规则启用仍需各自范围内的授权。
+3. 当前缺口与后续分工见[产品纠偏计划](operations/planning/2026-10-06-product-recovery-plan.md)；[首包计划](operations/planning/2026-10-06-parallel-data-and-product.md)保留为历史任务记录。正式数据应用、研究和规则启用仍需各自范围内的授权。
 
 ### 最小能力配置
 
