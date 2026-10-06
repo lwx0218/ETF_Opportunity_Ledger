@@ -1,5 +1,7 @@
 # 数据验证与首个可运行产品并行
 
+> **2026-10-06 交付状态更正**：本计划首包遗漏原 R5 轮动细节层的任务与验收追踪，首包演示完成不等于 R5 或完整产品完成。完整对照见[产品审计](../reviews/2026-10-06-product-completeness-audit.md)，后续范围与分工见[纠偏计划](2026-10-06-product-recovery-plan.md)。下文保留为当时任务记录；有效数据纪律、隔离及 A7 边界不变。
+
 ## Metadata
 
 - Project: ETF_Opportunity-Ledger
