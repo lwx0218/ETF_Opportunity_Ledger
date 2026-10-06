@@ -1,4 +1,5 @@
 """实际本机 HTTP 接口：双盲、领域交互、只读隔离与请求边界。"""
+import hashlib
 import http.client
 import json
 import tempfile
@@ -7,9 +8,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.ledger.store import Ledger
-from src.web.application import Application
-from src.web.server import create_server
+from src.data import db as MarketDB
+from src.ledger.store import ROOT, Ledger
+from src.web.application import Application, RequestError, read_ledger
+from src.web.server import create_server, validate_binding
 from tests.ledger.test_ledger import T0, card
 
 
@@ -23,8 +25,8 @@ class HttpTests(unittest.TestCase):
         self.app = Application(self.directory / "demo", ledger_path=self.formal, market_path=self.market)
         self.server = self.start_server(self.app)
 
-    def start_server(self, app):
-        server = create_server(app, port=0)
+    def start_server(self, app, **kwargs):
+        server = create_server(app, port=0, **kwargs)
         thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         thread.start()
 
@@ -181,6 +183,87 @@ class HttpTests(unittest.TestCase):
         allowed = headers | {"Origin": f"http://127.0.0.1:{self.server.server_port}"}
         self.assertEqual(self.request("POST", "/api/demo/advance", payload, allowed)[0], 200)
 
+    def test_public_demo_host_is_exact_same_origin_and_formal_reads_are_blocked(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "outputs") as directory:
+            with patch("src.web.application.load_rule_config", side_effect=AssertionError("正式规则读取")), \
+                 patch("src.web.application.preflight", side_effect=AssertionError("正式行情读取")), \
+                 patch.object(Application, "data_status", side_effect=AssertionError("正式状态读取")), \
+                 patch("src.web.application.read_ledger", wraps=read_ledger) as reader:
+                app = Application(directory, demo_only=True, ledger_path=self.formal, market_path=self.market)
+                server = self.start_server(app, host="0.0.0.0", public_host="111.19.137.226")
+                host = f"111.19.137.226:{server.server_port}"
+                status, state = self.request("GET", "/api/state", headers={"Host": host}, server=server)
+                self.assertEqual(status, 200, state)
+                self.assertTrue(state["writable"])
+                self.assertEqual(state["rules"]["enabled"], ["事件驱动"])
+                self.assertEqual(state["rules"]["blocked"], [])
+                self.assertIn("纯演示", state["data_status"]["note"])
+                for forbidden in ("unknown.example", "111.19.137.227", "111.19.137.226",
+                                  f"111.19.137.226:{server.server_port + 1}"):
+                    self.assertEqual(self.request("GET", "/api/state", headers={"Host": forbidden}, server=server)[0], 403)
+                self.assertEqual(self.request("GET", "/api/state", headers={"Host": f"localhost:{server.server_port}"}, server=server)[0], 200)
+                self.assertEqual(self.post("/api/demo/advance", state=state, server=server,
+                    headers={"Host": host, "Origin": "http://unknown.example"})[0], 403)
+                self.assertEqual(self.post("/api/demo/advance", state=state, server=server,
+                    headers={"Host": host, "Origin": f"http://127.0.0.1:{server.server_port}"})[0], 403)
+                self.assertEqual(self.post("/api/demo/advance", state=state, server=server,
+                    headers={"Host": host, "Origin": f"http://{host}", "X-CSRF-Token": "wrong"})[0], 403)
+                self.assertEqual(self.post("/api/cards/T-2026-005/score", {"score": 1, "reason": "远程合成演示"},
+                    state=state, server=server, headers={"Host": host, "Origin": f"http://{host}"})[0], 200)
+                self.assertEqual(self.post("/api/demo/advance", server=server,
+                    headers={"Host": host, "Origin": f"http://{host}"})[0], 200)
+                for path in ("/?mode=readonly", "/api/state?mode=readonly", "/api/cards/T-2026-005?mode=readonly"):
+                    self.assertEqual(self.request("GET", path, headers={"Host": host}, server=server)[0], 403)
+                self.assertEqual(self.post("/api/demo/reset?mode=readonly", server=server, headers={"Host": host})[0], 403)
+                for call in (lambda: app.state("readonly"), lambda: app.detail("T-2026-005", "readonly"),
+                             lambda: app.mutate("reset", {}, mode="readonly"), lambda: app._reader("readonly")):
+                    with self.assertRaises(RequestError) as error:
+                        call()
+                    self.assertEqual(error.exception.status, 403)
+                self.assertTrue(reader.called)
+                self.assertTrue(all(call.args[0] == app.demo.path and call.kwargs["replay"] for call in reader.call_args_list))
+        self.assertFalse(self.formal.exists())
+        self.assertFalse(self.market.exists())
+
+    def test_remote_binding_requires_explicit_demo_only_and_literal_public_host(self):
+        with patch("src.web.server.ThreadingHTTPServer") as http_server:
+            for host, public in (("0.0.0.0", None), ("0.0.0.0", "111.19.137.226"),
+                                 ("111.19.137.226", "111.19.137.226"), ("127.0.0.1", "111.19.137.226")):
+                with self.assertRaises(ValueError):
+                    create_server(self.app, host=host, public_host=public)
+            readonly = Application(mode="readonly", ledger_path=self.formal, market_path=self.market)
+            with self.assertRaises(ValueError):
+                create_server(readonly, host="0.0.0.0", public_host="111.19.137.226")
+            for public in ("*", "0.0.0.0", "127.0.0.1", "localhost", "111.19.137.226:8765", "224.0.0.1"):
+                with self.assertRaises(ValueError):
+                    validate_binding("0.0.0.0", public, True)
+            http_server.assert_not_called()
+        with self.assertRaises(ValueError):
+            Application(self.directory / "outside-outputs", demo_only=True)
+        with self.assertRaises(ValueError):
+            Application(mode="readonly", demo_only=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / "outputs") as directory:
+            app = Application(directory, demo_only=True)
+            with self.assertRaises(RequestError):
+                app.data_status()
+
+    def test_cli_rejects_unsafe_remote_options_before_application_initialization(self):
+        from src.web.__main__ import main
+        for args in (("--host", "0.0.0.0"),
+                     ("--host", "0.0.0.0", "--public-host", "111.19.137.226"),
+                     ("--host", "0.0.0.0", "--demo-only"),
+                     ("--host", "0.0.0.0", "--public-host", "111.19.137.226", "--mode", "readonly")):
+            with self.subTest(args=args), patch("sys.argv", ["src.web", *args]), \
+                 patch("sys.stderr"), patch("src.web.__main__.Application") as application:
+                with self.assertRaises(SystemExit) as error:
+                    main()
+                self.assertEqual(error.exception.code, 2)
+                application.assert_not_called()
+        with patch("sys.argv", ["src.web", "--demo-only", "--mode", "readonly"]), patch("sys.stderr"):
+            with self.assertRaises(SystemExit) as error:
+                main()
+            self.assertEqual(error.exception.code, 2)
+
     def test_missing_formal_mode_never_creates_files_and_rejects_writes(self):
         state = self.state(path="/api/state?mode=readonly")
         self.assertFalse(state["writable"])
@@ -225,6 +308,164 @@ class HttpTests(unittest.TestCase):
         self.assertFalse(self.market.exists())
         self.assertFalse(Path(str(self.formal) + "-journal").exists())
         self.assertFalse(Path(str(self.formal) + "-wal").exists())
+
+
+class MarketHttpTests(unittest.TestCase):
+    start_server = HttpTests.start_server
+    request = HttpTests.request
+    state = HttpTests.state
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.directory = Path(self.tmp.name)
+        self.market = self.directory / "market.sqlite"
+        self.formal = self.directory / "ledger.sqlite"
+        self.formal.write_bytes(b"private ledger sentinel")
+        self.demo_dir = self.directory / "unused-demo"
+        con = MarketDB.connect(self.market)
+        with con:
+            con.execute("INSERT INTO runs(kind,started_at,args,status) VALUES ('backfill','2026-10-01','private args /secret/path?token=secret','ok')")
+            for code, adj, source in (("H00852", "raw", "csi"), ("H00905", "raw", "csi"),
+                                      ("000852", "raw", "tencent_price_index_offline"),
+                                      ("000905", "raw", "tencent_price_index_offline"),
+                                      ("512100", "raw", "tencent_etf"), ("512100", "hfq", "eastmoney_etf_hfq"),
+                                      ("UNREGISTERED", "raw", "csi")):
+                for day, close in (("2026-09-29", 14.0), ("2026-09-30", 9.0)):
+                    con.execute("INSERT INTO bars VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                                (code, adj, day, None if day.endswith("29") else 8.0, 15.0, 7.0,
+                                 None if code == "UNREGISTERED" and day.endswith("30") else close,
+                                 None, None if source == "csi" else 100.0, source, "2026-10-01T00:00:00Z"))
+        MarketDB.write_coverage(con, 1, [
+            {"theme_id": "T01", "container": "中证1000", "code": "000852", "series_code": "H00852",
+             "series_adj": "raw", "route_used": "csi", "series_name": "中证1000全收益指数", "tr_code_used": "H00852",
+             "price_only": False, "exec_code": "512100", "exec_route": "tencent_etf", "status": "retained"},
+            {"theme_id": "T02", "container": "中证500", "code": "000905", "series_code": "H00905",
+             "series_adj": "raw", "route_used": "csi", "series_name": "中证500全收益指数", "tr_code_used": "H00905",
+             "price_only": False, "status": "retained"}])
+        con.close()
+        for target in ("src.web.application.DemoStore", "src.web.application.read_ledger",
+                       "src.web.application.load_rule_config", "src.web.application.preflight",
+                       "src.web.application.Application.data_status", "src.ledger.store.Ledger"):
+            patcher = patch(target, side_effect=AssertionError("行情预览禁止调用 " + target))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.app = Application(self.demo_dir, mode="market", market_path=self.market, ledger_path=self.formal)
+        self.server = self.start_server(self.app, host="0.0.0.0", public_host="111.19.137.226")
+
+    def digest(self):
+        return hashlib.sha256(self.market.read_bytes()).hexdigest()
+
+    def test_snapshot_latest_null_counts_registered_names_and_original_hash(self):
+        before = self.digest()
+        formal_before = self.formal.read_bytes()
+        state = self.state()
+        self.assertEqual(state["mode"], "market")
+        self.assertFalse(state["writable"])
+        self.assertFalse(state["demo_available"])
+        self.assertIsNone(self.app.csrf_token)
+        self.assertEqual(state["cards"], [])
+        self.assertNotIn("csrf_token", state)
+        self.assertNotIn("rules", state)
+        self.assertIn("没有真实机会记录", state["ledger_note"])
+        self.assertEqual(state["observation_as_of"], "2026-09-30")
+        market = state["market"]
+        self.assertEqual(market["rows"], 14)
+        self.assertEqual((market["first"], market["last"]), ("2026-09-29", "2026-09-30"))
+        series = {(r["code"], r["adj"]): r for r in market["series"]}
+        self.assertEqual(len(series), 7)
+        row = series["H00852", "raw"]
+        self.assertEqual(row["close"], 9.0)  # 最新日期，不是 max(close)。
+        self.assertEqual(row["source"], "csi")
+        self.assertEqual(row["name"], "中证1000全收益指数")
+        self.assertEqual(row["containers"], ["中证1000"])
+        self.assertEqual(row["type"], "全收益指数")
+        self.assertTrue(row["research_selected"])
+        self.assertFalse(row["price_only"])
+        self.assertEqual((row["ohlc_null"], row["open_null"], row["high_null"], row["low_null"], row["close_null"]), (1, 1, 0, 0, 0))
+        self.assertEqual((row["volume_null"], row["amount_null"]), (2, 2))
+        for code in ("000852", "000905"):
+            self.assertTrue(series[code, "raw"]["price_only"])
+            self.assertFalse(series[code, "raw"]["research_selected"])
+            self.assertEqual(series[code, "raw"]["name"], code)
+            self.assertEqual(series[code, "raw"]["type"], "价格指数")
+        self.assertEqual(series["512100", "raw"]["type"], "ETF · 不复权")
+        self.assertEqual(series["512100", "hfq"]["type"], "ETF · 含分红后复权")
+        self.assertEqual(series["UNREGISTERED", "raw"]["name"], "UNREGISTERED")
+        self.assertEqual(series["UNREGISTERED", "raw"]["containers"], [])
+        self.assertIsNone(series["UNREGISTERED", "raw"]["close"])
+        public = json.dumps(state)
+        for private in ("private", "secret", str(self.directory), "positions", "runs", "agent_strength"):
+            self.assertNotIn(private, public)
+        self.assertEqual(self.digest(), before)
+        self.assertEqual(self.formal.read_bytes(), formal_before)
+        self.assertFalse(self.demo_dir.exists())
+        self.assertFalse(Path(str(self.market) + "-journal").exists())
+        self.assertFalse(Path(str(self.market) + "-wal").exists())
+        # 合法写入者发布新行情后，下一个请求读取新快照；web 本身从不写入。
+        con = MarketDB.connect(self.market)
+        with con:
+            con.execute("INSERT INTO bars VALUES ('H00852','raw','2026-10-01',8,10,7,8.5,NULL,NULL,'csi','2026-10-01T10:00:00Z')")
+        con.close()
+        updated_hash = self.digest()
+        updated = self.state()["market"]
+        self.assertEqual(updated["last"], "2026-10-01")
+        self.assertEqual(updated["rows"], 15)
+        self.assertEqual(next(r for r in updated["series"] if r["code"] == "H00852")["close"], 8.5)
+        self.assertEqual(self.digest(), updated_hash)
+
+    def test_all_posts_modes_card_access_and_direct_methods_are_rejected(self):
+        host = f"111.19.137.226:{self.server.server_port}"
+        self.assertEqual(self.request("GET", "/api/state?mode=market", headers={"Host": host})[0], 200)
+        self.assertEqual(self.request("GET", "/api/state", headers={"Host": "unknown.example"})[0], 403)
+        self.assertEqual(self.request("GET", "/api/state", headers={"Host": host, "Origin": "https://other.example"})[0], 403)
+        before = self.digest()
+        for mode in ("demo", "readonly"):
+            for path in (f"/?mode={mode}", f"/api/state?mode={mode}", f"/api/cards/T-2026-005?mode={mode}"):
+                self.assertEqual(self.request("GET", path)[0], 403)
+        for path in ("/api/demo/reset", "/api/demo/advance", "/api/cards/T-2026-005/score", "/api/state", "/anything"):
+            self.assertEqual(self.request("POST", path, {"revision": None},
+                {"Host": host, "Origin": f"http://{host}", "Content-Type": "application/json", "X-CSRF-Token": "fake"})[0], 403)
+        self.assertEqual(self.request("GET", "/api/cards/T-2026-005")[0], 403)
+        for mode in (None, "market", "demo", "readonly"):
+            for call in (lambda: self.app.detail("T-2026-005", mode),
+                         lambda: self.app.mutate("reset", {}, mode=mode), lambda: self.app._reader(mode)):
+                with self.assertRaises(RequestError) as error:
+                    call()
+                self.assertEqual(error.exception.status, 403)
+        for mode in ("demo", "readonly"):
+            with self.assertRaises(RequestError):
+                self.app.state(mode)
+        self.assertEqual(self.digest(), before)
+        self.assertFalse(self.demo_dir.exists())
+
+    def test_unknown_market_schema_is_refused_without_migration_or_path_leak(self):
+        con = MarketDB.connect(self.market)
+        with con:
+            con.execute("UPDATE meta SET value='old-market' WHERE key='schema'")
+        con.close()
+        before = self.digest()
+        status, payload = self.request("GET", "/api/state")
+        self.assertEqual(status, 503)
+        self.assertNotIn(str(self.market), json.dumps(payload))
+        self.assertEqual(self.digest(), before)
+
+    def test_missing_market_and_ledger_stay_missing(self):
+        missing = self.directory / "missing" / "market.sqlite"
+        self.formal.unlink()
+        app = Application(self.demo_dir, mode="market", market_path=missing, ledger_path=self.formal)
+        server = self.start_server(app)
+        state = self.state(server)
+        self.assertFalse(state["market"]["available"])
+        self.assertEqual(state["market"]["series"], [])
+        self.assertIsNone(state["observation_as_of"])
+        self.assertFalse(missing.parent.exists())
+        self.assertFalse(self.formal.exists())
+        self.assertFalse(self.demo_dir.exists())
+        with self.assertRaises(ValueError):
+            Application(mode="market", demo_only=True)
+        with self.assertRaises(ValueError):
+            validate_binding("0.0.0.0", None, False, mode="market")
 
 
 if __name__ == "__main__":

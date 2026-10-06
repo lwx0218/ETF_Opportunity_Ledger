@@ -219,6 +219,12 @@ h1{font-size:29px}
 }
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}
 }
+.market-scroll{max-width:100%;overflow-x:auto;margin-top:20px}
+.market-table{width:100%;min-width:1380px;border-collapse:collapse;font-size:13px;text-align:left}
+.market-table th,.market-table td{border-top:1px solid var(--hair);padding:14px 16px 14px 0;vertical-align:top;font-weight:400;white-space:nowrap}
+.market-table thead{color:var(--muted);font-size:12px}
+.market-table small{display:block;font-size:11px;color:var(--muted);margin-top:5px}
+.market-table tbody tr:hover th{color:var(--accent)}
 .space-top{margin-top:12px!important}
 .score-fieldset{border:0;padding:0;margin:0}
 .score-deadline{margin-top:8px!important}

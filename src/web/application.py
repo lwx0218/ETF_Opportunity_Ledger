@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
+from src.data import db as MarketDB
 from src.data.quality import preflight
 from src.jobs.rules import ACTIVE_BEFORE_V1, load_rule_config
 from src.ledger.read import summary
@@ -53,15 +54,79 @@ def one(con, sql, args=()):
     return dict(row) if row else None
 
 
+def read_market(path: Path):
+    """每次读取一致快照；只投影 bars 和 coverage 登记，不读取作业参数或台账。"""
+    market = {"available": False, "series": [], "rows": 0, "first": None, "last": None}
+    MarketDB.refuse_default_in_tests(path, MarketDB.MARKET_DB)
+    if not path.exists():
+        return market
+    try:
+        con = MarketDB.connect(path, readonly=True)
+    except MarketDB.DbError:
+        raise RequestError("行情版本不符；只读预览不执行迁移。", 503) from None
+    try:
+        con.execute("PRAGMA query_only = ON")
+        con.execute("BEGIN")
+        series = rows(con, """WITH counts AS (
+            SELECT code,adj,count(*) AS count,min(date) AS first,max(date) AS last,
+                   sum(open IS NULL) AS open_null,sum(high IS NULL) AS high_null,
+                   sum(low IS NULL) AS low_null,sum(close IS NULL) AS close_null,
+                   sum(open IS NULL OR high IS NULL OR low IS NULL OR close IS NULL) AS ohlc_null,
+                   sum(volume IS NULL) AS volume_null,sum(amount IS NULL) AS amount_null
+            FROM bars GROUP BY code,adj)
+            SELECT counts.*,b.close,b.source,b.volume,b.amount FROM counts JOIN bars b
+            ON b.code=counts.code AND b.adj=counts.adj AND b.date=counts.last
+            ORDER BY counts.code,counts.adj""")
+        coverage = rows(con, """SELECT theme_id,container,code,series_code,series_adj,series_name,
+            route_used,tr_code_used,price_only,exec_code,exec_route,status FROM coverage_latest ORDER BY theme_id""")
+        for item in series:
+            item.update(name=item["code"], containers=[], relationships=[], price_only=None,
+                        type="未登记类型", research_selected=False)
+            for cov in coverage:
+                research = (item["code"] == cov["series_code"] and item["adj"] == cov["series_adj"]
+                            and item["source"] == cov["route_used"])
+                execution = (item["code"] == cov["exec_code"] and item["adj"] == "raw"
+                             and item["source"] == cov["exec_route"])
+                if item["code"] in (cov["code"], cov["series_code"], cov["exec_code"]):
+                    if cov["container"] and cov["container"] not in item["containers"]:
+                        item["containers"].append(cov["container"])
+                if research or execution:
+                    item["relationships"].append({"theme_id": cov["theme_id"], "status": cov["status"],
+                                                  "role": "research" if research else "execution"})
+                if research:
+                    item["research_selected"] = True
+                    item["name"] = cov["series_name"] or item["code"]
+                    item["price_only"] = {"True": True, "False": False}.get(cov["price_only"])
+                    item["type"] = ("全收益指数" if cov["tr_code_used"] == item["code"] else
+                                    "价格指数" if item["price_only"] is True else "研究序列 · 类型未登记")
+                elif execution:
+                    item["type"] = "ETF · 不复权"
+            if item["adj"] == "hfq":
+                item["type"] = "ETF · 含分红后复权"
+            if item["source"] == "tencent_price_index_offline" and item["code"] in ("000852", "000905"):
+                item.update(price_only=True, research_selected=False, type="价格指数")
+        market.update(available=True, series=series, rows=sum(s["count"] for s in series),
+                      first=min((s["first"] for s in series), default=None),
+                      last=max((s["last"] for s in series), default=None))
+        return market
+    finally:
+        con.close()
+
+
 class Application:
     def __init__(self, demo_dir=ROOT / "outputs" / "app-demo", *, mode="demo",
-                 ledger_path=DEFAULT_DB, market_path=ROOT / "data" / "market.sqlite"):
-        if mode not in ("demo", "readonly"):
-            raise ValueError("mode must be demo or readonly")
-        self.mode = mode
+                 ledger_path=DEFAULT_DB, market_path=ROOT / "data" / "market.sqlite", demo_only=False):
+        if mode not in ("demo", "readonly", "market"):
+            raise ValueError("mode must be demo, readonly or market")
+        if demo_only and mode != "demo":
+            raise ValueError("纯演示服务只能使用 demo 模式")
+        if demo_only and not Path(demo_dir).resolve().is_relative_to((ROOT / "outputs").resolve()):
+            raise ValueError("纯演示目录必须位于 outputs 内")
+        self.mode, self.demo_only = mode, demo_only
         self.ledger_path, self.market_path = Path(ledger_path), Path(market_path)
         self.lock = threading.RLock()
-        self.revision, self.csrf_token = secrets.token_urlsafe(24), secrets.token_urlsafe(32)
+        self.revision, self.csrf_token = ((None, None) if mode == "market" else
+                                         (secrets.token_urlsafe(24), secrets.token_urlsafe(32)))
         self.demo = DemoStore(demo_dir) if mode == "demo" else None
         if self.demo:
             for path in (self.ledger_path, self.market_path):
@@ -72,16 +137,27 @@ class Application:
         self._data_cache = None
 
     def effective_mode(self, mode):
-        if mode not in (None, "demo", "readonly"):
+        if mode not in (None, "demo", "readonly", "market"):
             raise RequestError("未知数据入口")
+        if self.mode == "market" and mode not in (None, "market"):
+            raise RequestError("行情只读服务不开放演示或正式台账入口", 403)
+        if mode == "market" and self.mode != "market":
+            raise RequestError("此服务未开放行情预览入口", 403)
+        if self.demo_only and mode == "readonly":
+            raise RequestError("纯演示服务不开放正式入口", 403)
         if self.mode == "readonly" and mode == "demo":
             raise RequestError("此服务仅开放只读入口", 403)
         return mode or self.mode
 
     def _reader(self, mode):
+        mode = self.effective_mode(mode)
+        if mode == "market":
+            raise RequestError("行情只读服务不读取机会台账", 403)
         return read_ledger(self.demo.path if mode == "demo" else self.ledger_path, replay=mode == "demo")
 
     def data_status(self):
+        if self.demo_only or self.mode == "market":
+            raise RequestError("此服务不执行正式行情预检", 403)
         stamp = (self.market_path.stat().st_mtime_ns, self.market_path.stat().st_size) if self.market_path.exists() else None
         today = beijing_now()[:10]
         key = (stamp, today)
@@ -100,6 +176,11 @@ class Application:
     def state(self, mode=None):
         with self.lock:
             mode = self.effective_mode(mode)
+            if mode == "market":
+                market = read_market(self.market_path)
+                return {"mode": "market", "as_of": beijing_now(), "observation_as_of": market["last"],
+                        "writable": False, "demo_available": False, "cards": [], "market": market,
+                        "ledger_note": "只读行情模式没有真实机会记录；不读取正式台账，也不使用演示卡。"}
             now = self.demo.now() if mode == "demo" else beijing_now()
             cards = []
             observation_as_of = None
@@ -126,13 +207,15 @@ class Application:
                     "不适用" if card["evidence_status"] == "未检索" else
                     "已过期" if now >= card["owner_score_deadline"] else "待独立评分")
             problems = []
-            enabled = list(load_rule_config(ROOT / "config" / "ledger-rules.json", problems))
+            enabled = ["事件驱动"] if self.demo_only else list(load_rule_config(ROOT / "config" / "ledger-rules.json", problems))
             return {"mode": mode, "as_of": now, "observation_as_of": observation_as_of,
                     "demo_available": self.demo is not None, "writable": mode == "demo", "revision": self.revision,
                     "csrf_token": self.csrf_token, "cards": cards, "summary": totals, "review": review,
-                    "rules": {"enabled": enabled, "blocked": [r for r in ACTIVE_BEFORE_V1 if r not in enabled] + ["形态突破"],
-                              "note": "；".join(problems) or "正式规则配置仅供查看。演示推进使用独立合成输入。"},
-                    "data_status": self.data_status()}
+                    "rules": {"enabled": enabled, "blocked": [] if self.demo_only else [r for r in ACTIVE_BEFORE_V1 if r not in enabled] + ["形态突破"],
+                              "note": "纯演示：仅使用独立合成事件输入，不读取正式规则。" if self.demo_only else
+                                      "；".join(problems) or "正式规则配置仅供查看。演示推进使用独立合成输入。"},
+                    "data_status": {"benchmark_ready": False, "research_ready": False,
+                                    "note": "纯演示：行情全部合成，不读取正式数据库。"} if self.demo_only else self.data_status()}
 
     def detail(self, card_id, mode=None):
         with self.lock:

@@ -2,8 +2,8 @@
 
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const mode = new URLSearchParams(location.search).get('mode') === 'readonly' ? 'readonly' : 'demo';
-const query = mode === 'readonly' ? '?mode=readonly' : '';
+const requestedMode = new URLSearchParams(location.search).get('mode');
+const query = ['readonly', 'market'].includes(requestedMode) ? `?mode=${requestedMode}` : '';
 let state, selectedId = null, busy = false, noticeTimer;
 const number = (value, digits = 2) => value == null ? '—' : Number(value).toFixed(digits);
 const signed = (value, digits = 2) => value == null ? '—' : `${value > 0 ? '+' : value < 0 ? '−' : ''}${Math.abs(value).toFixed(digits)}`;
@@ -47,6 +47,7 @@ function cardButton(card) {
 }
 
 function renderOverview() {
+  if (state.mode === 'market') { renderMarket(); return; }
   const cards = state.cards || [], summary = state.summary || {};
   const groups = ['过去', '当下', '候选'].map(status => cards.filter(card => card.status === status));
   const archive = cards.filter(card => ['已结', '作废'].includes(card.status));
@@ -64,6 +65,21 @@ function renderOverview() {
   $('#reset-demo')?.addEventListener('click', () => {
     if (confirm('重置会清除本次演示中的操作，恢复初始演示。是否继续？')) mutate('/api/demo/reset', {}, '演示已重置。', true);
   });
+}
+
+function renderMarket() {
+  const market = state.market, series = market.series || [];
+  $('#overview').innerHTML = `<section class="intro"><div><div class="eyebrow">MARKET SNAPSHOT</div><h1>真实行情，等待真实判断。</h1><p>截至 ${esc(market.last || '无')} 收盘 · ${series.length} 条序列 · ${esc(market.rows)} 行原始行情</p></div></section>
+    <p class="summary-note">${esc(state.ledger_note)}</p>
+    <section class="timeline" aria-label="过去、当下与未来">${['过去','当下','未来'].map((label, index) => `<section class="lane ${index === 1 ? 'present' : ''}" aria-labelledby="lane-${index}"><div class="lane-heading"><h2 id="lane-${index}">${label}</h2></div><p class="empty">${['暂无出场后跟踪记录。','暂无持有记录。','暂无候选机会。'][index]}</p></section>`).join('')}</section>
+    <section aria-labelledby="market-heading"><div class="section-heading"><h2 id="market-heading">库内行情原貌</h2><span class="eyebrow">${esc(market.first || '—')} → ${esc(market.last || '—')}</span></div>
+    <p class="summary-note">仅展示收盘，不计算收益或信号。指数点位与 ETF 价格、价格指数与全收益指数分开保留；raw 不代表可研究。选中关系来自已有登记，不是研究就绪判定。</p>
+    ${series.length ? `<div class="market-scroll" tabindex="0" role="region" aria-label="行情列表，可横向滚动"><table class="market-table"><thead><tr>${['代码 / 名称','容器','类型 / 口径','登记关系','首日 → 最新日','行数','最新收盘','来源','OHLC 缺失行','成交量 / 金额缺失行'].map(label => `<th scope="col">${label}</th>`).join('')}</tr></thead><tbody>${series.map(item => `<tr>
+      <th scope="row"><span class="mono">${esc(item.code)}</span>${item.name !== item.code ? `<small>${esc(item.name)}</small>` : ''}</th>
+      <td>${esc(item.containers.join('、') || '—')}</td><td>${esc(item.type)}<small class="mono">${esc(item.adj)} · price_only ${item.price_only == null ? '—' : item.price_only ? 'true' : 'false'}</small></td>
+      <td>${item.research_selected ? 'coverage 选中研究' : '未选中研究'}<small>${item.relationships.map(r => `${esc(r.theme_id)} · ${r.role === 'research' ? '研究' : '执行'} · ${esc(r.status)}`).join('<br>') || '—'}</small></td>
+      <td class="mono">${esc(item.first)}<small>→ ${esc(item.last)}</small></td><td class="mono">${esc(item.count)}</td><td class="mono">${esc(item.close ?? '—')}</td><td class="mono">${esc(item.source)}</td>
+      <td class="mono">${esc(item.ohlc_null)}<small>O ${esc(item.open_null)} · H ${esc(item.high_null)} · L ${esc(item.low_null)} · C ${esc(item.close_null)}</small></td><td class="mono">量 ${esc(item.volume_null)} / 额 ${esc(item.amount_null)}</td></tr>`).join('')}</tbody></table></div>` : `<p class="empty">${market.available ? '行情库暂无记录。' : '行情库不存在，未创建文件。'}</p>`}</section>`;
 }
 
 function renderRules(rules) {
@@ -111,14 +127,14 @@ function renderCounterfactual(data) {
 
 function renderShell() {
   $('#loading').hidden = true;
-  $('#mode-label').textContent = state.mode === 'demo' ? '演示数据' : '正式台账 · 只读';
+  $('#mode-label').textContent = state.mode === 'market' ? '真实行情 · 只读' : state.mode === 'demo' ? '演示数据' : '正式台账 · 只读';
   $('#as-of').textContent = state.mode === 'demo'
     ? `截至 ${String(state.as_of || '—').replace('T',' ')} · 北京时间`
-    : `读取于 ${String(state.as_of || '—').replace('T',' ')} · 最新观测 ${state.observation_as_of || '无'} · 北京时间`;
-  $('#footer-source').textContent = state.mode === 'demo' ? '隔离演示 · 非真实行情' : '正式数据 · 只读';
+    : `读取于 ${String(state.as_of || '—').replace('T',' ')} · 最新${state.mode === 'market' ? '行情' : '观测'} ${state.observation_as_of || '无'} · 北京时间`;
+  $('#footer-source').textContent = state.mode === 'market' ? '真实行情 · 保留原来源与口径' : state.mode === 'demo' ? '隔离演示 · 非真实行情' : '正式数据 · 只读';
   $('#mode-link').textContent = state.mode === 'demo' ? '正式台账 · 只读 ↗' : '返回演示台账 ↗';
   $('#mode-link').href = state.mode === 'demo' ? '/?mode=readonly' : '/';
-  $('#mode-link').hidden = state.mode === 'readonly' && state.demo_available === false;
+  $('#mode-link').hidden = state.mode === 'market' || state.mode === 'readonly' && state.demo_available === false;
   $('#mode-link').nextElementSibling.hidden = $('#mode-link').hidden;
   renderOverview();
   $('#overview').hidden = selectedId !== null;
@@ -247,5 +263,5 @@ $('#home-button').addEventListener('click', () => { if (state) showHome(); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && selectedId) showHome(); });
 api('/api/state').then(data => {state = data; renderShell();}).catch(error => {
   $('#loading').textContent = `暂时无法读取台账。${error.message}`;
-  $('#mode-label').textContent = mode === 'demo' ? '演示数据 · 未连接' : '正式台账 · 未连接';
+  $('#mode-label').textContent = '数据 · 未连接';
 });

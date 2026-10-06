@@ -1,6 +1,7 @@
-"""仅本机的标准库 HTTP 服务；静态文件与 JSON API，不提供数据库下载。"""
+"""默认本机的标准库 HTTP 服务；远程仅允许纯演示或行情只读，不提供数据库下载。"""
 from __future__ import annotations
 
+import ipaddress
 import json
 import mimetypes
 import re
@@ -16,7 +17,22 @@ STATIC = Path(__file__).with_name("static")
 CARD_ROUTE = re.compile(r"/api/cards/(T-[0-9]{4}-[0-9]{3,})(?:/(score|void|exit-signal))?\Z")
 
 
-def create_server(app: Application, port=8765):
+def validate_binding(host, public_host, demo_only, *, mode="demo"):
+    """仅 IPv4 字面量；远程须显式纯演示或安全的行情只读模式。"""
+    address = ipaddress.IPv4Address(host)
+    public_safe = (mode == "demo" and demo_only) or mode == "market"
+    if public_host is not None:
+        public = ipaddress.IPv4Address(public_host)
+        if public.is_unspecified or public.is_multicast or public.is_loopback:
+            raise ValueError("public-host 必须是明确的非 loopback 单播 IPv4 地址")
+        if not public_safe:
+            raise ValueError("public-host 须启用 --demo-only 或 --mode market")
+    if not address.is_loopback and (not public_safe or public_host is None):
+        raise ValueError("非 loopback 监听须指定 --public-host，并启用 --demo-only 或 --mode market")
+
+
+def create_server(app: Application, port=8765, *, host="127.0.0.1", public_host=None):
+    validate_binding(host, public_host, app.demo_only, mode=app.mode)
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):
             # 避免评分理由等用户输入落入访问日志。
@@ -37,8 +53,10 @@ def create_server(app: Application, port=8765):
             try:
                 host = self.headers.get("Host", "")
                 allowed = {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
+                if public_host is not None:
+                    allowed.add(f"{public_host}:{self.server.server_port}")
                 if host not in allowed:
-                    raise RequestError("仅接受本机地址", 403)
+                    raise RequestError("不接受此 Host 地址", 403)
                 origin = self.headers.get("Origin")
                 if origin and origin != f"http://{host}":
                     raise RequestError("拒绝跨站请求", 403)
@@ -49,6 +67,8 @@ def create_server(app: Application, port=8765):
                 mode = app.effective_mode(query.get("mode", [None])[0])
                 match = CARD_ROUTE.fullmatch(url.path)
                 if write:
+                    if app.mode == "market":
+                        raise RequestError("行情预览仅允许读取", 403)
                     if self.headers.get("X-CSRF-Token") != app.csrf_token:
                         raise RequestError("页面凭证失效，请刷新", 403)
                     if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
@@ -90,6 +110,6 @@ def create_server(app: Application, port=8765):
         def do_POST(self):
             self.dispatch(write=True)
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server = ThreadingHTTPServer((host, port), Handler)
     server.daemon_threads = True
     return server
