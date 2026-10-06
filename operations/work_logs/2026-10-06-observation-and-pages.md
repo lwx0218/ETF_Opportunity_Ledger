@@ -71,4 +71,6 @@
 
 本包完成“两页真实观察与隔离演示”，不等于全产品完工。编排仍负责口径/异常裁定；Codex 后续负责证据采集/草稿/确认、完整四层判断、正式盲评分/作废重建/出场入口和完整 R6；Pi 负责经授权的量额/NAV/份额与增量取证、A7 后真实卡片及五日无人值守。正式研究与正式规则保持关闭。
 
-分支推送、PR 与远端必需检查的实际结果由本轮交付记录补充；不绕过 API 权限、分支保护或检查。
+业务代码提交 `43dcba8` 已推送 `origin/codex/observation-and-pages`；最后 fetch 的 main 仍是 `ae7b63d`，任务分支直接继承它，无冲突。之后仅追加本段交付记录，不改变已测源码。
+
+`gh pr create --base main --head codex/observation-and-pages --body-file /tmp/observation-pages-pr.md` 实际失败：`Post "https://api.github.com/graphql": Forbidden`。因此没有生成 PR 编号、没有运行或绕过远端必需检查，也没有合并。已准备 PR 说明并交付[创建入口](https://github.com/lwx0218/ETF_Opportunity_Ledger/pull/new/codex/observation-and-pages)；它是创建入口，不能冒充已存在的 PR。没有修改网络、权限或分支保护。
