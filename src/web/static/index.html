@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="记录每一次事前判断，跟踪每一个验证结果。ETF 前向机会台账。">
+  <title>ETF 前向机会台账</title>
+  <link rel="icon" href="/ledger.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到台账</a>
+  <div class="page-shell">
+    <header class="topbar">
+      <button class="brand" id="home-button" aria-label="返回机会台账首页"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>ETF <span class="brand-sub">前向机会台账</span></span></button>
+      <div class="topbar-actions"><span id="mode-label" class="mode-label">正在连接</span><button class="icon-button" id="theme-toggle" aria-label="切换为浅色" title="切换深浅色">◐</button></div>
+    </header>
+    <div class="contextbar"><nav id="breadcrumb" aria-label="当前位置">机会台账</nav><span class="asof mono" id="as-of">读取截至时间…</span></div>
+    <main id="main" tabindex="-1">
+      <div id="loading" class="loading">正在读取台账…</div>
+      <div id="overview" hidden></div>
+      <section id="detail" aria-label="机会详情" hidden></section>
+    </main>
+    <footer class="footer"><span>ETF 前向机会台账 <span class="footer-dot">·</span> 记录判断，等待验证。</span><div><a id="mode-link" href="/?mode=readonly">正式台账 · 只读 ↗</a><span class="footer-dot">·</span><span id="footer-source">演示数据</span></div></footer>
+  </div>
+  <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
