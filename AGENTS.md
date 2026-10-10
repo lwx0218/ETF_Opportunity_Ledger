@@ -112,3 +112,9 @@ skills 和 domain modeling 是按需能力，不是默认关卡。
 - 本次不下发项目级 `pi-web-ui`，不修改共享全局配置；package 声明不是已安装或运行验证的证明。
 - 密钥、认证信息、依赖缓存、`outputs/` 重型产物与回放库不入 Git；行情库 `data/market.sqlite` 与台账库 `data/ledger.sqlite` 按 `operations/planning/2026-09-29-replan-three-lanes.md` §11 入 Git（白名单见 `.gitignore`；提交前无热日志、`integrity_check = ok`，只在检查点 `VACUUM`）；保留轻量文档、清单及必要小样例。业务源码与运行数据只落本项目，不放进 Harness_Workspace。
 <!-- PROJECT:OWNED:END -->
+
+## Cursor Cloud specific instructions
+
+- 默认镜像要先安装 `python3.12-venv`，否则 `python3 -m venv` 因缺少 ensurepip 失败。随后在仓库根执行 `python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt`。
+- 跑测试前执行 `mkdir -p outputs`。`outputs/` 被 gitignore；目录不存在时 `tests/web/test_api.py` 里指向 `ROOT / "outputs"` 的临时库会失败。测试：`.venv/bin/python -m unittest discover -s tests -t .`。前端语法：`node --check src/web/static/app.js`。
+- 演示服务：`.venv/bin/python -m src.web --port 8765`，监听 `127.0.0.1:8765`。非本机地址要同时给出明确的 `--public-host`，以及 `--demo-only` 或 `--mode market`。演示目录放在 `outputs/`。启动与操作路径见 `docs/runnable-ledger.md`。
