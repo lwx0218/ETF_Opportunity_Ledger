@@ -180,12 +180,12 @@ const ROTATION_GROUPS = [
   ['海外', ['海外']],
 ];
 const ROTATION_FOOT = '数字取自执行 ETF 的腾讯不复权价格相对 H00300 全收益；与指数的差异按年 1% 打折。成交量单位未核定，不画量。形态写「—」的容器历史上有收盘缺口，名次仍然有效。';
-function cellBackground(rs) {
-  if (rs == null || rs === '' || !Number.isFinite(Number(rs))) return 'transparent';
+function heatClass(rs) {
+  if (rs == null || !Number.isFinite(Number(rs))) return '';
   const value = Number(rs);
-  const mix = Math.round(Math.min(1, Math.abs(value) / 0.30) * 72);
-  const tone = value >= 0 ? 'var(--sig-up)' : 'var(--sig-down)';
-  return `color-mix(in srgb, ${tone} ${mix}%, var(--bg))`;
+  const level = Math.round(Math.min(1, Math.abs(value) / 0.30) * 8);
+  if (!level) return '';
+  return `${value >= 0 ? 'heat-up' : 'heat-down'}-${level}`;
 }
 function shortState(label) {
   if (label == null || label === '') return '—';
@@ -306,13 +306,13 @@ function renderRotation() {
       const tipState = cell?.state?.available ? (cell.state.state_label || '—') : (cell?.state?.reason || '—');
       const title = `${row.container} ${week.date}  名次 ${rank == null ? '—' : rank}  超额 ${excessText(rs)}  ${tipState}`;
       const selected = row.theme_id === selectedTheme && week.date === selectedDate;
-      return `<a data-route class="cell${selected ? ' is-selected' : ''}" href="${esc(readingHref(params().toString(), row.theme_id, week.date, cell?.rs_1m?.purpose || shownSeries(), state?.mode))}" title="${esc(title)}" style="background:${cellBackground(rs)}"${selected ? ' aria-current="true"' : ''}><span class="cell-rank mono">${rank == null ? '—' : esc(rank)}</span><span class="cell-state">${esc(stateText)}</span></a>`;
+      return `<a data-route class="cell ${heatClass(rs)}${selected ? ' is-selected' : ''}" href="${esc(readingHref(params().toString(), row.theme_id, week.date, cell?.rs_1m?.purpose || shownSeries(), state?.mode))}" title="${esc(title)}"${selected ? ' aria-current="true"' : ''}><span class="cell-rank mono">${rank == null ? '—' : esc(rank)}</span><span class="cell-state">${esc(stateText)}</span></a>`;
     }).join('');
     return head + grid;
   }).join('')}`).join('');
   $('#overview').innerHTML = `<section class="rotation-head"><h1>${esc(headline.title)}</h1><p class="lead">${esc(headline.lead)}</p></section>
     <div class="legend"><span class="mono">−30%</span><span class="legend-bar" aria-hidden="true"></span><span class="mono">+30%</span><span class="legend-note">格内数字是当周名次，1 最强。小字是形态。</span></div>
-    <div class="rotation-scroll" tabindex="0" role="region" aria-label="${rows.length} 个容器、${weeks.length} 周的相对强弱，可横向滚动"><div class="rotation-grid" style="--week-count:${weeks.length || 12}">${header}${body}</div></div>
+    <div class="rotation-scroll" tabindex="0" role="region" aria-label="${rows.length} 个容器、${weeks.length} 周的相对强弱，可横向滚动"><div class="rotation-grid">${header}${body}</div></div>
     ${renderFocus(data.detail, rows.find(row => row.theme_id === (data.detail && data.detail.theme_id)))}
     <p class="rotation-foot">${ROTATION_FOOT}</p>`;
   wireNavigation();
@@ -637,4 +637,4 @@ function boot() {
   loadPage();
 }
 if (typeof document !== 'undefined') boot();
-if (typeof module === 'object' && module.exports) module.exports = {routeFrom, readingHref, navHref, renderDecision, pendingSignal, cellBackground, shortState, rotationHeadline};
+if (typeof module === 'object' && module.exports) module.exports = {routeFrom, readingHref, navHref, renderDecision, pendingSignal, heatClass, shortState, rotationHeadline};

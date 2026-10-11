@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('assert');
-const {readingHref, navHref, renderDecision, cellBackground, shortState, rotationHeadline} = require('../../src/web/static/app.js');
+const {readingHref, navHref, renderDecision, heatClass, shortState, rotationHeadline} = require('../../src/web/static/app.js');
 
 function query(href) {
   return new URLSearchParams(href.slice(href.indexOf('?') + 1));
@@ -69,11 +69,11 @@ const blank = renderDecision({card: {}, evidence: null, daily: []});
 assert.ok(blank.includes('入场形态'));
 assert.equal((blank.match(/—/g) || []).length >= 4, true);
 
-assert.strictEqual(cellBackground(0.3), 'color-mix(in srgb, var(--sig-up) 72%, var(--bg))');
-assert.strictEqual(cellBackground(-0.15), 'color-mix(in srgb, var(--sig-down) 36%, var(--bg))');
-assert.strictEqual(cellBackground(null), 'transparent');
-assert.strictEqual(cellBackground(0.6), 'color-mix(in srgb, var(--sig-up) 72%, var(--bg))');
-assert.strictEqual(cellBackground(0.6), cellBackground(0.3));
+assert.strictEqual(heatClass(0.3), 'heat-up-8');
+assert.strictEqual(heatClass(-0.15), 'heat-down-4');
+assert.strictEqual(heatClass(null), '');
+assert.strictEqual(heatClass(0.6), 'heat-up-8');
+assert.strictEqual(heatClass(0.001), '');
 
 for (const [label, expected] of [['上升中', '上升'], ['下跌中', '下跌'], ['回踩', '回踩'], ['遇阻', '遇阻'], ['平台突破', '平台突破'], ['启动', '启动'], ['过热', '过热'], ['破位', '破位'], ['阴跌', '阴跌'], ['超跌反弹', '超跌反弹'], ['无趋势', '无趋势'], [null, '—'], ['', '—']]) {
   assert.strictEqual(shortState(label), expected, String(label));

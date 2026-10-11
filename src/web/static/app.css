@@ -398,7 +398,23 @@ body[data-page=rotation] #observation-context{display:none!important}
 .legend-bar{width:132px;height:8px;background:linear-gradient(90deg,var(--sig-down),var(--bg) 50%,var(--sig-up))}
 .legend-note{margin-left:auto}
 .rotation-scroll{overflow-x:auto;width:100%}
-.rotation-grid{display:grid;grid-template-columns:132px repeat(var(--week-count, 12), minmax(0, 1fr))}
+.rotation-grid{display:grid;grid-template-columns:132px repeat(12, minmax(0, 1fr))}
+.heat-up-1{background:color-mix(in srgb, var(--sig-up) 9%, var(--bg))}
+.heat-up-2{background:color-mix(in srgb, var(--sig-up) 18%, var(--bg))}
+.heat-up-3{background:color-mix(in srgb, var(--sig-up) 27%, var(--bg))}
+.heat-up-4{background:color-mix(in srgb, var(--sig-up) 36%, var(--bg))}
+.heat-up-5{background:color-mix(in srgb, var(--sig-up) 45%, var(--bg))}
+.heat-up-6{background:color-mix(in srgb, var(--sig-up) 54%, var(--bg))}
+.heat-up-7{background:color-mix(in srgb, var(--sig-up) 63%, var(--bg))}
+.heat-up-8{background:color-mix(in srgb, var(--sig-up) 72%, var(--bg))}
+.heat-down-1{background:color-mix(in srgb, var(--sig-down) 9%, var(--bg))}
+.heat-down-2{background:color-mix(in srgb, var(--sig-down) 18%, var(--bg))}
+.heat-down-3{background:color-mix(in srgb, var(--sig-down) 27%, var(--bg))}
+.heat-down-4{background:color-mix(in srgb, var(--sig-down) 36%, var(--bg))}
+.heat-down-5{background:color-mix(in srgb, var(--sig-down) 45%, var(--bg))}
+.heat-down-6{background:color-mix(in srgb, var(--sig-down) 54%, var(--bg))}
+.heat-down-7{background:color-mix(in srgb, var(--sig-down) 63%, var(--bg))}
+.heat-down-8{background:color-mix(in srgb, var(--sig-down) 72%, var(--bg))}
 .ghead{font:11px/1.4 var(--font-mono);color:var(--muted);text-align:center;padding:4px 0 10px}
 .group-label{grid-column:1 / -1;margin-top:18px;padding-bottom:4px;font:12px/1.6 var(--font-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
 .lab{min-height:46px;border-bottom:1px solid var(--hair);display:flex;align-items:center;padding-right:8px}
@@ -426,6 +442,6 @@ body[data-page=rotation] #observation-context{display:none!important}
 @media(max-width:900px){
   body[data-page=rotation] .context-row{flex-wrap:wrap;align-items:flex-start}
   body[data-page=rotation] .observation-controls{flex-wrap:wrap}
-  .rotation-grid{grid-template-columns:132px repeat(var(--week-count, 12), minmax(52px, 1fr));width:max(100%, calc(132px + var(--week-count, 12) * 52px))}
+  .rotation-grid{grid-template-columns:132px repeat(12, minmax(52px, 1fr));width:max(100%, calc(132px + 12 * 52px))}
   .rotation-grid>.lab{position:sticky;left:0;background:var(--bg);z-index:2}
 }
