@@ -2,7 +2,7 @@
 
 ## 基线
 - main：794a8cca082e7d2b0bd75767c533445c610d7e6f（R1 内容；R2 只在 dev）
-- dev：R2 已完成。默认观察改为执行 ETF，并修回三项缺陷。本文件与代码在同一提交时，该提交就是 R2
+- dev：7b657f0f68aa0b1800ac18a54a68a555a389e5aa（R2 内容：默认执行 ETF，三项缺陷已修）
 - 行情库：data/market.sqlite，51 序列 / 152,408 行，末日 2026-09-30；38 只执行 ETF 腾讯日线全量；CSI 全收益仅 H00300 / H00015 / H00852 / H20606 / 399998（其余 403）
 - 正式台账 data/ledger.sqlite：不存在（A7 未放行）
 - 启动：.venv/bin/python -m src.web --port 8765（demo）；--mode readonly；--mode market
