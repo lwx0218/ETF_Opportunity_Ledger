@@ -1,7 +1,7 @@
 # 项目状态（先读这个）
 
 ## 基线
-- main：06e7db5d2a9f96bbcff610fcc61771f6d63b405d
+- main：794a8cca082e7d2b0bd75767c533445c610d7e6f
 - 行情库：data/market.sqlite，51 序列 / 152,408 行，末日 2026-09-30；38 只执行 ETF 腾讯日线全量；CSI 全收益仅 H00300 / H00015 / H00852 / H20606 / 399998（其余 403）
 - 正式台账 data/ledger.sqlite：不存在（A7 未放行）
 - 启动：.venv/bin/python -m src.web --port 8765（demo）；--mode readonly；--mode market
