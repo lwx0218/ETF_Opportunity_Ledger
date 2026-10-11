@@ -62,7 +62,7 @@ def create_server(app: Application, port=8765, *, host="127.0.0.1", public_host=
                     raise RequestError("拒绝跨站请求", 403)
                 url = urlsplit(self.path)
                 query = parse_qs(url.query, keep_blank_values=True)
-                page = url.path in ("/", "/rotation")
+                page = url.path in ("/", "/rotation", "/market")
                 permitted = ({"mode", "as_of", "theme", "series", "card"} if page else
                              {"mode", "as_of", "theme", "series", "weeks"} if url.path == "/api/observation" else {"mode"})
                 if set(query) - permitted or any(len(values) != 1 for values in query.values()):

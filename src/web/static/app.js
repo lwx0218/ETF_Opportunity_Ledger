@@ -3,7 +3,7 @@
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state, observation, selectedId = null, busy = false, noticeTimer, loadSequence = 0;
-const page = () => location.pathname === '/rotation' ? 'rotation' : 'home';
+const page = () => location.pathname === '/rotation' ? 'rotation' : location.pathname === '/market' ? 'market' : 'home';
 const params = () => new URLSearchParams(location.search);
 function routeFrom(search, path, changes = {}, mode) {
   const next = new URLSearchParams(search);
@@ -38,7 +38,7 @@ function notify(message) {
 
 async function api(path, body) {
   const url = new URL(path, location.origin);
-  const mode = state?.mode || params().get('mode');
+  const mode = page() === 'market' ? 'market' : (state?.mode || params().get('mode'));
   if (mode) url.searchParams.set('mode', mode);
   const response = await fetch(url, body === undefined ? {cache:'no-store'} : {
     method:'POST', headers:{'Content-Type':'application/json', 'X-CSRF-Token':state.csrf_token},
@@ -64,26 +64,6 @@ function cardButton(card) {
     <div class="opportunity-note"><span>下一观察</span><span>${esc(observed(card))}</span></div>
     ${['待评分','待独立评分'].includes(card.owner_score_status) ? '<div class="score-cue">待独立评分 · 查看冻结判断</div>' : ''}
   </button>`;
-}
-
-function renderLedgerOverview() {
-  const cards = state.cards || [], summary = state.summary || {};
-  const groups = ['过去', '当下', '候选'].map(status => cards.filter(card => card.status === status));
-  const archive = cards.filter(card => ['已结', '作废'].includes(card.status));
-  const title = !cards.length ? '新的判断，从这里开始。' : `${groups[1].length} 笔正在验证，${groups[2].length} 笔等待进场。`;
-  const description = state.mode === 'demo' ? '把判断留在事前，把答案交给时间。' : '正式台账只读；每一次关注、持有与离场都保留原始记录。';
-  $('#overview').innerHTML = `<section class="intro"><div><div class="eyebrow">THE OPPORTUNITY LEDGER</div><h1>${title}</h1><p>${description}</p></div>${state.writable ? '<div class="demo-actions"><button id="reset-demo" class="text-button">重置演示</button><button id="advance-demo" class="primary-button">推进下一交易日 <span aria-hidden="true">→</span></button></div>' : ''}</section>
-    <section class="timeline" aria-label="过去、当下与未来">${groups.map((items, index) => `<section class="lane ${index === 1 ? 'present' : ''}" aria-labelledby="lane-${index}"><div class="lane-heading"><h2 id="lane-${index}">${['过去','当下','未来'][index]}</h2><span class="count">${String(items.length).padStart(2,'0')}</span></div><div class="lane-label">${['出场后，判断仍在被验证','持有中，跟踪每一次变化','已记录，等待入场检查'][index]}</div>${items.length ? items.map(cardButton).join('') : `<p class="empty">${['暂无出场后跟踪记录。','暂无持有记录。','暂无候选机会。'][index]}</p>`}</section>`).join('')}</section>
-    <div class="flow-caption">过去 ← 当下 ← 未来 <span>·</span> 每一笔都有来处</div>
-    <div class="lower-grid"><section aria-labelledby="archive-heading"><div class="section-heading"><h2 id="archive-heading">留在台账里的判断</h2><span class="eyebrow">已结 / 作废</span></div>${archive.length ? archive.map(card => `<button class="archive-row" data-card="${esc(card.id)}" aria-label="查看${esc(card.container)}${esc(card.status)}记录"><span class="archive-name">${esc(card.container)}</span><span class="muted">${esc(card.status)}</span><span class="mono muted">${shortDate(card.exit_date || card.close_date)}</span><span class="result">${esc(card.final_score || '计入分母')} ↗</span></button>`).join('') : '<p class="empty">尚无已结或作废记录。</p>'}</section>
-    <section aria-labelledby="summary-heading"><div class="section-heading"><h2 id="summary-heading">每一次判断都算数</h2><span class="eyebrow">${state.mode === 'demo' ? '演示累计' : '累计'}</span></div><div class="summary-metrics"><div><div class="summary-number">${esc(summary.denominator ?? cards.length)}</div><div class="summary-label">全部记录 · 分母</div></div><div><div class="summary-number">${esc(summary.by_status?.已结 ?? archive.filter(c=>c.status==='已结').length)}</div><div class="summary-label">完成验证</div></div><div><div class="summary-number">${esc(summary.by_status?.作废 ?? archive.filter(c=>c.status==='作废').length)}</div><div class="summary-label">作废 · 仍计入</div></div></div><p class="summary-note">${state.mode === 'demo' ? '演示记录用于体验流程，不用于判断策略有效性。' : '作废与未进场的机会同样保留，避免只记下走对的判断。'}</p></section></div>
-    <section class="status-section" aria-label="规则与数据状态"><div><h3>规则状态</h3>${renderRules(state.rules || {})}</div><div><h3>数据可用性</h3>${renderDataStatus(state.data_status || {})}</div></section>
-    <section id="scoring-review" class="review-section">${renderReview(state.review)}</section>`;
-  $('#overview').querySelectorAll('[data-card]').forEach(button => button.addEventListener('click', () => openCard(button.dataset.card)));
-  $('#advance-demo')?.addEventListener('click', () => mutate('/api/demo/advance', {}, '已推进到下一交易日。'));
-  $('#reset-demo')?.addEventListener('click', () => {
-    if (confirm('重置会清除本次演示中的操作，恢复初始演示。是否继续？')) mutate('/api/demo/reset', {}, '演示已重置。', true);
-  });
 }
 
 const fieldValue = field => field && field.available ? field.value : null;
@@ -112,48 +92,178 @@ function observationLink(theme, date, text, extra = {}) {
     : route('/rotation', {theme, as_of:when, card:null, ...extra});
   return `<a data-route href="${esc(href)}">${text}</a>`;
 }
+const ENTERABLE_CODES = new Set(['POP', 'XB', 'BNB', 'REV']);
+const ADVERSE_CODES = new Set(['EXH', 'DROP', 'XBD', 'BNBD']);
+const ENTERABLE_LABELS = new Set(['启动', '回踩', '平台突破', '超跌反弹']);
+const ADVERSE_LABELS = new Set(['过热', '破位', '遇阻', '阴跌']);
+const STATE_MEANING = {启动:'第一次站上均线', 回踩:'上升中回到均线', 平台突破:'平台突破', 超跌反弹:'下跌中的反弹'};
+function ruleLabel(appState) {
+  if (appState && appState.mode === 'demo') return '演示规则';
+  const enabled = appState && appState.rules && appState.rules.enabled;
+  return Array.isArray(enabled) && enabled.length ? enabled.join('、') : '规则未启用';
+}
+function byRank(a, b) {
+  if (a.rank == null && b.rank == null) return 0;
+  if (a.rank == null) return 1;
+  if (b.rank == null) return -1;
+  return a.rank - b.rank;
+}
+function rowSnapshot(row) {
+  const fields = row && row.fields || {};
+  const stateField = fields.state || {};
+  const available = stateField.available === true;
+  const code = available ? String(stateField.value || '') : '';
+  const label = available ? (stateField.state_label || code) : '';
+  return {
+    theme_id: row && row.theme_id,
+    container: row && row.container || '',
+    code: row && row.identity && row.identity.code || '',
+    stateCode: code,
+    stateLabel: label,
+    rank: rankNumber(fields.rank),
+    rs: fieldValue(fields.rs_1m),
+    ext: fieldValue(fields.ext),
+    window: fields.rs_1m && fields.rs_1m.window || null,
+    available,
+    enterable: available && (ENTERABLE_CODES.has(code) || ENTERABLE_LABELS.has(label)),
+    adverse: available && (ADVERSE_CODES.has(code) || ADVERSE_LABELS.has(label)),
+  };
+}
+function pickCandidate(data) {
+  const snaps = ((data && data.containers) || []).map(rowSnapshot);
+  const known = snaps.filter(row => row.available);
+  const enterable = known.filter(row => row.enterable).sort(byRank);
+  return {
+    candidate: enterable[0] || null,
+    rankOne: snaps.find(row => row.rank === 1) || null,
+    enterable,
+    others: enterable.slice(1, 5),
+    adverse: known.filter(row => row.adverse).sort(byRank),
+    available: known.length,
+    unavailable: snaps.length - known.length,
+    pool: snaps.length,
+  };
+}
+function homeHeadline(data, appState) {
+  const cards = (appState && appState.cards) || [];
+  if (cards.length) {
+    const holding = cards.filter(card => card.status === '当下').length;
+    const waiting = cards.filter(card => card.status === '候选').length;
+    return {title: `${holding} 笔正在验证，${waiting} 笔等待进场。`, lead: ''};
+  }
+  const picked = pickCandidate(data);
+  const title = picked.enterable.length
+    ? `${picked.pool} 个容器里 ${picked.enterable.length} 个处于可进态，没有在跑的判断。`
+    : `${picked.pool} 个容器里没有处于可进态的，没有在跑的判断。`;
+  const focus = picked.enterable.length ? picked.candidate : picked.rankOne;
+  const tail = `${ruleLabel(appState)}，尚未扫描；这是观察，不是进场。`;
+  const lead = focus
+    ? `最强的一个是${focus.container} ${focus.code}：${focus.stateLabel || '—'}，名次 ${focus.rank == null ? '—' : focus.rank}，近 1 月相对沪深300 ${excessText(focus.rs)}。${tail}`
+    : tail;
+  return {title, lead};
+}
+function registryOnPage(name) {
+  return name === 'market';
+}
+function homeFootNote() {
+  if (state.mode === 'demo') return '隔离演示 · 全部为合成数据';
+  const date = observation && observation.effective_date || '—';
+  return `数字取自 ${date} 的执行 ETF 观察：腾讯不复权价格相对 H00300 全收益，与指数的差异按年 1% 打折。形态是观察量，不是信号；可进 = 启动 / 回踩 / 平台突破 / 超跌反弹。`;
+}
+function homeSpark(chart, win, code) {
+  const rows = (chart || []).filter(item => Number.isFinite(item.close) && item.close > 0).slice(-60);
+  if (!rows.length) return '<p class="empty">这个窗口尚无正且有限的收盘。</p>';
+  const values = rows.map(item => item.close);
+  const low = Math.min(...values), high = Math.max(...values);
+  const span = Math.max(high - low, high * 0.01);
+  const width = 640, height = 120, top = 8, bottom = 8;
+  const x = index => rows.length === 1 ? width / 2 : width * index / (rows.length - 1);
+  const y = value => top + (height - top - bottom) * ((high + span * 0.08) - value) / (span * 1.16);
+  const path = rows.map((item, index) => `${index ? 'L' : 'M'}${x(index).toFixed(2)},${y(item.close).toFixed(2)}`).join(' ');
+  let band = '';
+  if (win && win.start && win.end) {
+    const indexes = [];
+    rows.forEach((item, index) => { if (String(item.date) >= String(win.start) && String(item.date) <= String(win.end)) indexes.push(index); });
+    if (indexes.length) {
+      const x0 = x(indexes[0]), x1 = x(indexes[indexes.length - 1]);
+      const left = Math.min(x0, x1);
+      band = `<rect class="spark-band" x="${left.toFixed(2)}" y="0" width="${Math.max(8, Math.abs(x1 - x0)).toFixed(2)}" height="${height}"/>`;
+    }
+  }
+  const last = rows[rows.length - 1], start = rows[0];
+  return `<svg class="spark-home" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(code)} ${esc(start.date)} 至 ${esc(last.date)} 收盘">${band}<path d="${path}"/><circle class="spark-end" cx="${x(rows.length - 1).toFixed(2)}" cy="${y(last.close).toFixed(2)}" r="3.5"/></svg><p class="spark-caption mono">${esc(code)} · ${esc(start.date)} → ${esc(last.date)} · ${rows.length} 个收盘 · 铺底 = 近 1 月窗口 · 末值 ${number(last.close, 3)}</p>`;
+}
+function watchRow(row) {
+  return `<div class="watch-row"><span>${esc(row.container)} <span class="mono">${esc(row.code)}</span></span><span>${esc(row.stateLabel || '—')}</span><span class="mono">${row.rank == null ? '—' : esc(row.rank)}</span><span class="mono ${direction(row.rs)}">${excessText(row.rs)}</span></div>`;
+}
+function emptyCardLane(kind, withCards) {
+  const copy = {
+    past: ['lane-past', '上一次 · 出场后跟踪', '暂无出场后跟踪记录。', '第一张正式卡出场并走完跟踪期后，这里放它的 R 倍数、同期沪深300、为什么进、为什么出。'],
+    now: ['lane-now', '当下 · 持有', '暂无持有记录。', '规则未启用，尚未扫描。正式台账启用后，这里是在跑的那张卡：入场价、1R = 入场价 − 失效位、每日追加的观测，以及什么时候退。'],
+    next: ['lane-next', '下一个 · 候选', '暂无候选机会。', ''],
+  }[kind];
+  const note = withCards ? '' : copy[3];
+  return `<section class="lane ${copy[0]} lane-empty"><div class="eyebrow">${copy[1]}</div><h3>${copy[2]}</h3>${note ? `<p class="muted">${note}</p>` : ''}</section>`;
+}
+function renderCardLane(kind, items, withCards) {
+  if (!items.length) return emptyCardLane(kind, withCards);
+  const heading = {past: ['lane-past', '上一次 · 出场后跟踪'], now: ['lane-now present', '当下 · 持有'], next: ['lane-next', '下一个 · 候选']}[kind];
+  return `<section class="lane ${heading[0]}"><div class="eyebrow">${heading[1]}</div>${items.map(cardButton).join('')}</section>`;
+}
+function renderNextLane(picked) {
+  if (!picked.enterable.length) {
+    return `<section class="lane lane-next lane-empty"><div class="eyebrow">下一个 · 观察</div><h3>今天没有处于可进态的容器。</h3><p class="muted">${picked.unavailable} 个容器形态不可用（原生历史有收盘缺口，不修补）。</p></section>`;
+  }
+  const row = picked.candidate;
+  const meaning = STATE_MEANING[row.stateLabel] || '';
+  const meaningText = meaning ? `（${meaning}）` : '';
+  const extText = row.ext == null ? '' : ` · 离 20 日线 ${signed(row.ext, 1)} ATR`;
+  const detail = observation && observation.detail;
+  const chart = detail && detail.theme_id === row.theme_id ? homeSpark(detail.chart || [], row.window, row.code) : '<p class="empty">这个窗口尚无正且有限的收盘。</p>';
+  const others = picked.others.map(watchRow).join('');
+  return `<section class="lane lane-next"><div class="eyebrow">下一个 · 观察 · ${esc(row.container)} ${esc(row.code)} · 未入账 · ${esc(ruleLabel(state))}</div>
+    <div class="big-number mono ${direction(row.rs)}">${excessText(row.rs)}<small>观察</small></div>
+    <p class="next-meta mono">近 1 月相对沪深300 · 名次 ${row.rank == null ? '—' : esc(row.rank)} / ${esc(picked.pool)}${esc(extText)}</p>
+    <p class="next-explain">${esc(row.stateLabel || '—')}${esc(meaningText)}，落在可进集合里，所以放在这一栏。它是价格观察量，不是进场信号；入账前不冻结论点、预期和失效位。</p>
+    <div class="spark">${chart}</div>
+    <dl class="why-lines"><div><dt>为什么关注</dt><dd>${esc(row.stateLabel || '—')}${esc(meaningText)} · 名次 ${row.rank == null ? '—' : esc(row.rank)} / ${esc(picked.pool)} · 近 1 月相对沪深300 ${excessText(row.rs)}${esc(extText)}</dd></div>
+    <div><dt>什么时候失效</dt><dd>尚未定义：入账时才冻结失效位</dd></div>
+    <div><dt>证据</dt><dd>尚无证据包。</dd></div></dl>
+    <div class="eyebrow next-rest">其余可进态 · ${picked.enterable.length - 1} 个</div>
+    ${others}</section>`;
+}
+function renderAvoid(picked) {
+  const date = observation && observation.effective_date || '—';
+  const body = picked.adverse.length
+    ? `<div class="watch-list">${picked.adverse.map(watchRow).join('')}</div>`
+    : `<p class="avoid-none">截至 ${esc(date)}，${picked.available} 个形态可用的容器里没有处于过热 / 破位 / 遇阻 / 阴跌的。</p>`;
+  return `<section class="avoid"><div class="eyebrow">今天不碰 · 形态不利，观察量不是禁入</div><h3>过热 / 破位 / 遇阻 / 阴跌</h3>${body}<p class="muted">另有 ${picked.unavailable} 个容器形态不可用（原生历史有收盘缺口，不修补），不在此列，名次仍然有效。</p></section>`;
+}
+function renderWorth() {
+  const buckets = state.review && state.review.calibration && state.review.calibration.owner || [];
+  if (buckets.some(bucket => bucket.enough)) return `<section class="worth">${renderReview(state.review)}</section>`;
+  return `<section class="worth"><div class="eyebrow">规则今年值多少</div><h3>前向样本不足，不展示胜率或收益。</h3><p class="muted">正式台账跑出前向样本后，这里按 R 倍数分布报告，并给出去掉最好 1 / 2 / 3 笔后的期望；双基准是等权组合与沪深300。</p></section>`;
+}
 function renderOverview() {
   if (page() === 'rotation') { renderRotation(); return; }
-  if (state.mode !== 'market') renderLedgerOverview();
-  else {
-    $('#overview').innerHTML = `<section class="intro"><div><div class="eyebrow">今天 · 真实观察</div><h1>先看见变化，再等待判断。</h1><p>此观察入口不载入正式判断／扫描结果，不能据此确认今天有无机会。</p></div>${observationLink(params().get('theme'), observation?.requested_date, '进入轮动全景 ↗')}</section>
-      <section class="timeline observation-timeline" aria-label="过去、当下与未来">${[0,1,2].map(renderPublicLane).join('')}</section>`;
-  }
-  const section = document.createElement('section'); section.id = 'current-observation'; section.className = 'current-observation';
-  section.innerHTML = renderObservationHome();
-  if (state.mode === 'market') $('#overview').append(section);
-  else $('#overview').querySelector('.flow-caption')?.after(section);
-  if (state.mode === 'market') {
-    const lower = document.createElement('div'); lower.innerHTML = `<section class="limits-section"><div class="section-heading"><h2>今天，哪些判断还不能做</h2><span class="eyebrow">条件欠缺，不是投资禁入</span></div>${renderEvidenceGaps()}</section><section class="rules-worth"><div class="section-heading"><h2>这套规则值多少</h2><span class="eyebrow">需要前向证据</span></div><p class="lead">价格读数不能回答规则是否有效。</p><p class="summary-note">本入口不载入正式台账、规则配置与扫描记录。没有可引用的前向样本，就不展示胜率、预期收益或旧回放成绩。</p></section>${renderRegistry()}`; $('#overview').append(lower);
-  } else {
-    const limits=document.createElement('section'); limits.className='limits-section';
-    limits.innerHTML=`<div class="section-heading"><h2>今天，哪些判断还不能做</h2><span class="eyebrow">条件欠缺，不是投资禁入</span></div>${renderEvidenceGaps()}`;
-    section.after(limits);
-  }
+  const cards = state.cards || [];
+  const headline = homeHeadline(observation, state);
+  const picked = pickCandidate(observation);
+  const past = cards.filter(card => card.status === '过去');
+  const now = cards.filter(card => card.status === '当下');
+  const waiting = cards.filter(card => card.status === '候选');
+  const actions = state.writable ? '<div class="demo-actions"><button id="reset-demo" class="text-button">重置演示</button><button id="advance-demo" class="primary-button">推进下一交易日 <span aria-hidden="true">→</span></button></div>' : '';
+  const next = cards.length ? renderCardLane('next', waiting, true) : renderNextLane(picked);
+  $('#overview').innerHTML = `<section class="home-head"><div><div class="eyebrow">今天</div><h1>${esc(headline.title)}</h1>${headline.lead ? `<p class="home-lead">${esc(headline.lead)}</p>` : ''}</div>${actions}</section>
+    <section class="lanes" aria-label="上一次、当下与下一个">${renderCardLane('past', past, cards.length > 0)}<div class="lane-join" aria-hidden="true"><span class="lane-join-line"></span><span class="lane-join-mark">›</span></div>${renderCardLane('now', now, cards.length > 0)}<div class="lane-join" aria-hidden="true"><span class="lane-join-line"></span><span class="lane-join-mark">›</span></div>${next}</section>
+    <p class="lane-nav" aria-hidden="true"><span>‹ 上一次</span><span class="lane-nav-now">● 当下</span><span>下一个 ›</span></p>
+    ${renderAvoid(picked)}${renderWorth()}${registryOnPage(page()) ? renderRegistry() : ''}<p class="home-foot">${esc(homeFootNote())}</p>`;
+  $('#overview').querySelectorAll('[data-card]').forEach(button => button.addEventListener('click', () => openCard(button.dataset.card)));
+  $('#advance-demo')?.addEventListener('click', () => mutate('/api/demo/advance', {}, '已推进到下一交易日。'));
+  $('#reset-demo')?.addEventListener('click', () => {
+    if (confirm('重置会清除本次演示中的操作，恢复初始演示。是否继续？')) mutate('/api/demo/reset', {}, '演示已重置。', true);
+  });
   wireNavigation();
-}
-function renderPublicLane(index) {
-  const detail=observation?.detail, row=observation?.containers?.find(item=>item.theme_id === detail?.theme_id), fields=detail?.fields || row?.fields || {}, identity=detail?.identity || row?.identity;
-  const previous=observation?.rotation?.find(item=>item.theme_id === row?.theme_id)?.cells?.at(-2);
-  const value=index===0 ? reading(previous?.rs_1m,'rs_1m') : index===1 ? reading(fields.close,'close') : reading(fields.state,'state');
-  const seriesName=kindNames[shownSeries()] || '执行 ETF';
-  const captions=[`${seriesName}前周相对强弱 · ${previous?.date || '无截面'}`,`${row?.container || '观察容器'} · 原生收盘 ${detail?.native_date || row?.native_date || '—'}`,`${seriesName} · 不生成入场信号`];
-  const conclusions=['上一笔判断仍需原记录验证。',fields.close?.available ? '价格已经可见，判断仍需证据。' : '当前序列的价格条件尚不完整。','先补齐条件，再形成新判断。'];
-  const explanation=index===0 ? `本入口不读取正式评分与出场记录。这里只回看同一容器${seriesName}的价格变化。` : index===1 ? `${seriesName} · ${basisText(identity)} · ${identity?.code || '未选定'}。正式持仓和扫描结果不在本入口载入范围内。` : fieldReason(fields.state);
-  return `<section class="lane ${index === 1 ? 'present' : ''}"><div class="lane-heading"><h2>${['过去','当下','未来'][index]}</h2><span class="eyebrow">${['上一次对不对','当下在跑什么','下一个还差什么'][index]}</span></div><p class="lane-conclusion">${conclusions[index]}</p><div class="public-reading mono ${index===0 ? direction(fieldValue(previous?.rs_1m)) : ''}">${value}</div><p class="metric-caption">${esc(captions[index])}</p>${index===1 && detail ? `<div class="home-price">${priceChart(detail.chart || [],45,detail.identity)}</div>` : ''}<p class="lane-context">${esc(explanation)}</p>${observationLink(row?.theme_id,index===0?previous?.date:observation?.requested_date,index===0?'回看价格依据 ↗':index===1?'查看容器与窗口 ↗':'查看仍缺的条件 ↗',{series:shownSeries()})}</section>`;
-}
-function renderObservationHome() {
-  if (!observation) return '<p class="empty">观察尚未读取。</p>';
-  const rows = observation.containers || [], comparison = observation.comparison || {};
-  const available = rows.filter(row => row.fields?.close?.available);
-  const chosen = rows.find(row => row.theme_id === params().get('theme')) || available[0] || rows[0];
-  return `<div class="section-heading"><h2>今天能看见什么</h2><span class="eyebrow">截至 ${esc(observation.effective_date || '未能确定')} · ${state.mode === 'demo' ? '合成观察' : '真实观察'}</span></div>
-    <div class="observation-lead"><div><p class="lead">${comparison.comparison_complete ? comparison.valid > 0 ? '可比较相对强弱，仍需独立判断。' : '尚无完成相对强弱预热的容器。' : `${state.mode === 'demo' ? '展示合成价格' : available.length ? '已有真实价格' : '当前价格资格未确定'}，跨容器比较仍有缺口。`}</p><p class="summary-note">${esc(observation.reason || `${kindNames[shownSeries()] || '执行 ETF'}中，${available.length} 个容器可读收盘，${comparison.valid ?? 0} 个容器具有合格相对强弱。`)}${comparison.comparison_complete ? '' : ' 全池排名暂不提供，容器按原登记顺序保留。'}</p></div><span class="availability-reading mono">${available.length}<small>/ ${rows.length} 可读收盘</small></span></div>
-    ${chosen ? `<div class="observation-focus"><div><span class="eyebrow">${esc(chosen.theme_id)} · ${esc(chosen.native_date || '无原生日期')}</span><h3>${observationLink(chosen.theme_id, observation.requested_date, `${esc(chosen.container)} <span aria-hidden="true">↗</span>`, {series:shownSeries()})}</h3><p class="summary-note">${esc(basisText(chosen.identity))} · ${esc(identityText(chosen.identity))}</p></div><div class="focus-reading"><span class="mono">${reading(chosen.fields?.close,'close')}</span><small>原生收盘 · ${esc(chosen.native_date || '—')}</small></div><div class="focus-explanation"><span>${chosen.fields?.state?.available ? reading(chosen.fields.state,'state') : '形态条件尚不完整'}</span><p>${esc(chosen.fields?.state?.reason || '价格形态是观察量，不直接形成买卖判断。')}</p></div></div>` : ''}
-    <p class="comparison-basis">下列读数 = ${esc(kindNames[shownSeries()] || '执行 ETF')}的 21 交易日收益 − H00300 全收益指数同窗收益；价格与全收益口径分别标明，不是绝对收益。${shownSeries() === 'execution' ? ` ${esc(observation.discount_note || '与指数差异按年 1% 打折（intake §4.2）')}。` : ''}</p>
-    <div class="container-links" aria-label="全部观察容器">${rows.map(row => observationLink(row.theme_id, observation.requested_date, `<span>${esc(row.container)}<small>${esc(basisText(row.identity))}</small></span><span class="mono ${direction(fieldValue(row.fields?.rs_1m))}">${reading(row.fields?.rs_1m,'rs_1m')}</span>`, {series:shownSeries()})).join('')}</div>
-    <p class="comparison-basis">${state.mode === 'demo' ? '合成观察不判定正式收盘基准与研究资格。' : `收盘基准：${observation.benchmark_ready === true ? '可用' : '尚未就绪'} · 正式研究输入：${observation.research_ready === true ? '就绪' : '尚未就绪'}。逐字段可观察，不代表全池可进入正式研究。`}</p>
-    <div class="observation-bottom"><span>${esc(observation.history_note || '历史观察按当前库版本重建，不代表当时已抓取或已扫描。')}</span>${observationLink(chosen?.theme_id, observation.requested_date, '比较各周变化 →')}</div>`;
 }
 function renderEvidenceGaps() {
   return `<div class="evidence-gaps">${[
@@ -389,11 +499,10 @@ function renderShell() {
   if (page() === 'rotation') {
     const count = observation?.weeks?.length || 12;
     $('#as-of').textContent = `截至 ${observation?.effective_date || '—'} 收盘 · 近 1 月 · ${count} 周`;
-    $('#footer-source').textContent = state.mode === 'market' ? '真实观察 · 只读' : state.mode === 'demo' ? '隔离演示 · 全部为合成数据' : '正式数据 · 只读';
+    $('#footer-source').textContent = state.mode === 'market' ? '真实观察 · 只读' : state.mode === 'demo' ? '隔离演示 · 全部为合成数据' : '正式台账 · 只读';
   } else {
-    $('#as-of').textContent = `观察 ${observation?.effective_date || '未能确定'} · ${state.mode === 'market' ? '不载入正式台账' : `台账记账截至 ${String(state.observation_as_of || state.as_of || '—').replace('T',' ')}`}`;
-    const discount = shownSeries() === 'execution' ? ' · 与指数差异按年 1% 打折（intake §4.2）' : '';
-    $('#footer-source').textContent = (state.mode === 'market' ? '真实观察 · 保留来源与口径' : state.mode === 'demo' ? '隔离演示 · 全部为合成数据' : '正式数据 · 只读') + discount;
+    $('#as-of').textContent = `截至 ${observation?.effective_date || '—'} 收盘 · ${ruleLabel(state)}`;
+    $('#footer-source').textContent = state.mode === 'demo' ? '隔离演示 · 全部为合成数据' : state.mode === 'readonly' ? '正式台账 · 只读' : '真实观察 · 只读';
   }
   $('#mode-link').textContent = state.mode === 'demo' ? '正式台账 · 只读 ↗' : '返回演示台账 ↗';
   $('#mode-link').href = route(location.pathname, {mode:state.mode === 'demo' ? 'readonly' : 'demo',card:null});
@@ -401,7 +510,7 @@ function renderShell() {
   $('#mode-link').nextElementSibling.hidden = $('#mode-link').hidden;
   $('#nav-home').href = navHref(params().toString(), '/', state?.mode);
   $('#nav-rotation').href = navHref(params().toString(), '/rotation', state?.mode);
-  $('#nav-home').setAttribute('aria-current',page() === 'home' ? 'page' : 'false');
+  $('#nav-home').setAttribute('aria-current', page() === 'rotation' ? 'false' : 'page');
   $('#nav-rotation').setAttribute('aria-current',page() === 'rotation' ? 'page' : 'false');
   $('#observation-controls').hidden = !observation;
   if (observation) {
@@ -420,7 +529,7 @@ function renderShell() {
   renderOverview();
   $('#overview').hidden = selectedId !== null;
   $('#detail').hidden = selectedId === null;
-  if (!selectedId) $('#breadcrumb').textContent = page() === 'rotation' ? 'ETF 前向机会台账 › 轮动' : '机会台账 › 机会';
+  if (!selectedId) $('#breadcrumb').textContent = page() === 'rotation' ? 'ETF 前向机会台账 › 轮动' : page() === 'market' ? 'ETF 前向机会台账 › 机会 › 行情检查' : 'ETF 前向机会台账 › 机会';
 }
 
 function fact(label, value) {
@@ -471,7 +580,7 @@ function renderDetail(data) {
   const card = data.card, daily = data.daily || [], last = daily.at(-1), scores = data.scores || {}, actions = data.actions || {};
   const value = last?.r_current ?? data.exit?.realized_r;
   const expectation = card.expectation_target_r != null ? `以 ${signed(card.expectation_target_r)}R 为达标刻度` : `在 ${esc(card.expectation_horizon_days)} 个交易日内，超额目标 ${number(card.expectation_target_excess_pct)}%`;
-  $('#breadcrumb').innerHTML = `<button id="breadcrumb-back">机会台账</button><span>›</span><strong>${esc(data.status)} · ${esc(card.container)}</strong>`;
+  $('#breadcrumb').innerHTML = `<button id="breadcrumb-back">ETF 前向机会台账</button><span>›</span><strong>${esc(data.status)} · ${esc(card.container)}</strong>`;
   $('#breadcrumb-back').addEventListener('click', showHome);
   $('#detail').innerHTML = `<header class="detail-header"><div><div class="eyebrow">${esc(data.status)} · ${esc(card.instrument_code)} · ${esc(card.trigger_type)}</div><h1 id="detail-title" tabindex="-1">${esc(card.container)}</h1><p class="detail-thesis">${esc(card.thesis)}</p></div><div class="detail-metric"><div class="metric ${direction(value)}">${signed(value)}<span class="metric-unit"> R</span></div><div class="metric-caption">${data.exit ? '出场后跟踪' : '当前浮动'} · ${shortDate(last?.date || card.close_date)} 收盘</div></div></header>
     <p class="ledger-time-note">这张卡保留台账记账截至 ${time(state.observation_as_of || state.as_of)} 的记录。页面观察日期不回写卡片，也不把后来结果解释为当时已知。</p>
@@ -571,21 +680,39 @@ async function loadPage(focusDetail = false) {
     catch(error) { currentObservation={reason:error.message,containers:[],weeks:[],rotation:[],detail:null}; notify(error.message); }
     if (sequence !== loadSequence) return;
     observation=currentObservation;
-    const normalized=params(); normalized.set('mode',state.mode);
+    const normalized=params(); normalized.set('mode', page() === 'market' ? 'market' : state.mode);
     if (!normalized.get('as_of') && observation.requested_date) normalized.set('as_of',observation.requested_date);
     if (!normalized.get('series')) normalized.set('series', observation.series_kind || 'execution');
-    if (!search.get('theme') && observation.detail?.theme_id) {
-      const top = page() === 'rotation' ? rankOneTheme(observation) : null;
-      normalized.set('theme', top || observation.detail.theme_id);
-      if (top && top !== observation.detail.theme_id) {
-        const again = new URLSearchParams(observationQuery);
-        again.set('theme', top);
-        try {
-          const refreshed = await api(`/api/observation?${again}`);
-          if (sequence !== loadSequence) return;
-          observation = refreshed;
-        } catch (_) { normalized.set('theme', observation.detail.theme_id); }
+    if (page() === 'rotation') {
+      if (!search.get('theme') && observation.detail?.theme_id) {
+        const top = rankOneTheme(observation);
+        normalized.set('theme', top || observation.detail.theme_id);
+        if (top && top !== observation.detail.theme_id) {
+          const again = new URLSearchParams(observationQuery);
+          again.set('theme', top);
+          try {
+            const refreshed = await api(`/api/observation?${again}`);
+            if (sequence !== loadSequence) return;
+            observation = refreshed;
+          } catch (_) { normalized.set('theme', observation.detail.theme_id); }
+        }
       }
+    } else if (!(state.cards || []).length) {
+      const theme = (pickCandidate(observation).candidate || {}).theme_id;
+      if (theme) {
+        normalized.set('theme', theme);
+        if (theme !== observation.detail?.theme_id) {
+          const again = new URLSearchParams(observationQuery);
+          again.set('theme', theme);
+          try {
+            const refreshed = await api(`/api/observation?${again}`);
+            if (sequence !== loadSequence) return;
+            observation = refreshed;
+          } catch (_) { normalized.set('theme', observation.detail && observation.detail.theme_id || theme); }
+        }
+      }
+    } else if (!search.get('theme') && observation.detail?.theme_id) {
+      normalized.set('theme', observation.detail.theme_id);
     }
     history.replaceState(null,'',location.pathname+`?${normalized}`);
     renderShell();
@@ -637,4 +764,4 @@ function boot() {
   loadPage();
 }
 if (typeof document !== 'undefined') boot();
-if (typeof module === 'object' && module.exports) module.exports = {routeFrom, readingHref, navHref, renderDecision, pendingSignal, heatClass, shortState, rotationHeadline};
+if (typeof module === 'object' && module.exports) module.exports = {routeFrom, readingHref, navHref, renderDecision, pendingSignal, heatClass, shortState, rotationHeadline, homeHeadline, pickCandidate, registryOnPage};

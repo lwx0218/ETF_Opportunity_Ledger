@@ -1,7 +1,8 @@
 'use strict';
 
 const assert = require('assert');
-const {readingHref, navHref, renderDecision, heatClass, shortState, rotationHeadline} = require('../../src/web/static/app.js');
+const fs = require('fs');
+const {readingHref, navHref, renderDecision, heatClass, shortState, rotationHeadline, homeHeadline, pickCandidate, registryOnPage} = require('../../src/web/static/app.js');
 
 function query(href) {
   return new URLSearchParams(href.slice(href.indexOf('?') + 1));
@@ -102,3 +103,66 @@ assert.ok(full.lead.includes('这是价格观察，不是进场信号。'), full
 const incomplete = rotationHeadline(headlineFixture(false, [['a', '纳指科技', 1, 0.189]]));
 assert.strictEqual(incomplete.title, '本周横截面不完整，不排名次。');
 assert.strictEqual(incomplete.lead, '10/37 个容器有合格相对强弱；缺口原因见各格说明。');
+
+function container(theme, name, code, stateCode, label, available, rank, rs, ext) {
+  return {
+    theme_id: theme,
+    container: name,
+    identity: {code},
+    fields: {
+      state: {available, value: stateCode, state_label: label},
+      rank: {available: rank != null, value: rank},
+      rs_1m: {available: rs != null, value: rs},
+      ext: {available: ext != null, value: ext},
+    },
+  };
+}
+const five = {
+  containers: [
+    container('T01', '银行', '512800', 'XB', '回踩', true, 7, 0.085, 0.2),
+    container('T02', '红利', '510880', 'NEUTRAL', '无趋势', true, 5, 0.01, 0),
+    container('T03', '原油', '501018', 'EXH', '过热', true, 1, 0.2, 2.4),
+    container('T04', '黄金', '518880', 'XB', '回踩', false, 2, null, null),
+    container('T05', '地产', '512200', 'XB', '回踩', true, 3, 0.121, 0.9),
+  ],
+};
+const picked = pickCandidate(five);
+assert.strictEqual(picked.candidate.container, '地产');
+assert.strictEqual(picked.candidate.code, '512200');
+assert.strictEqual(picked.candidate.rank, 3);
+assert.strictEqual(picked.enterable.length, 2);
+assert.deepStrictEqual(picked.others.map(row => row.container), ['银行']);
+assert.deepStrictEqual(picked.adverse.map(row => row.container), ['原油']);
+assert.strictEqual(picked.available, 4);
+assert.strictEqual(picked.unavailable, 1);
+assert.strictEqual(picked.pool, 5);
+assert.ok(picked.enterable.every(row => row.container !== '黄金'));
+assert.ok(picked.adverse.every(row => row.container !== '红利'));
+
+function pool(size, enterableRanks) {
+  const containers = [];
+  for (let index = 0; index < size; index += 1) {
+    const rank = index + 1;
+    const enterable = enterableRanks.includes(rank);
+    containers.push(container(`T${String(rank).padStart(2, '0')}`, enterable ? `可进${rank}` : `容器${rank}`, String(510000 + rank), enterable ? 'POP' : 'NEUTRAL', enterable ? '启动' : '无趋势', true, rank, enterable ? 0.1 : 0, 0.4));
+  }
+  return {containers};
+}
+const three = homeHeadline(pool(37, [3, 8, 7]), {mode: 'market', cards: []});
+assert.strictEqual(three.title, '37 个容器里 3 个处于可进态，没有在跑的判断。');
+assert.ok(three.lead.startsWith('最强的一个是可进3 510003：启动，名次 3，近 1 月相对沪深300 +10.0%。'), three.lead);
+assert.ok(three.lead.endsWith('规则未启用，尚未扫描；这是观察，不是进场。'), three.lead);
+const none = homeHeadline(pool(37, []), {mode: 'readonly', cards: [], rules: {enabled: []}});
+assert.strictEqual(none.title, '37 个容器里没有处于可进态的，没有在跑的判断。');
+assert.ok(none.lead.startsWith('最强的一个是容器1 510001：无趋势，名次 1，近 1 月相对沪深300 0.0%。'), none.lead);
+assert.ok(!none.lead.includes('可进态'), none.lead);
+const carded = homeHeadline(five, {mode: 'demo', cards: [{status: '当下'}, {status: '当下'}, {status: '候选'}]});
+assert.strictEqual(carded.title, '2 笔正在验证，1 笔等待进场。');
+assert.strictEqual(carded.lead, '');
+
+assert.strictEqual(registryOnPage('market'), true);
+assert.strictEqual(registryOnPage('home'), false);
+assert.strictEqual(registryOnPage('rotation'), false);
+const source = fs.readFileSync(require.resolve('../../src/web/static/app.js'), 'utf8');
+assert.ok(source.includes('registryOnPage(page()) ? renderRegistry()'));
+assert.strictEqual(source.split('renderRegistry(').length - 1, 2);

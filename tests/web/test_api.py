@@ -419,6 +419,17 @@ class MarketHttpTests(unittest.TestCase):
         self.assertEqual(next(r for r in updated["series"] if r["code"] == "H00852")["close"], 8.5)
         self.assertEqual(self.digest(), updated_hash)
 
+    def test_market_route_returns_the_home_document_in_market_mode(self):
+        status, body = self.request("GET", "/market")
+        self.assertEqual(status, 200)
+        self.assertIsInstance(body, bytes)
+        self.assertIn(b"/app.js", body)
+        self.assertNotIn(b"registry-check", body)
+        root_status, root = self.request("GET", "/")
+        self.assertEqual(root_status, 200)
+        self.assertNotIn(b"registry-check", root)
+        self.assertEqual(self.state()["mode"], "market")
+
     def test_all_posts_modes_card_access_and_direct_methods_are_rejected(self):
         host = f"111.19.137.226:{self.server.server_port}"
         self.assertEqual(self.request("GET", "/api/state?mode=market", headers={"Host": host})[0], 200)
