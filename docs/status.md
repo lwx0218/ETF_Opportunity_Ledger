@@ -2,7 +2,7 @@
 
 ## 基线
 - main：794a8cca082e7d2b0bd75767c533445c610d7e6f（R1 内容；R2 只在 dev）
-- dev：50f11f3924006d93d0a1035c3f1c4b645d814915（R3 内容：轮动页改为 12 周热力格）
+- dev：e7b6118fca5209aa2d5e221670d8bcdf5e53f9e8（R3 内容：热力格颜色改为 CSS 类）
 - 行情库：data/market.sqlite，51 序列 / 152,408 行，末日 2026-09-30；38 只执行 ETF 腾讯日线全量；CSI 全收益仅 H00300 / H00015 / H00852 / H20606 / 399998（其余 403）
 - 正式台账 data/ledger.sqlite：不存在（A7 未放行）
 - 启动：.venv/bin/python -m src.web --port 8765（demo）；--mode readonly；--mode market
