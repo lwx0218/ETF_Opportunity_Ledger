@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('assert');
-const {readingHref, navHref, renderDecision} = require('../../src/web/static/app.js');
+const {readingHref, navHref, renderDecision, cellBackground, shortState, rotationHeadline} = require('../../src/web/static/app.js');
 
 function query(href) {
   return new URLSearchParams(href.slice(href.indexOf('?') + 1));
@@ -68,3 +68,37 @@ for (const [name, data, expected, absent] of [
 const blank = renderDecision({card: {}, evidence: null, daily: []});
 assert.ok(blank.includes('入场形态'));
 assert.equal((blank.match(/—/g) || []).length >= 4, true);
+
+assert.strictEqual(cellBackground(0.3), 'color-mix(in srgb, var(--sig-up) 72%, var(--bg))');
+assert.strictEqual(cellBackground(-0.15), 'color-mix(in srgb, var(--sig-down) 36%, var(--bg))');
+assert.strictEqual(cellBackground(null), 'transparent');
+assert.strictEqual(cellBackground(0.6), 'color-mix(in srgb, var(--sig-up) 72%, var(--bg))');
+assert.strictEqual(cellBackground(0.6), cellBackground(0.3));
+
+for (const [label, expected] of [['上升中', '上升'], ['下跌中', '下跌'], ['回踩', '回踩'], ['遇阻', '遇阻'], ['平台突破', '平台突破'], ['启动', '启动'], ['过热', '过热'], ['破位', '破位'], ['阴跌', '阴跌'], ['超跌反弹', '超跌反弹'], ['无趋势', '无趋势'], [null, '—'], ['', '—']]) {
+  assert.strictEqual(shortState(label), expected, String(label));
+}
+
+function headlineFixture(complete, ranks) {
+  return {
+    effective_date: '2026-09-30',
+    comparison: {comparison_complete: complete, valid: complete ? 37 : 10, pool: 37},
+    containers: ranks.map(([id, name]) => ({theme_id: id, container: name, line: '海外'})),
+    rotation: ranks.map(([id, name, rank, rs]) => ({
+      theme_id: id,
+      cells: [{
+        date: '2026-09-30',
+        rank: {available: rank != null, value: rank},
+        rs_1m: {available: rs != null, value: rs},
+      }],
+    })),
+  };
+}
+const full = rotationHeadline(headlineFixture(true, [['a', '纳指科技', 1, 0.189], ['b', '原油', 2, 0.1], ['c', '地产', 3, 0.05]]));
+assert.strictEqual(full.title, '纳指科技最强，原油和地产跟着。');
+assert.ok(full.lead.includes('+18.9%'), full.lead);
+assert.ok(full.lead.includes('37 个容器里排第 1'), full.lead);
+assert.ok(full.lead.includes('这是价格观察，不是进场信号。'), full.lead);
+const incomplete = rotationHeadline(headlineFixture(false, [['a', '纳指科技', 1, 0.189]]));
+assert.strictEqual(incomplete.title, '本周横截面不完整，不排名次。');
+assert.strictEqual(incomplete.lead, '10/37 个容器有合格相对强弱；缺口原因见各格说明。');

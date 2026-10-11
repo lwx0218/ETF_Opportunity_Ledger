@@ -169,39 +169,153 @@ function renderRegistry() {
   const market=state.market, series=market.series || [];
   return `<details class="disclosure registry-check"><summary>辅助检查 · 行情登记 ${series.length} 条序列</summary><p class="history-note">这是当前库全历史的登记清单，独立于页面观察日；首末日、行数与缺值统计不代表所选观察窗口可用。研究选中关系只读既有登记。</p><div class="market-scroll" tabindex="0" role="region" aria-label="行情登记辅助检查，可横向滚动"><table class="market-table"><thead><tr>${['代码 / 价格口径','容器 / 登记关系','历史范围 / 行数','库内最新收盘','来源','OHLC 缺失','量 / 额缺失'].map(label=>`<th scope="col">${label}</th>`).join('')}</tr></thead><tbody>${series.map(item=>`<tr><th scope="row"><span class="mono">${esc(item.code)} / ${esc(item.adj)}</span><small>${esc(item.name || item.code)} · ${esc(item.type)}</small><small>price_only ${item.price_only == null ? '未登记' : item.price_only ? 'true' : 'false'}</small></th><td>${esc((item.containers || []).join('、') || '—')}<small>${item.research_selected ? 'coverage 选中研究' : '未选中研究'}</small><small>${(item.relationships || []).map(relation=>`${esc(relation.theme_id)} · ${relation.role === 'research' ? '研究' : '执行'} · ${esc(relation.status)}`).join('<br>')}</small></td><td class="mono">${esc(item.first)} → ${esc(item.last)}<small>${esc(item.count)} 行</small></td><td class="mono">${esc(item.close ?? '—')}<small>${esc(item.last)}</small></td><td class="mono">${esc(item.source)}</td><td class="mono">${esc(item.ohlc_null)}<small>O ${esc(item.open_null)} / H ${esc(item.high_null)} / L ${esc(item.low_null)} / C ${esc(item.close_null)}</small></td><td class="mono">${esc(item.volume_null)} / ${esc(item.amount_null)}</td></tr>`).join('')}</tbody></table></div></details>`;
 }
-function renderRotation() {
-  const data = observation, rows = data?.containers || [], weeks = data?.weeks || [], comparison = data?.comparison || {};
-  const selected = params().get('theme') || data?.detail?.theme_id;
-  $('#overview').innerHTML = `<section class="intro rotation-intro"><div><div class="eyebrow">轮动 · 同一个时间截面</div><h1>变化放在一起，缺口也留在原位。</h1><p>${rows.length} 个容器 · ${weeks.length} 个周截面 · ${comparison.comparison_complete ? comparison.valid > 0 ? '全池名次可用' : '尚无完成相对强弱预热的容器' : '比较池不完整，保留相对强弱，不给全池排名'}</p></div></section>
-    <div class="rotation-meta"><span>格内：21 交易日收益 − H00300 全收益指数同窗收益 / 形态<br>价格与全收益口径逐行标明 · 周五为界，周内最后官方交易日${shownSeries() === 'execution' ? `<br>${esc(data?.discount_note || '与指数差异按年 1% 打折（intake §4.2）')}` : ''}</span><span>红 <span class="positive">＋</span> · 绿 <span class="negative">−</span> · — 不可用</span></div>
-    ${data?.reason ? `<p class="observation-warning">${esc(data.reason)}</p>` : ''}
-    <div class="rotation-scroll" tabindex="0" role="region" aria-label="容器与周截面，可横向滚动"><table class="rotation-table"><caption class="visually-hidden">全部 ${rows.length} 个容器的周截面，点击格子追溯原生序列</caption><thead><tr><th scope="col">容器 / ${esc(kindNames[shownSeries()] || '序列')}</th>${weeks.map(week => `<th scope="col"><span class="mono">${esc(week.date?.slice(5))}</span><small>${week.partial ? '截至当日' : '周截面'}</small></th>`).join('')}</tr></thead><tbody>${rows.map(row => {
-      const cells = data.rotation?.find(item => item.theme_id === row.theme_id)?.cells || [];
-      return `<tr class="${selected === row.theme_id ? 'selected-row' : ''}"><th scope="row">${observationLink(row.theme_id, data.requested_date, `${esc(row.container)}<small class="mono">${esc(row.theme_id)} · ${esc(row.identity?.code || '未选定')}</small><small>${esc(basisText(row.identity))}</small>`, {series:shownSeries()})}</th>${weeks.map(week => {const cell = cells.find(item => item.date === week.date); const rs = fieldValue(cell?.rs_1m); return `<td><a data-route class="matrix-cell ${direction(rs)}" href="${esc(readingHref(params().toString(), row.theme_id, week.date, cell?.rs_1m?.purpose || shownSeries(), state?.mode))}" aria-label="${esc(row.container)} ${esc(week.date)} 相对强弱 ${reading(cell?.rs_1m,'rs_1m')}，${esc(cell?.state?.state_label || cell?.state?.reason || '形态不可用')}"><span class="mono">${reading(cell?.rs_1m,'rs_1m')}</span><small>${cell?.state?.available ? reading(cell.state,'state') : '条件不足'}</small>${fieldValue(cell?.rank) != null ? `<em>#${reading(cell.rank,'rank')}</em>` : ''}</a></td>`;}).join('')}</tr>`;
-    }).join('')}</tbody></table></div>
-    <div class="observation-bottom"><span>比较池 ${esc(comparison.pool ?? rows.length)} · 合格 ${esc(comparison.valid ?? 0)} · 缺失 ${(comparison.missing || []).length} · 边界排除 ${(comparison.excluded || []).length}；筛选不改变分母。</span><span>${esc(data?.effective_date || '—')}</span></div>
-    ${(comparison.missing || []).length || (comparison.excluded || []).length ? `<details class="disclosure comparison-gaps"><summary>查看比较池缺口与边界</summary>${[...(comparison.missing || []),...(comparison.excluded || [])].map(item=>`<p><span class="mono">${esc(item.theme_id)}</span> ${esc(item.reason)}</p>`).join('')}</details>` : ''}
-    <section id="series-detail" class="series-detail" aria-label="所选容器详情">${renderSeriesDetail(data?.detail)}</section>
-    <section class="limits-section"><div class="section-heading"><h2>从价格到判断，还缺什么</h2><span class="eyebrow">每项证据各有归属</span></div>${renderEvidenceGaps()}</section>${renderRegistry()}`;
-  wireNavigation();
-  $('#series-kind')?.addEventListener('change', event => navigate(route('/rotation',{series:event.target.value,card:null}), true));
-  $('#chart-window')?.addEventListener('change', event => {$('#native-price-chart').innerHTML = priceChart(data.detail.chart || [], Number(event.target.value), data.detail.identity);});
+const ROTATION_GROUPS = [
+  ['宽基', ['宽基']],
+  ['科技', ['科技链']],
+  ['制造', ['制造']],
+  ['周期', ['周期', '周期/防守']],
+  ['消费医药', ['消费医药']],
+  ['金融地产', ['金融地产']],
+  ['防守', ['防守']],
+  ['海外', ['海外']],
+];
+const ROTATION_FOOT = '数字取自执行 ETF 的腾讯不复权价格相对 H00300 全收益；与指数的差异按年 1% 打折。成交量单位未核定，不画量。形态写「—」的容器历史上有收盘缺口，名次仍然有效。';
+function cellBackground(rs) {
+  if (rs == null || rs === '' || !Number.isFinite(Number(rs))) return 'transparent';
+  const value = Number(rs);
+  const mix = Math.round(Math.min(1, Math.abs(value) / 0.30) * 72);
+  const tone = value >= 0 ? 'var(--sig-up)' : 'var(--sig-down)';
+  return `color-mix(in srgb, ${tone} ${mix}%, var(--bg))`;
 }
-function renderSeriesDetail(detail) {
-  if (!detail) return '<p class="empty">尚无可追溯的序列详情。</p>';
-  const row = observation.containers?.find(item=>item.theme_id === detail.theme_id), fields = detail.fields || {};
-  return `<div class="section-heading"><div><div class="eyebrow">${esc(detail.theme_id)} · 截至 ${esc(observation.effective_date || '—')}</div><h2 id="series-title" tabindex="-1">${esc(row?.container || detail.container || detail.theme_id)}</h2></div><select id="series-kind" aria-label="选择价格序列">${(detail.options || []).map(option => `<option value="${esc(option.kind)}" ${option.kind === detail.series_kind ? 'selected' : ''}>${kindNames[option.kind] || option.kind} · ${esc(option.identity?.code || '未选定')}</option>`).join('')}</select></div>
-    <p class="series-basis">${esc(kindNames[detail.series_kind] || detail.series_kind)} · <strong>${esc(basisText(detail.identity))}</strong><span>${esc(priceUnit(detail.identity))}</span><span class="mono">${esc(identityText(detail.identity))}</span>${detail.series_kind === 'execution' ? `<span>${esc(observation.discount_note || '与指数差异按年 1% 打折（intake §4.2）')}</span>` : ''}</p>
-    <div class="price-heading"><h3>价格与窗口</h3><label>显示 <select id="chart-window" aria-label="价格显示窗口"><option value="90">最近 90 行</option><option value="30">最近 30 行</option><option value="0">全部已载入</option></select></label></div>
-    <div id="native-price-chart">${priceChart(detail.chart || [],90,detail.identity)}</div>
-    <details class="disclosure"><summary>逐日价格与原始来源</summary><div class="market-scroll" tabindex="0" role="region" aria-label="原生价格及获取时间"><table class="native-records"><thead><tr><th scope="col">原生日期</th><th scope="col">O / H / L / C</th><th scope="col">来源 / 获取时间</th><th scope="col">字段限制</th></tr></thead><tbody>${(detail.chart || []).map(row=>`<tr><th scope="row" class="mono">${esc(row.date)}</th><td class="mono">${[row.open,row.high,row.low,row.close].map(value=>number(value,3)).join(' / ')}</td><td>${esc(row.source || '—')}<small>${esc(row.fetched_at || '未登记')}</small></td><td>${esc(row.close_reason || row.ohlc_reason || 'OHLC 完整')}</td></tr>`).join('')}</tbody></table></div></details>
+function shortState(label) {
+  if (label == null || label === '') return '—';
+  if (label === '上升中') return '上升';
+  if (label === '下跌中') return '下跌';
+  return label;
+}
+function excessText(rs) {
+  return rs == null || !Number.isFinite(Number(rs)) ? '—' : `${signed(Number(rs) * 100, 1)}%`;
+}
+function rankNumber(field) {
+  const value = fieldValue(field);
+  return value == null || !Number.isFinite(Number(value)) ? null : Number(value);
+}
+function weekCell(data, themeId, date) {
+  const cells = data?.rotation?.find(item => item.theme_id === themeId)?.cells || [];
+  return cells.find(item => item.date === date) || null;
+}
+function rotationHeadline(data) {
+  const comparison = data?.comparison || {};
+  if (!comparison.comparison_complete) {
+    return {
+      title: '本周横截面不完整，不排名次。',
+      lead: `${comparison.valid ?? 0}/${comparison.pool ?? 0} 个容器有合格相对强弱；缺口原因见各格说明。`,
+    };
+  }
+  const date = data?.effective_date;
+  const ranked = (data?.containers || []).map(row => ({row, cell: weekCell(data, row.theme_id, date)}));
+  const named = rank => ranked.find(item => rankNumber(item.cell?.rank) === rank)?.row.container || '—';
+  const top = ranked.find(item => rankNumber(item.cell?.rank) === 1);
+  const pool = comparison.pool ?? (data?.containers || []).length;
+  return {
+    title: `${named(1)}最强，${named(2)}和${named(3)}跟着。`,
+    lead: `近 1 月比沪深300全收益多 ${excessText(fieldValue(top?.cell?.rs_1m))}，${pool} 个容器里排第 1。这是价格观察，不是进场信号。`,
+  };
+}
+function rankOneTheme(data) {
+  if (!data?.comparison?.comparison_complete) return null;
+  const date = data.effective_date;
+  for (const row of data.containers || []) {
+    if (rankNumber(weekCell(data, row.theme_id, date)?.rank) === 1) return row.theme_id;
+  }
+  return null;
+}
+function rotationGroups(containers) {
+  const used = new Set();
+  const groups = ROTATION_GROUPS.map(([title, lines]) => {
+    const members = (containers || []).filter(row => lines.includes(row.line));
+    members.forEach(row => used.add(row.theme_id));
+    return [title, members];
+  }).filter(([, members]) => members.length);
+  const rest = (containers || []).filter(row => !used.has(row.theme_id));
+  if (rest.length) groups.push(['其他', rest]);
+  return groups;
+}
+function sparkline(chart) {
+  const rows = chart || [];
+  const positive = [];
+  rows.forEach((item, index) => { if (Number.isFinite(item.close) && item.close > 0) positive.push(index); });
+  const chosen = positive.slice(-80);
+  if (!chosen.length) return '<p class="empty">这个窗口尚无正且有限的收盘。</p>';
+  const windowRows = rows.slice(chosen[0], chosen[chosen.length - 1] + 1);
+  const values = windowRows.map(item => Number.isFinite(item.close) && item.close > 0 ? item.close : null).filter(value => value != null);
+  const low = Math.min(...values), high = Math.max(...values);
+  const span = Math.max(high - low, high * 0.01);
+  const width = 1100, height = 120, top = 8, bottom = 22;
+  const x = index => windowRows.length === 1 ? width / 2 : width * index / (windowRows.length - 1);
+  const y = value => top + (height - top - bottom) * ((high + span * 0.08) - value) / (span * 1.16);
+  let drawing = false;
+  const path = windowRows.map((item, index) => {
+    if (!Number.isFinite(item.close) || item.close <= 0) { drawing = false; return ''; }
+    const command = drawing ? 'L' : 'M';
+    drawing = true;
+    return `${command}${x(index).toFixed(2)},${y(item.close).toFixed(2)}`;
+  }).join(' ');
+  const start = windowRows[0], last = windowRows[windowRows.length - 1];
+  return `<svg class="spark-line" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(start.date)} 至 ${esc(last.date)} 收盘"><path d="${path}"/><text x="0" y="${height - 4}">${esc(start.date)}</text><text x="${width}" y="${height - 4}" text-anchor="end">${esc(last.date)}  ${number(last.close, 3)}</text></svg>`;
+}
+function renderBasis(detail, row) {
+  const fields = detail.fields || {};
+  return `<p class="series-basis">${esc(kindNames[detail.series_kind] || detail.series_kind)} · <strong>${esc(basisText(detail.identity))}</strong><span>${esc(priceUnit(detail.identity))}</span><span class="mono">${esc(identityText(detail.identity))}</span>${detail.series_kind === 'execution' ? `<span>${esc(observation.discount_note || '与指数差异按年 1% 打折（intake §4.2）')}</span>` : ''}</p>
     <p class="volume-qualification"><span>成交量资格</span>${esc(detail.volume?.reason || '尚无已核定单位的同源成交量，不绘制量柱。')} · 单位 ${esc(detail.volume?.unit || '未核定')}</p>
-    <div class="indicator-grid">${Object.entries(labels).map(([key,label])=>`<details class="indicator-fact"><summary><span>${label}${key === 'z_month' && fields[key]?.value_date ? ` <small class="muted mono">${esc(fields[key].value_date.slice(0,7))}</small>` : ''}</span><span class="mono ${key === 'rs_1m' || key === 'z_month' ? direction(fieldValue(fields[key])) : ''}">${reading(fields[key],key)}</span></summary><p>${esc(fields[key]?.reason || '满足当前字段所需条件。')}</p><dl>${fact('截至',`${esc(fields[key]?.observation_date || observation.effective_date)} · 原生 ${esc(fields[key]?.native_date || '—')}`)}${fields[key]?.value_date ? fact('实际值日期',esc(fields[key].value_date)) : ''}${fact('计算窗口',esc(windowText(fields[key])))}${fact('序列身份',`<span class="mono">${esc(identityText(fields[key]))}</span>`)}${fact('价格口径',esc(basisText(fields[key])))}${fact('抓取时间',esc(fields[key]?.fetched_at || '未登记'))}</dl></details>`).join('')}</div>
-    <p class="chart-caption">显示窗口只裁图，不重置指标起点。量源：${esc(detail.volume_source || row?.volume_source || 'none')}；没有完整量条件时，形态须结合其限制阅读。</p>
-    ${detail.unavailable ? `<div class="auxiliary-gaps">${[['nav','净值 NAV'],['premium','折溢价'],['shares','ETF 份额'],['amount','成交额']].map(([key,label])=>`<div><span>${label}</span><p>${esc(detail.unavailable[key] || '尚无合格输入')}</p></div>`).join('')}</div>` : ''}
-    ${(detail.excluded_non_trading_dates || []).length ? `<details class="disclosure"><summary>原库保留的 ${(detail.excluded_non_trading_dates || []).length} 个非交易日</summary><p class="history-note">${detail.excluded_non_trading_dates.map(esc).join('、')}。计算视图按官方日历排除，原记录没有删除或修改。</p></details>` : ''}
-    ${(detail.gaps || []).length ? `<details class="disclosure"><summary>${detail.gaps.length} 条缺口 / 异常日期说明</summary><div class="gap-list">${detail.gaps.map(item=>`<p><span class="mono">${esc(item.date)}</span> ${esc(item.reason)}</p>`).join('')}</div></details>` : ''}
-    <p class="history-note">${esc(observation.history_note || '当前库版本重建截至该日的行情。抓取时间不等于历史可得时点。')}</p>`;
+    <div class="indicator-grid">${Object.entries(labels).map(([key, label]) => `<details class="indicator-fact"><summary><span>${label}${key === 'z_month' && fields[key]?.value_date ? ` <small class="muted mono">${esc(fields[key].value_date.slice(0, 7))}</small>` : ''}</span><span class="mono ${key === 'rs_1m' || key === 'z_month' ? direction(fieldValue(fields[key])) : ''}">${reading(fields[key], key)}</span></summary><p>${esc(fields[key]?.reason || '满足当前字段所需条件。')}</p><dl>${fact('截至', `${esc(fields[key]?.observation_date || observation.effective_date)} · 原生 ${esc(fields[key]?.native_date || '—')}`)}${fields[key]?.value_date ? fact('实际值日期', esc(fields[key].value_date)) : ''}${fact('计算窗口', esc(windowText(fields[key])))}${fact('序列身份', `<span class="mono">${esc(identityText(fields[key]))}</span>`)}${fact('价格口径', esc(basisText(fields[key])))}${fact('抓取时间', esc(fields[key]?.fetched_at || '未登记'))}</dl></details>`).join('')}</div>
+    <details class="disclosure"><summary>逐日价格与原始来源</summary><div class="market-scroll" tabindex="0" role="region" aria-label="原生价格及获取时间"><table class="native-records"><thead><tr><th scope="col">原生日期</th><th scope="col">O / H / L / C</th><th scope="col">来源 / 获取时间</th><th scope="col">字段限制</th></tr></thead><tbody>${(detail.chart || []).map(item => `<tr><th scope="row" class="mono">${esc(item.date)}</th><td class="mono">${[item.open, item.high, item.low, item.close].map(value => number(value, 3)).join(' / ')}</td><td>${esc(item.source || '—')}<small>${esc(item.fetched_at || '未登记')}</small></td><td>${esc(item.close_reason || item.ohlc_reason || 'OHLC 完整')}</td></tr>`).join('')}</tbody></table></div></details>
+    ${(detail.excluded_non_trading_dates || []).length ? `<details class="disclosure"><summary>原库保留的 ${detail.excluded_non_trading_dates.length} 个非交易日</summary><p class="history-note">${detail.excluded_non_trading_dates.map(esc).join('、')}。计算视图按官方日历排除，原记录没有删除或修改。</p></details>` : ''}
+    ${(detail.gaps || []).length ? `<details class="disclosure"><summary>${detail.gaps.length} 条缺口 / 异常日期说明</summary><div class="gap-list">${detail.gaps.map(item => `<p><span class="mono">${esc(item.date)}</span> ${esc(item.reason)}</p>`).join('')}</div></details>` : ''}
+    ${detail.unavailable ? `<div class="auxiliary-gaps">${[['nav', '净值 NAV'], ['premium', '折溢价'], ['shares', 'ETF 份额'], ['amount', '成交额']].map(([key, label]) => `<div><span>${label}</span><p>${esc(detail.unavailable[key] || '尚无合格输入')}</p></div>`).join('')}</div>` : ''}
+    <p class="history-note">${esc(observation.history_note || '当前库版本重建截至该日的行情。抓取时间不等于历史可得时点。')} 量源：${esc(detail.volume_source || row?.volume_source || 'none')}。</p>`;
+}
+function renderFocus(detail, row) {
+  if (!detail) return '<section id="series-detail" class="focus"><p class="empty">尚无可追溯的序列详情。</p></section>';
+  const fields = detail.fields || {};
+  const rs = fieldValue(fields.rs_1m);
+  const rank = rankNumber(fields.rank);
+  const stateText = fields.state?.available ? shortState(fields.state.state_label) : '—';
+  const pool = observation?.comparison?.pool ?? (observation?.containers || []).length;
+  const name = row?.container || detail.container || detail.theme_id;
+  return `<section id="series-detail" class="focus" aria-label="所选格子"><div class="focus-head"><h2 id="series-title" tabindex="-1">${esc(name)} · ${esc(observation?.effective_date || '—')}</h2><span class="mono">${esc(detail.identity?.code || '—')} · ${esc(basisText(detail.identity))}</span></div>
+    <div class="readings"><div><span class="reading-value mono ${direction(rs)}">${excessText(rs)}</span><small>近 1 月相对沪深300</small></div><div><span class="reading-value mono">${rank == null ? '—' : esc(rank)}</span><small>${esc(pool)} 个容器中的名次</small></div><div><span class="reading-value">${esc(stateText)}</span><small>形态 · 观察量，不是信号</small></div></div>
+    <div class="spark">${sparkline(detail.chart || [])}</div>
+    <details class="disclosure basis-fold"><summary>依据与限制</summary>${renderBasis(detail, row)}</details></section>`;
+}
+function renderRotation() {
+  const data = observation || {}, rows = data.containers || [], weeks = data.weeks || [];
+  const headline = rotationHeadline(data);
+  const selectedTheme = params().get('theme') || data.detail?.theme_id;
+  const selectedDate = data.effective_date;
+  const latest = weeks.at(-1);
+  const header = `<div class="ghead"></div>${weeks.map(week => `<div class="ghead">${esc(String(week.date || '').slice(5))}${week.partial ? '·至今' : ''}</div>`).join('')}`;
+  const body = rotationGroups(rows).map(([title, members]) => `<div class="group-label">${esc(title)}</div>${members.map(row => {
+    const cells = data.rotation?.find(item => item.theme_id === row.theme_id)?.cells || [];
+    const head = `<div class="lab"><a data-route href="${esc(readingHref(params().toString(), row.theme_id, latest?.date, shownSeries(), state?.mode))}"><span class="lab-name">${esc(row.container)}</span><span class="lab-code mono">${esc(row.identity?.code || '—')}</span></a></div>`;
+    const grid = weeks.map(week => {
+      const cell = cells.find(item => item.date === week.date);
+      const rs = fieldValue(cell?.rs_1m);
+      const rank = rankNumber(cell?.rank);
+      const stateText = cell?.state?.available ? shortState(cell.state.state_label) : '—';
+      const tipState = cell?.state?.available ? (cell.state.state_label || '—') : (cell?.state?.reason || '—');
+      const title = `${row.container} ${week.date}  名次 ${rank == null ? '—' : rank}  超额 ${excessText(rs)}  ${tipState}`;
+      const selected = row.theme_id === selectedTheme && week.date === selectedDate;
+      return `<a data-route class="cell${selected ? ' is-selected' : ''}" href="${esc(readingHref(params().toString(), row.theme_id, week.date, cell?.rs_1m?.purpose || shownSeries(), state?.mode))}" title="${esc(title)}" style="background:${cellBackground(rs)}"${selected ? ' aria-current="true"' : ''}><span class="cell-rank mono">${rank == null ? '—' : esc(rank)}</span><span class="cell-state">${esc(stateText)}</span></a>`;
+    }).join('');
+    return head + grid;
+  }).join('')}`).join('');
+  $('#overview').innerHTML = `<section class="rotation-head"><h1>${esc(headline.title)}</h1><p class="lead">${esc(headline.lead)}</p></section>
+    <div class="legend"><span class="mono">−30%</span><span class="legend-bar" aria-hidden="true"></span><span class="mono">+30%</span><span class="legend-note">格内数字是当周名次，1 最强。小字是形态。</span></div>
+    <div class="rotation-scroll" tabindex="0" role="region" aria-label="${rows.length} 个容器、${weeks.length} 周的相对强弱，可横向滚动"><div class="rotation-grid" style="--week-count:${weeks.length || 12}">${header}${body}</div></div>
+    ${renderFocus(data.detail, rows.find(row => row.theme_id === (data.detail && data.detail.theme_id)))}
+    <p class="rotation-foot">${ROTATION_FOOT}</p>`;
+  wireNavigation();
 }
 function priceChart(allRows, count = 90, identity) {
   const rows = count ? allRows.slice(-count) : allRows;
@@ -269,11 +383,18 @@ function renderCounterfactual(data) {
 }
 
 function renderShell() {
+  document.body.dataset.page = page();
   $('#loading').hidden = true;
   $('#mode-label').textContent = state.mode === 'market' ? '真实观察 · 只读' : state.mode === 'demo' ? '演示数据 · 合成观察' : '正式台账 · 只读';
-  $('#as-of').textContent = `观察 ${observation?.effective_date || '未能确定'} · ${state.mode === 'market' ? '不载入正式台账' : `台账记账截至 ${String(state.observation_as_of || state.as_of || '—').replace('T',' ')}`}`;
-  const discount = shownSeries() === 'execution' ? ' · 与指数差异按年 1% 打折（intake §4.2）' : '';
-  $('#footer-source').textContent = (state.mode === 'market' ? '真实观察 · 保留来源与口径' : state.mode === 'demo' ? '隔离演示 · 全部为合成数据' : '正式数据 · 只读') + discount;
+  if (page() === 'rotation') {
+    const count = observation?.weeks?.length || 12;
+    $('#as-of').textContent = `截至 ${observation?.effective_date || '—'} 收盘 · 近 1 月 · ${count} 周`;
+    $('#footer-source').textContent = state.mode === 'market' ? '真实观察 · 只读' : state.mode === 'demo' ? '隔离演示 · 全部为合成数据' : '正式数据 · 只读';
+  } else {
+    $('#as-of').textContent = `观察 ${observation?.effective_date || '未能确定'} · ${state.mode === 'market' ? '不载入正式台账' : `台账记账截至 ${String(state.observation_as_of || state.as_of || '—').replace('T',' ')}`}`;
+    const discount = shownSeries() === 'execution' ? ' · 与指数差异按年 1% 打折（intake §4.2）' : '';
+    $('#footer-source').textContent = (state.mode === 'market' ? '真实观察 · 保留来源与口径' : state.mode === 'demo' ? '隔离演示 · 全部为合成数据' : '正式数据 · 只读') + discount;
+  }
   $('#mode-link').textContent = state.mode === 'demo' ? '正式台账 · 只读 ↗' : '返回演示台账 ↗';
   $('#mode-link').href = route(location.pathname, {mode:state.mode === 'demo' ? 'readonly' : 'demo',card:null});
   $('#mode-link').hidden = state.mode === 'market' || state.mode === 'demo' && state.readonly_available === false || state.mode === 'readonly' && state.demo_available === false;
@@ -289,11 +410,17 @@ function renderShell() {
     if (observation.calendar?.first) $('#observation-date').min = observation.calendar.first;
     $('#observation-theme').innerHTML = (observation.containers || []).map(row=>`<option value="${esc(row.theme_id)}" ${row.theme_id === (params().get('theme') || observation.detail?.theme_id) ? 'selected' : ''}>${esc(row.container)} · ${esc(row.theme_id)}</option>`).join('');
     $('#observation-context').textContent = `有效日 ${observation.effective_date || '未确定'} · 库内行情末日 ${observation.actual_data_end || '无'}${observation.requested_date !== observation.effective_date ? ` · 请求 ${observation.requested_date}` : ''}`;
+    const series = $('#series-kind');
+    if (series) {
+      const current = observation.series_kind || shownSeries();
+      series.innerHTML = (observation.detail?.options || []).map(option => `<option value="${esc(option.kind)}">${esc(kindNames[option.kind] || option.kind)} · ${esc(option.identity?.code || '未选定')}</option>`).join('');
+      if ([...series.options].some(option => option.value === current)) series.value = current;
+    }
   }
   renderOverview();
   $('#overview').hidden = selectedId !== null;
   $('#detail').hidden = selectedId === null;
-  if (!selectedId) $('#breadcrumb').textContent = page() === 'rotation' ? '机会台账 › 轮动观察' : '机会台账 › 机会';
+  if (!selectedId) $('#breadcrumb').textContent = page() === 'rotation' ? 'ETF 前向机会台账 › 轮动' : '机会台账 › 机会';
 }
 
 function fact(label, value) {
@@ -446,8 +573,20 @@ async function loadPage(focusDetail = false) {
     observation=currentObservation;
     const normalized=params(); normalized.set('mode',state.mode);
     if (!normalized.get('as_of') && observation.requested_date) normalized.set('as_of',observation.requested_date);
-    if (!normalized.get('theme') && observation.detail?.theme_id) normalized.set('theme',observation.detail.theme_id);
     if (!normalized.get('series')) normalized.set('series', observation.series_kind || 'execution');
+    if (!search.get('theme') && observation.detail?.theme_id) {
+      const top = page() === 'rotation' ? rankOneTheme(observation) : null;
+      normalized.set('theme', top || observation.detail.theme_id);
+      if (top && top !== observation.detail.theme_id) {
+        const again = new URLSearchParams(observationQuery);
+        again.set('theme', top);
+        try {
+          const refreshed = await api(`/api/observation?${again}`);
+          if (sequence !== loadSequence) return;
+          observation = refreshed;
+        } catch (_) { normalized.set('theme', observation.detail.theme_id); }
+      }
+    }
     history.replaceState(null,'',location.pathname+`?${normalized}`);
     renderShell();
     if (selectedId) await openCard(selectedId,false,false);
@@ -491,10 +630,11 @@ function boot() {
   $('#theme-toggle').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
   $('#home-button').addEventListener('click', () => { if (state) navigate(route('/',{card:null})); });
   ['nav-home','nav-rotation'].forEach(id=>$('#'+id).addEventListener('click',event=> {if(event.ctrlKey||event.metaKey||event.shiftKey||event.altKey||event.button!==0)return;event.preventDefault();navigate(route(id==='nav-home'?'/':'/rotation',{card:null}));}));
-  $('#observation-controls').addEventListener('submit',event=> {event.preventDefault();navigate(route(location.pathname,{as_of:$('#observation-date').value,theme:$('#observation-theme').value,card:null}));});
+  $('#observation-controls').addEventListener('submit',event=> {event.preventDefault();navigate(route(location.pathname,{as_of:$('#observation-date').value,theme:$('#observation-theme').value,card:null}), page() === 'rotation');});
+  $('#series-kind')?.addEventListener('change', event => { if (state) navigate(route(location.pathname,{series:event.target.value,card:null}), page() === 'rotation'); });
   window.addEventListener('popstate',()=> {selectedId=params().get('card');loadPage();});
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && selectedId) showHome(); });
   loadPage();
 }
 if (typeof document !== 'undefined') boot();
-if (typeof module === 'object' && module.exports) module.exports = {routeFrom, readingHref, navHref, renderDecision, pendingSignal};
+if (typeof module === 'object' && module.exports) module.exports = {routeFrom, readingHref, navHref, renderDecision, pendingSignal, cellBackground, shortState, rotationHeadline};
