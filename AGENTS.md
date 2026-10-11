@@ -17,8 +17,8 @@
 ### 交付主线
 
 1. **Orchestration session** — `pi --name "00-orchestration"`，澄清需求、收敛范围、切分开发 round。此阶段不写业务代码。
-2. **pi-fleet 分发** — `/fleet` 为每个 round `session_spawn` 一个独立开发 session；round 间通过 `session_bus` 通信。
-3. **Subagents 执行** — round 内分配 builder / reviewer：Web UI 内置工具可用时用 `subagent_spawn`，有匹配角色模板时优先 `delegate_task`；CLI 或无 Web UI 工具时用独立 `pi-subagents`（角色定义在 `.pi/agents/`）。不要求 Web UI 经 pi-subagents，不为兼容升级或 patch 包。builder 实现，reviewer 只读复核并给出 `approve` / `approve_with_follow_up` / `return_to_planning`；只读是角色约束，不是运行时沙箱承诺。
+2. **按启用路径分发** — 项目启用 `pi-web-ui` 时，round/任务分发直接使用 Web UI 内置 `subagent_spawn`，匹配角色模板优先 `delegate_task`；不经过 `pi-fleet` 或独立 `pi-subagents`，不先 `session_spawn`。已启用但内置工具不可用时，明确报告能力阻塞，不静默回落。仅未启用 Web UI 的 CLI 路径用 `/fleet` 为每个 round `session_spawn` 一个独立开发 session，round 间通过 `session_bus` 通信。
+3. **Subagents 执行** — builder / reviewer 沿用第 2 步的路径：Web UI 使用内置工具，CLI 使用独立 `pi-subagents`（角色定义在 `.pi/agents/`）。不为兼容升级或 patch 包。builder 实现，reviewer 只读复核并给出 `approve` / `approve_with_follow_up` / `return_to_planning`；只读是角色约束，不是运行时沙箱承诺。
 4. **ponytail 门禁** — 新增代码由 ponytail 做准入判定。
 
 **Owner 只在第 1 步介入**，确认规划与 round 划分。round 内的内容复核由 reviewer subagent 出结论，代码准入由 ponytail 判定。**不得把逐轮 review 结论推回 Owner**；只有 reviewer 与 ponytail 都无法结论、或结论与 round 目标冲突时，才升回 Orchestration session。
@@ -62,7 +62,7 @@ skills 和 domain modeling 是按需能力，不是默认关卡。
 
 `.pi/extensions/` 下不放 vendored extension 源码。能力通过 `.pi/settings.json` 的 `packages` 声明获得；按 npm 包名做全局去重，但保留项目显式锁版、对象资源过滤及自定义字段。
 
-`pi-subagents` 仍默认下发供 CLI 使用；`npm:pi-web-ui` 可选、默认不下发。`harness.sh` 自动检测项目及执行环境全局的已知 Dashboard 声明并迁移为 Web UI；共享全局配置仅在 `--apply` 且项目检查通过后备份、原子替换。只清理准确关联的 Dashboard bridge，不卸载包、不停止服务、不删除会话。`--no-global-dedup` 不关闭迁移检测。
+`pi-fleet` / `pi-subagents` 仍默认下发供 CLI 使用；`npm:pi-web-ui` 可选、默认不下发。包已安装或声明不等于当前启用的执行路径；启用 Web UI 不卸载 CLI 包，也不改变安装或同步行为。`harness.sh` 自动检测项目及执行环境全局的已知 Dashboard 声明并迁移为 Web UI；共享全局配置仅在 `--apply` 且项目检查通过后备份、原子替换。只清理准确关联的 Dashboard bridge，不卸载包、不停止服务、不删除会话。`--no-global-dedup` 不关闭迁移检测。
 
 ### Document And Evidence Governance
 
@@ -80,6 +80,13 @@ skills 和 domain modeling 是按需能力，不是默认关卡。
 
 <!-- PROJECT:OWNED:START -->
 ## 项目合同 · ETF_Opportunity-Ledger
+
+### 当前执行宿主
+
+- Owner 已确认当前依托 Pi Web UI：主会话负责规划与切分任务，不为规划强制另开 CLI session；Owner 规划确认与 ponytail 门禁保持不变。
+- 分发与执行使用 Web UI 内置匹配的 `implement` / `review` 模板，优先 `delegate_task`，否则使用当前宿主提供的原生 subagent 工具；builder 实现，独立 reviewer 只读复核并给出 managed 合同规定的 verdict。
+- 当前路径不经过 `pi-fleet` 或独立 `pi-subagents`，不先 `session_spawn`；内置工具缺失时报告能力阻塞，不回落到 CLI 路径。包的存在不代表当前执行路径。
+- 历史 manual / `.pi/` 中的「先 fleet」叙述不激活旧流程；与本文件冲突的提示以 `AGENTS.md` 为准。
 
 ### 目标与必读资料
 
@@ -109,6 +116,6 @@ skills 和 domain modeling 是按需能力，不是默认关卡。
 
 - 任务顺序遵循 intake §7：先核对 universe，再数据、存储、指标、每日任务、面板、评分。可选任务 7 延后，先预注册，只做描述；无区分度就停止，不进入回测。
 - UI 必须遵守 Teardown design-rules v3 / tokens.css 和 intake §8；设计资产已导入 `docs/design/`，不以粗糙原型替代。过去 / 当下 / 未来三态、深色优先、无阴影卡片容器，不做「如何使用」说明页。
-- 本次不下发项目级 `pi-web-ui`，不修改共享全局配置；package 声明不是已安装或运行验证的证明。
+- 初始化时不下发项目级 `pi-web-ui` 是包声明边界，不等于禁用当前 Pi Web UI；不修改共享全局配置；package 声明不是已安装或运行验证的证明。
 - 密钥、认证信息、依赖缓存、`outputs/` 重型产物与回放库不入 Git；行情库 `data/market.sqlite` 与台账库 `data/ledger.sqlite` 按 `operations/planning/2026-09-29-replan-three-lanes.md` §11 入 Git（白名单见 `.gitignore`；提交前无热日志、`integrity_check = ok`，只在检查点 `VACUUM`）；保留轻量文档、清单及必要小样例。业务源码与运行数据只落本项目，不放进 Harness_Workspace。
 <!-- PROJECT:OWNED:END -->
