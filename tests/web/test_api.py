@@ -82,7 +82,10 @@ class HttpTests(unittest.TestCase):
         state = self.state()
         self.assertEqual(state["summary"]["denominator"], 6)
         self.assertTrue(state["demo_available"])
+        self.assertTrue(state["readonly_available"])
         self.assertEqual({c["status"] for c in state["cards"]}, {"候选", "当下", "过去", "已结", "作废"})
+        holding = next(c for c in state["cards"] if c["status"] == "当下")
+        self.assertGreater(holding["daily_date"], holding["close_date"])
         self.assert_blind(state)
         with self.app.demo.open_ledger() as ledger:
             reasons = [r[0] for r in ledger.conn.execute("SELECT reason FROM strength_scores WHERE rater='agent'")]
@@ -195,6 +198,7 @@ class HttpTests(unittest.TestCase):
                 status, state = self.request("GET", "/api/state", headers={"Host": host}, server=server)
                 self.assertEqual(status, 200, state)
                 self.assertTrue(state["writable"])
+                self.assertFalse(state["readonly_available"])
                 self.assertEqual(state["rules"]["enabled"], ["事件驱动"])
                 self.assertEqual(state["rules"]["blocked"], [])
                 self.assertIn("纯演示", state["data_status"]["note"])
@@ -367,7 +371,7 @@ class MarketHttpTests(unittest.TestCase):
         self.assertEqual(state["cards"], [])
         self.assertNotIn("csrf_token", state)
         self.assertNotIn("rules", state)
-        self.assertIn("没有真实机会记录", state["ledger_note"])
+        self.assertEqual(state["ledger_note"], "此观察入口不载入正式判断/扫描结果。")
         self.assertEqual(state["observation_as_of"], "2026-09-30")
         market = state["market"]
         self.assertEqual(market["rows"], 14)

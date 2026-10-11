@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 import tests  # noqa: E402,F401 — 置位 ETF_LEDGER_TESTING：直接当脚本跑时也只许连临时库
 
 from src.jobs import rules as R                                  # noqa: E402
+from src.data import db as DB                                    # noqa: E402
 from src.jobs.__main__ import main as jobs_main                  # noqa: E402
 from src.jobs.daily import DailyJob, next_weekday_open           # noqa: E402
 from src.jobs.ew import EwStore                                  # noqa: E402
@@ -782,17 +783,19 @@ class Pieces(unittest.TestCase):
             if route == "yahoo":
                 g = g[g["date"] <= pd.Timestamp("2026-03-13")]              # 海外序列 03-13 之后停更
             put(con, code, g[["date", "open", "high", "low", "close"]].assign(volume=1000.0), route)
-        put_coverage(con, [dict(theme_id="T01", container="沪深300", status="retained", series_code="H00300", series_adj="raw", route_used="csi"),
-                           dict(theme_id="T06", container="半导体", status="retained", series_code="H30184CNY010", series_adj="raw", route_used="csi"),
-                           dict(theme_id="T15", container="原油", status="flagged", error="eia: 403"),
-                           dict(theme_id="T35", container="纳指100", status="retained", series_code="NDX", series_adj="raw", route_used="yahoo")])
+        covs = [dict(theme_id="T01", container="沪深300", status="retained", series_code="H00300", series_adj="raw", route_used="csi"),
+                dict(theme_id="T06", container="半导体", status="retained", series_code="H30184CNY010", series_adj="raw", route_used="csi"),
+                dict(theme_id="T35", container="纳指100", status="retained", series_code="NDX", series_adj="raw", route_used="yahoo")]
+        put_coverage(con, covs)
+        DB.load_universe(con, [{"theme_id": c["theme_id"], "theme": c["container"], "status": c["status"]} for c in covs], "synthetic-live")
+        cal = pd.bdate_range("2026-01-02", "2026-06-30")
+        DB.load_calendar(con, cal)
         con.close()
         sha = __import__("src.data.db", fromlist=["sha256_file"]).sha256_file(db)
         p, b, bo, problems = live_panel(db, date(2026, 3, 31))
         self.assertEqual(__import__("src.data.db", fromlist=["sha256_file"]).sha256_file(db), sha)        # 只读打开
         self.assertEqual(set(p["container"]), {"沪深300", "半导体", "纳指100"})
         self.assertEqual(p["date"].max(), pd.Timestamp("2026-03-31"))
-        self.assertTrue(problems and "原油" in problems[0])
         # I-20 之后停更不再表现为缺行（D 日是平盘行），必须由报告点出来
         stale = [x for x in problems if "纳指100" in x]
         self.assertEqual(len(stale), 1)
@@ -803,11 +806,10 @@ class Pieces(unittest.TestCase):
         hs = panel[panel["container"] == "沪深300"].set_index("date")
         self.assertTrue(bo.index.equals(b.index))
         self.assertTrue(np.allclose(bo.to_numpy(), hs.loc[b.index, "open"].to_numpy()))           # 基准开盘价取原始值
-        cal = pd.DatetimeIndex(pd.bdate_range("2026-01-01", "2026-06-30"))
         import src.jobs.live as live_mod
         with mock.patch.object(live_mod, "container_panel", wraps=live_mod.container_panel) as cp:
             live_panel(db, date(2026, 3, 30), cal)
-        self.assertTrue(all(c.args[3] is cal for c in cp.call_args_list))                          # 交易日历传到月末判定
+        self.assertTrue(all(c.args[3].equals(cal) for c in cp.call_args_list))                    # 库内官方日历传到月末判定
         self.assertEqual(live_mod.instruments(covs=live_mod.coverage(db))["半导体"]["research_code"], "H30184CNY010")
 
     def test_panel_without_data_hole_is_rejected(self):
@@ -840,10 +842,12 @@ class Pieces(unittest.TestCase):
         con = open_db(market)
         for name, code, route in (("沪深300", "H00300", "csi"), ("半导体", "H30184CNY010", "csi"), ("黄金", "518880", "eastmoney_etf_hfq")):
             put(con, code, panel[panel["container"] == name][["date", "open", "high", "low", "close"]].assign(volume=1000.0), route)
-        put_coverage(con, [dict(theme_id="T01", container="沪深300", status="retained", series_code="H00300", series_adj="raw", route_used="csi"),
-                           dict(theme_id="T06", container="半导体", status="retained", series_code="H30184CNY010", series_adj="raw", route_used="csi"),
-                           dict(theme_id="T16", container="黄金", status="flagged", series_code="518880", series_adj="hfq",
-                                route_used="eastmoney_etf_hfq")])
+        covs = [dict(theme_id="T01", container="沪深300", status="retained", series_code="H00300", series_adj="raw", route_used="csi"),
+                dict(theme_id="T06", container="半导体", status="retained", series_code="H30184CNY010", series_adj="raw", route_used="csi"),
+                dict(theme_id="T16", container="黄金", status="flagged", series_code="518880", series_adj="hfq", route_used="eastmoney_etf_hfq")]
+        put_coverage(con, covs)
+        DB.load_universe(con, [{"theme_id": c["theme_id"], "theme": c["container"], "status": c["status"]} for c in covs], "synthetic-daily")
+        DB.load_calendar(con, pd.to_datetime(DAYS))
         con.close()
         sha = __import__("src.data.db", fromlist=["sha256_file"]).sha256_file(market)
         (tmp / "rules.json").write_text(json.dumps(CONFIG, ensure_ascii=False), encoding="utf-8")

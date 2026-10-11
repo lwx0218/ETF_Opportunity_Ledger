@@ -59,10 +59,12 @@ class BuildError(RuntimeError):
     pass
 
 
-def read_bars(con, code: str, adj: str) -> pd.DataFrame:
+def read_bars(con, code: str, adj: str, *, end: date | None = None) -> pd.DataFrame:
     """bars 表里的一条序列（date 为 datetime64，数值缺失为 NaN），按日期升序。"""
-    return _bar_frame(con.execute("SELECT date, open, high, low, close, volume FROM bars WHERE code = ? AND adj = ? ORDER BY date",
-                                  (code, adj)).fetchall())
+    where = " AND date <= ?" if end is not None else ""
+    args = (code, adj, end.isoformat()) if end is not None else (code, adj)
+    return _bar_frame(con.execute("SELECT date, open, high, low, close, volume FROM bars WHERE code = ? AND adj = ?"
+                                  + where + " ORDER BY date", args).fetchall())
 
 
 def _bar_frame(rows) -> pd.DataFrame:
@@ -111,7 +113,7 @@ def borrow_volume(df: pd.DataFrame, con, cov: dict) -> tuple[pd.DataFrame, str]:
     code = cov.get("code") or ""
     if not code or cov.get("series_code") == code:           # 研究序列就是价格版本本身（或研究 = 执行的后复权 ETF）
         return df, "none"
-    pv = read_bars(con, code, "raw")                          # 价格版本不走后复权路由
+    pv = read_bars(con, code, "raw", end=df["date"].max().date())  # 只读本窗口消费到的价格版本量
     if pv.empty:
         return df, "none"
     vol = pd.Series(pv["volume"].to_numpy(), index=pv["date"])
@@ -122,7 +124,7 @@ def borrow_volume(df: pd.DataFrame, con, cov: dict) -> tuple[pd.DataFrame, str]:
 
 
 def align_to_calendar(df: pd.DataFrame, cal: pd.DatetimeIndex, overseas: bool) -> tuple[pd.DataFrame, dict]:
-    """I-20：全部容器对齐到 A 股日历（H00300 的交易日）。
+    """I-20：全部容器对齐到调用方给定的 A 股日历（正式 build/live 只认官方 calendar）。
     - A 股路由：不在 A 股日历上的行丢弃并计数；首末日期之间日历上有、序列里缺的交易日不补，只计数（missing_on_calendar），
       这些日子的收益在等权里会缺席；
     - 海外路由：A 股交易日 D 取本地日期 ≤ D−1 的最后一根 K 线（美股 / 港股收盘都晚于 A 股 15:00，取 D−1 才无未来视角）；
@@ -191,6 +193,8 @@ def research_frame(con, cov: dict, cal: pd.DatetimeIndex, *, strict=False,
     海外容器的指标在其本地交易日的原生 K 线上算，长假内的高低点因此进入 hi20 / lo20 / ATR，平盘行不进指标（沿用上一根）；
     A 股容器先丢弃非日历行（那些行不是交易日）再算。"""
     overseas = cov.get("route_used") in OVERSEAS_ROUTES
+    if cal.empty:
+        raise BuildError("研究窗口没有官方交易日")
     frame = None
     dropped = 0
     if strict:
@@ -199,6 +203,11 @@ def research_frame(con, cov: dict, cal: pd.DatetimeIndex, *, strict=False,
                                        end=end or cal[-1].date(), overseas=overseas)
         frame = _bar_frame(rows)
         dropped = len(raw) - len(rows) if not overseas else 0
+    else:
+        # 兼容调用也先截至消费窗口，避免 D 后的缺量比例倒灌 I-21 量源选择。
+        frame = read_bars(con, cov["series_code"], cov["series_adj"], end=end or cal[-1].date())
+        if overseas:
+            frame = frame[frame["date"] < cal[-1]]
     df, rep = load_series(con, cov["series_code"], cov["series_adj"], frame=frame, strict=strict)
     df, vsrc = borrow_volume(df, con, cov)
     rep["volume_source"] = vsrc
