@@ -117,6 +117,7 @@ h3{font-size:17px;line-height:1.6}
 .detail-section{margin-bottom:27px}
 .detail-section .section-heading{padding-top:20px}
 .fact-row{display:grid;grid-template-columns:110px minmax(0,1fr);gap:18px;padding:10px 0;font-size:13px;border-bottom:1px solid var(--hair);line-height:1.8}
+.decision-lines .fact-row{grid-template-columns:148px minmax(0,1fr)}
 .fact-row dt{color:var(--muted)}
 .fact-row dd{margin:0}
 .fact-list{margin:0}

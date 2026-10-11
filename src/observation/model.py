@@ -21,6 +21,8 @@ from .metrics import (OVERSEAS, aligned_frame, calculate, candle_reason,
 BEIJING = ZoneInfo("Asia/Shanghai")
 HISTORY_NOTE = "按当前库版本重建截至观察日的行情；获取时刻不代表历史可得时点，也不代表当时已扫描或作出判断。"
 VOLUME_NOTE = "该接口及字段的成交量单位尚未有合格源证据（unit=unverified）；不画量柱、不借 ETF 量、不以价格乘量造金额。"
+HOLE_REASON = "已确认海外行情断档（data_hole=1）；不补 OHLC、不填零"
+DISCOUNT_NOTE = "与指数差异按年 1% 打折（intake §4.2）"
 
 
 def rows(con, sql, args=()):
@@ -33,7 +35,7 @@ def identity(code, adj, source, purpose, price_only):
     price_basis = ("价格指数（不含分红再投）" if source in {"csi", "eastmoney_index", "tencent_index", "tencent_price_index_offline"}
                    else "价格序列（不含分红再投）")
     basis = ("ETF 后复权全收益" if adj == "hfq" else "全收益指数") if price_only is False else (
-        "ETF 不复权价格" if purpose == "execution" else price_basis)
+        "ETF 价格 · 不复权" if purpose == "execution" else price_basis)
     if price_only is None:
         basis = "价格/全收益口径未登记"
     return {"code": code or None, "adj": adj or None, "source": source or None,
@@ -142,8 +144,8 @@ class Observations:
                            benchmark_source=self.benchmark_source, prefix_reason=prefix_reason)
         fields["state"]["volume_source"] = volume_source
         fields["ext"]["volume_source"] = volume_source
-        if kind != "research":
-            fields["rs_1m"].update(value=None, available=False, reason="相对收益与池内比较仅使用 coverage 选定研究序列")
+        if kind == "price_candidate":
+            fields["rs_1m"].update(value=None, available=False, reason="未选价格候选不参与相对收益与池内比较")
             fields["rank"] = dict(fields["rs_1m"])
         z = monthly(aligned, self.cal, day, ident["source"])
         if base_reason:
@@ -173,8 +175,8 @@ class Observations:
         self.computed[key] = result
         return result
 
-    def section(self, day):
-        items = [self.one(item, day) for item in self.universe]
+    def section(self, day, kind="execution"):
+        items = [self.one(item, day, kind) for item in self.universe]
         missing, excluded, valid = [], [], []
         for item in items:
             if item["fields"]["rs_1m"]["available"]:
@@ -200,7 +202,13 @@ class Observations:
         result = self.one(item, day, kind)
         native, ident = result["_native"], result["identity"]
         chart, gaps = [], []
-        for row in native.tail(chart_points).to_dict("records"):
+        for row in self._chart_rows(native, result["_aligned"], chart_points):
+            if row.get("confirmed_hole"):
+                gaps.append({"date": row["date"].date().isoformat(), "reason": HOLE_REASON})
+                chart.append({"date": row["date"].date().isoformat(), "close": None, "open": None, "high": None, "low": None,
+                              "volume": None, "close_reason": HOLE_REASON, "ohlc_reason": HOLE_REASON,
+                              "volume_reason": VOLUME_NOTE, "source": None, "fetched_at": None})
+                continue
             match = row.get("source") == ident["source"]
             close_reason = None if match and positive(row["close"]) else "缺真实收盘或来源不符"
             ohlc_reason = candle_reason(row) if match else "该日没有所选来源的真实行情"
@@ -226,9 +234,26 @@ class Observations:
                                 "shares": "缺官方份额与单位证据", "amount": "缺经核定的原始成交额与单位",
                                 "layers": "L1–L4 与源头/目的地判断尚缺冻结证据；价格排名不能替代"}}
 
+    @staticmethod
+    def _chart_rows(native, aligned, chart_points):
+        """Keep confirmed overseas holes inside the drawn window without inventing prices."""
+        shown = native.tail(chart_points)
+        rows = shown.to_dict("records")
+        if not len(shown) or aligned.empty or "data_hole" not in aligned.columns:
+            return rows
+        start = shown.iloc[0]["date"]
+        native_dates = {pd.Timestamp(value).date().isoformat() for value in shown["date"]}
+        holes = aligned.loc[aligned["data_hole"].eq(1) & aligned["date"].ge(start) & aligned["date"].le(aligned["date"].max()), "date"]
+        for stamp in holes:
+            if pd.Timestamp(stamp).date().isoformat() in native_dates:
+                continue
+            rows.append({"date": pd.Timestamp(stamp), "confirmed_hole": True})
+        rows.sort(key=lambda row: row["date"])
+        return rows
+
 
 def observe(con, requested_date: date | None = None, *, now: datetime | None = None,
-            weeks: int = 12, theme_id: str | None = None, series_kind: str = "research", chart_points: int = 260) -> dict:
+            weeks: int = 12, theme_id: str | None = None, series_kind: str = "execution", chart_points: int = 260) -> dict:
     """Read a caller-owned market-v1 snapshot and return JSON-safe observations."""
     if not 1 <= weeks <= 52 or not 1 <= chart_points <= 3000:
         raise ValueError("weeks 须为 1–52，chart_points 须为 1–3000")
@@ -246,6 +271,7 @@ def observe(con, requested_date: date | None = None, *, now: datetime | None = N
               "history_note": HISTORY_NOTE, "reason": None, "containers": [], "weeks": [], "rotation": [], "detail": None,
               "actual_data_end": None, "benchmark_ready": False, "research_ready": False, "quality": None,
               "synthetic": synthetic, "calendar_basis": "合成工作日，非官方交易日历" if synthetic else "官方 calendar",
+              "series_kind": series_kind, "discount_note": DISCOUNT_NOTE if series_kind == "execution" else None,
               "comparison": {"pool": len(universe), "valid": 0, "missing": [], "excluded": [], "comparison_complete": False}}
     try:
         cal = check_days(raw_calendar, "官方交易日历")
@@ -265,7 +291,7 @@ def observe(con, requested_date: date | None = None, *, now: datetime | None = N
         quality = inspect(con, day.date())
         result.update(benchmark_ready=quality["benchmark_ready"], research_ready=quality["research_ready"], quality=quality_summary(quality))
     engine = Observations(con, cal, universe, coverages, synthetic=synthetic)
-    current, comparison = engine.section(day)
+    current, comparison = engine.section(day, series_kind)
     result["containers"] = [{k: v for k, v in item.items() if not k.startswith("_")} for item in current]
     result["comparison"] = comparison
     eligible = cal[cal <= day]
@@ -273,7 +299,7 @@ def observe(con, requested_date: date | None = None, *, now: datetime | None = N
     sections = []
     calendar_weeks = cal.to_period("W-FRI")
     for week, effective in week_days.items():
-        section, comp = engine.section(effective)
+        section, comp = engine.section(effective, series_kind)
         official_week_end = cal[calendar_weeks == week][-1]
         partial = day < official_week_end or (cal[-1] < week.end_time.normalize() and day < week.end_time.normalize())
         result["weeks"].append({"date": effective.date().isoformat(),

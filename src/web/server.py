@@ -102,7 +102,7 @@ def create_server(app: Application, port=8765, *, host="127.0.0.1", public_host=
                         raise RequestError("周窗口须为 1–26")
                     self.send(200, app.observation(mode, as_of=query.get("as_of", [None])[0],
                               theme=query.get("theme", [None])[0],
-                              series=query.get("series", ["research"])[0], weeks=int(window)))
+                              series=query.get("series", ["execution"])[0], weeks=int(window)))
                 elif match and not match[2]:
                     self.send(200, app.detail(match[1], mode))
                 else:

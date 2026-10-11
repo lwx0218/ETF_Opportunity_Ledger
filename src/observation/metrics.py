@@ -118,6 +118,7 @@ def calculate(native, aligned, benchmark, cal, identity, volume_native, base_rea
     candles = (np.isfinite(ohlc).all(axis=1) & (ohlc > 0).all(axis=1)
                & native["high"].ge(ohlc.max(axis=1)) & native["low"].le(ohlc.min(axis=1)) & source_match)
     hole = bool(final["data_hole"])
+    confirmed = aligned["data_hole"].eq(1) if len(aligned) else pd.Series(dtype=bool)
     common = base_reason or ("海外原生行情连续第 5 个 A 股交易日起未更新，data_hole=1" if hole else None)
     result = {}
 
@@ -159,10 +160,21 @@ def calculate(native, aligned, benchmark, cal, identity, volume_native, base_rea
         atr_reason = "ATR20 依赖窗口缺真实 OHLC 或存在包络/来源异常"
     if not atr_reason and len(native) > 20 and not close_good.iloc[-21]:
         atr_reason = "ATR20 的前一根真实收盘缺失"
+    if not atr_reason and bool(confirmed.any()) and len(native):
+        # Only dates strictly inside the consumed bars count. A hole that is
+        # still unconfirmed on an earlier as-of is absent from this frame.
+        span_start = native.iloc[-21 if len(native) > 20 else 0]["date"]
+        crossed = confirmed & aligned["date"].gt(span_start) & aligned["date"].lt(native.iloc[-1]["date"])
+        if bool(crossed.any()):
+            atr_reason = "ATR20 依赖窗口或前收跨越已确认断档；连续真实输入尚未齐备"
     add("atr20", atr20(native).iloc[-1] if not atr_reason else None, atr_reason,
         start=recent.iloc[0]["date"] if len(recent) else None, points=int(candles.tail(20).sum()), required=20)
 
     state_reason = common or prefix_reason
+    if not state_reason and bool(confirmed.any()):
+        first_hole = aligned.loc[confirmed, "date"].iloc[0]
+        state_reason = (f"EMA 依赖窗口含已确认海外断档（首日 {first_hole.date()}，共 {int(confirmed.sum())} 个 A 股交易日）；"
+                        "不修补或重置 EMA 起点")
     if not state_reason and len(native) < 70:
         state_reason = "形态需要 70 根合格原生行，覆盖 SMA50 与前 20 行 up_recent；预热不足"
     if not state_reason and not close_good.all():
@@ -175,10 +187,16 @@ def calculate(native, aligned, benchmark, cal, identity, volume_native, base_rea
     state = form_states(volume_native).iloc[-1] if not state_reason else None
     volume_limited = not (np.isfinite(volume_native["volume"].tail(20)) & (volume_native["volume"].tail(20) > 0)).all()
     note = "成交量受限的形态；四种放量状态不可完整判定" if volume_limited else None
+    if bool(confirmed.any()):
+        qualification = "incomplete"
+    elif volume_limited:
+        qualification = "volume_limited"
+    else:
+        qualification = "complete"
     add("state", state["state"] if state is not None else None, state_reason or note,
         start=native.iloc[0]["date"] if len(native) else None, points=int(candles.sum()), required=70,
         state_label=STATE_LABELS.get(state["state"]) if state is not None else None,
-        qualification="volume_limited" if volume_limited else "complete")
+        qualification=qualification)
     ext_reason = state_reason or ("ATR14 非正或非有限，ext 不可用" if not positive(state["atr14"]) else None)
     add("ext", state["ext"] if not ext_reason else None, ext_reason,
         start=native.iloc[0]["date"] if len(native) else None, points=int(candles.sum()), required=70,

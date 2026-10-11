@@ -58,6 +58,8 @@ class ObservationTests(unittest.TestCase):
         self.con.execute("INSERT INTO bars VALUES (?,?,?,?,?,?,?,?,?,?,?)", tuple(old.values()))
 
     def observe(self, index=599, **kwargs):
+        # Existing cases pin the research series. The library default is execution.
+        kwargs.setdefault("series_kind", "research")
         return observe(self.con, self.days[index].date(), now=NOW, weeks=2, **kwargs)
 
     def field(self, report, field, index=0):
@@ -111,17 +113,64 @@ class ObservationTests(unittest.TestCase):
         self.seed("ETFT01", "tencent_etf")
         self.seed("PRICE", "tencent_price_index_offline")
         self.con.execute("UPDATE coverage SET code='PRICE'")
-        result = self.observe(series_kind="execution")
-        json.dumps(result, allow_nan=False)
-        self.assertIsNone(self.field(result, "close")["value"])
-        self.assertEqual(result["containers"][0]["identity"]["code"], "ONE")
-        self.assertGreater(result["detail"]["chart"][-1]["close"], 0)
-        self.assertFalse(result["detail"]["fields"]["rs_1m"]["available"])
-        candidate = self.observe(series_kind="price_candidate")["detail"]
-        self.assertTrue(candidate["identity"]["price_only"])
-        self.assertEqual(candidate["identity"]["source"], "tencent_price_index_offline")
-        self.assertEqual(candidate["identity"]["price_basis"], "价格指数（不含分红再投）")
-        self.assertTrue(all(r["volume"] is None for r in candidate["chart"]))
+        research = self.observe()
+        json.dumps(research, allow_nan=False)
+        self.assertIsNone(self.field(research, "close")["value"])
+        self.assertEqual(research["containers"][0]["identity"]["code"], "ONE")
+        self.assertEqual(research["detail"]["identity"]["code"], "ONE")
+        execution = self.observe(series_kind="execution")
+        self.assertEqual(execution["containers"][0]["identity"]["code"], "ETFT01")
+        self.assertEqual(execution["containers"][0]["identity"]["price_basis"], "ETF 价格 · 不复权")
+        self.assertGreater(execution["detail"]["chart"][-1]["close"], 0)
+        self.assertTrue(execution["detail"]["fields"]["rs_1m"]["available"])
+        self.assertEqual(execution["detail"]["fields"]["rs_1m"]["benchmark"]["code"], "H00300")
+        self.assertTrue(all(r["volume"] is None for r in execution["detail"]["chart"]))
+        candidate = self.observe(series_kind="price_candidate")
+        detail = candidate["detail"]
+        self.assertEqual(candidate["containers"][0]["identity"]["code"], "PRICE")
+        self.assertTrue(detail["identity"]["price_only"])
+        self.assertEqual(detail["identity"]["source"], "tencent_price_index_offline")
+        self.assertEqual(detail["identity"]["price_basis"], "价格指数（不含分红再投）")
+        self.assertFalse(detail["fields"]["rs_1m"]["available"])
+        self.assertTrue(all(r["volume"] is None for r in detail["chart"]))
+
+    def test_default_series_ranks_execution_etf_and_research_switch_stays_put(self):
+        self.seed("ETFT01", "tencent_etf")
+        self.add_container("T02", "TWO", 1)
+        self.seed("ETFT02", "tencent_etf")
+        result = observe(self.con, self.days[599].date(), now=NOW, weeks=1)
+        self.assertEqual(result["series_kind"], "execution")
+        self.assertEqual(result["discount_note"], "与指数差异按年 1% 打折（intake §4.2）")
+        self.assertEqual([row["identity"]["code"] for row in result["containers"]], ["ETFT01", "ETFT02"])
+        self.assertEqual([row["identity"]["source"] for row in result["containers"]], ["tencent_etf", "tencent_etf"])
+        self.assertTrue(all(row["identity"]["price_basis"] == "ETF 价格 · 不复权" for row in result["containers"]))
+        self.assertEqual(result["comparison"]["pool"], 2)
+        self.assertEqual(result["comparison"]["valid"], 2)
+        self.assertEqual(result["comparison"]["missing"], [])
+        self.assertEqual(result["comparison"]["method"], "min")
+        self.assertEqual([row["fields"]["rank"]["value"] for row in result["containers"]], [1, 1])
+        self.assertEqual(result["detail"]["identity"]["code"], result["containers"][0]["identity"]["code"])
+        self.assertTrue(all(point["volume"] is None for point in result["detail"]["chart"]))
+        research = self.observe()
+        self.assertEqual(research["series_kind"], "research")
+        self.assertIsNone(research["discount_note"])
+        self.assertEqual(research["containers"][0]["identity"]["code"], "ONE")
+        self.assertEqual(result["research_ready"], research["research_ready"])
+
+    def test_grid_and_detail_use_the_requested_series(self):
+        self.seed("ETFT01", "tencent_etf")
+        self.seed("PRICE", "tencent_price_index_offline")
+        self.con.execute("UPDATE coverage SET code='PRICE'")
+        expected = {"research": "ONE", "execution": "ETFT01", "price_candidate": "PRICE"}
+        for kind, code in expected.items():
+            with self.subTest(kind=kind):
+                result = self.observe(series_kind=kind, theme_id="T01")
+                cell = result["rotation"][0]["cells"][-1]
+                self.assertEqual(result["detail"]["identity"]["code"], code)
+                self.assertEqual(result["containers"][0]["identity"]["code"], code)
+                self.assertEqual(cell["rs_1m"]["code"], code)
+                self.assertEqual(cell["date"], result["detail"]["fields"]["rs_1m"]["observation_date"])
+                self.assertEqual(cell["rs_1m"]["value"], result["detail"]["fields"]["rs_1m"]["value"])
 
     def test_missing_declared_prefix_cannot_restart_state_warmup(self):
         self.con.execute("DELETE FROM bars WHERE code='ONE' AND date<?", (str(self.days[30].date()),))
@@ -344,6 +393,51 @@ class ObservationTests(unittest.TestCase):
         result = self.observe(thursday)
         self.assertFalse(result["weeks"][-1]["partial"])
         self.assertEqual(result["weeks"][-1]["date"], str(self.days[thursday].date()))
+
+    def test_confirmed_overseas_hole_remains_after_quotes_resume(self):
+        self.add_container("T02", "FOREIGN", 1, source="yahoo")
+        self.seed("FOREIGN", "yahoo", days=self.days[:130])
+        for day in self.days[100:111]:
+            self.con.execute("DELETE FROM bars WHERE code='FOREIGN' AND date=?", (str(day.date()),))
+        # 恢复首根：观察日已能看到新 K，但此前已确认的 data_hole 仍留在历史上。
+        resumed = self.observe(112, theme_id="T02", chart_points=80)
+        state = resumed["detail"]["fields"]["state"]
+        atr = resumed["detail"]["fields"]["atr20"]
+        self.assertIsNone(state["value"])
+        self.assertNotEqual(state["qualification"], "complete")
+        self.assertIn("断档", state["reason"])
+        self.assertEqual(state["window"]["start"], str(self.days[0].date()))
+        self.assertIsNone(resumed["detail"]["fields"]["ext"]["value"])
+        self.assertIsNone(atr["value"])
+        self.assertIn("断档", atr["reason"])
+        gaps = resumed["detail"]["gaps"]
+        self.assertTrue(gaps)
+        unconfirmed = {str(day.date()) for day in self.days[100:105]}
+        self.assertTrue(unconfirmed.isdisjoint(item["date"] for item in gaps))
+        for item in gaps:
+            row = next(point for point in resumed["detail"]["chart"] if point["date"] == item["date"])
+            self.assertIsNone(row["open"])
+            self.assertIsNone(row["high"])
+            self.assertIsNone(row["low"])
+            self.assertIsNone(row["close"])
+            self.assertNotEqual(row["close"], 0)
+        # 历史截断：第 5 日确认之前的截面看不到后来才成立的断档。
+        early = self.observe(104, theme_id="T02")
+        self.assertEqual(early["containers"][1]["data_hole"], 0)
+        self.assertEqual(early["detail"]["gaps"], [])
+        self.assertTrue(early["detail"]["fields"]["state"]["available"])
+        again = self.observe(104, theme_id="T02")
+        self.assertEqual(again["detail"]["gaps"], [])
+        self.assertEqual(again["detail"]["fields"]["state"]["value"], early["detail"]["fields"]["state"]["value"])
+        # 依赖窗口恢复：ATR 的连续真实输入齐备后可用，EMA 起点不因断档重置。
+        self.seed("FOREIGN", "yahoo", days=self.days[130:180])
+        recovered = self.observe(170, theme_id="T02")
+        recovered_state = recovered["detail"]["fields"]["state"]
+        self.assertIsNone(recovered_state["value"])
+        self.assertEqual(recovered_state["qualification"], "incomplete")
+        self.assertEqual(recovered_state["window"]["start"], str(self.days[0].date()))
+        self.assertTrue(recovered["detail"]["fields"]["atr20"]["available"])
+        self.assertTrue(recovered["detail"]["gaps"])
 
     def test_zero_monthly_standard_deviation_is_unavailable(self):
         ends = self.days[:600].to_series().groupby(self.days[:600].to_period("M")).last()

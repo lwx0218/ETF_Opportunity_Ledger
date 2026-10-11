@@ -229,7 +229,7 @@ class Application:
                     "data_status": {"benchmark_ready": False, "research_ready": False,
                                     "note": "纯演示：行情全部合成，不读取正式数据库。"} if mode == "demo" else self.data_status()}
 
-    def observation(self, mode=None, *, as_of=None, theme=None, series="research", weeks=12):
+    def observation(self, mode=None, *, as_of=None, theme=None, series="execution", weeks=12):
         """页面只读投影；请求不能选择数据库、修改 coverage 或执行研究。"""
         mode = self.effective_mode(mode)
         try:

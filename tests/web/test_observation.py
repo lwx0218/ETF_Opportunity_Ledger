@@ -55,13 +55,22 @@ class DemoObservationTests(unittest.TestCase):
     def test_observer_uses_replay_cutoff_and_labels_synthetic_provenance(self):
         now = datetime.fromisoformat(f"{INITIAL_DAY}T16:00").replace(tzinfo=ZoneInfo("Asia/Shanghai"))
         with demo_market() as con:
+            research = observe(con, date.fromisoformat(INITIAL_DAY), now=now, weeks=1, theme_id="T06", series_kind="research")
             result = observe(con, date.fromisoformat(INITIAL_DAY), now=now, weeks=1, theme_id="T06")
-        self.assertEqual(result["effective_date"], INITIAL_DAY)
+        self.assertEqual(result["series_kind"], "execution")
+        self.assertEqual(result["detail"]["identity"]["code"], INSTRUMENTS["半导体"]["code"])
+        self.assertEqual(result["detail"]["identity"]["price_basis"], "ETF 价格 · 不复权")
         self.assertEqual(result["comparison"]["pool"], 37)
-        self.assertTrue(result["synthetic"])
-        self.assertIn("非官方", result["calendar_basis"])
-        self.assertFalse(result["research_ready"])
-        detail = result["detail"]
+        self.assertEqual(result["comparison"]["valid"], 37)
+        self.assertEqual(result["comparison"]["missing"], [])
+        self.assertEqual(research["series_kind"], "research")
+        self.assertEqual(research["effective_date"], INITIAL_DAY)
+        self.assertEqual(research["comparison"]["pool"], 37)
+        self.assertTrue(research["synthetic"])
+        self.assertIn("非官方", research["calendar_basis"])
+        self.assertFalse(research["research_ready"])
+        self.assertEqual(result["research_ready"], research["research_ready"])
+        detail = research["detail"]
         self.assertEqual(detail["identity"]["code"], INSTRUMENTS["半导体"]["research_code"])
         self.assertEqual(detail["identity"]["source"], SOURCE)
         self.assertEqual(detail["chart"][-1]["date"], INITIAL_DAY)
