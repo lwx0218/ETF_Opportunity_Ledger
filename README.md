@@ -41,7 +41,7 @@ python3 -m venv .venv
 
 1. 读 `AGENTS.md` 和 [完整初始化文档](docs/project-intake/etf-opportunity-ledger.md)，尤其 §1 已证伪方向与 §3 研究纪律。
 2. 读仓库权威 [卡片 schema](docs/etf-card-schema-v1.md)、[每日任务](docs/jobs-daily.md) 与 `docs/design/` 设计规范；初始化材料已导入，旧 Project 副本仅供参考。
-3. 当前缺口与后续分工见[产品纠偏计划](operations/planning/2026-10-06-product-recovery-plan.md)；[首包计划](operations/planning/2026-10-06-parallel-data-and-product.md)保留为历史任务记录。正式数据应用、研究和规则启用仍需各自范围内的授权。
+3. 现状与待办见 [docs/status.md](docs/status.md)。
 
 ### 最小能力配置
 

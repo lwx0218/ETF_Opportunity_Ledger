@@ -81,12 +81,14 @@ skills 和 domain modeling 是按需能力，不是默认关卡。
 <!-- PROJECT:OWNED:START -->
 ## 项目合同 · ETF_Opportunity-Ledger
 
-### 当前执行宿主
+### 执行者与交接（2026-10-11 起，Owner 批准 D1–D4）
 
-- Owner 已确认当前依托 Pi Web UI：主会话负责规划与切分任务，不为规划强制另开 CLI session；Owner 规划确认与 ponytail 门禁保持不变。
-- 分发与执行使用 Web UI 内置匹配的 `implement` / `review` 模板，优先 `delegate_task`，否则使用当前宿主提供的原生 subagent 工具；builder 实现，独立 reviewer 只读复核并给出 managed 合同规定的 verdict。
-- 当前路径不经过 `pi-fleet` 或独立 `pi-subagents`，不先 `session_spawn`；内置工具缺失时报告能力阻塞，不回落到 CLI 路径。包的存在不代表当前执行路径。
-- 历史 manual / `.pi/` 中的「先 fleet」叙述不激活旧流程；与本文件冲突的提示以 `AGENTS.md` 为准。
+- Claude（规划 session）：规划、切 round、出 UI 方向稿（单文件 HTML）、评审每次推送（用真实渲染截图对照原型，不以测试数代替）。不改代码。
+- Cloud Agent（主力开发）：在 dev 分支开发并推送；每轮 python -m unittest discover -s tests -t . 通过再推；UI 改动附深浅两套真实渲染截图；每轮推送后更新 docs/status.md 的基线与待办。合并到 main 要 Owner 点头。
+- Pi（服务器）：部署 Owner 指定的提交、跑作业、补数据、核原件；执行记录写 operations/work_logs/。Pi 不改产品代码。
+- 任务只写四件事：目标、改动面、验证、完成判据。不再为 round 写 operations/planning/、operations/reviews/ 文档；历史文档只作参考，不激活旧流程。docs/status.md 是唯一的现状与待办入口，先读它。
+- 页面观察口径（D1）：轮动页、首页观察、横截面排名默认使用 37 个容器的执行 ETF（universe.csv 的 execution_fund_code，腾讯 raw 日线），基准 H00300；CSI 全收益研究序列只用于正式研究/回测，页面上作为可选切换。页面注明「ETF 价格，与指数差异按年 1% 打折」。
+- 无正式卡时（D3）：首页「未来」栏显示观察候选（已有形态状态/指标处于可进态的容器），明确标注「观察 · 未入账 · 规则未启用」，不创建卡、不开规则，A7 不变。
 
 ### 目标与必读资料
 

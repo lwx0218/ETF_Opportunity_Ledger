@@ -17,6 +17,7 @@ from tests.ledger.test_ledger import T0, card
 
 class HttpTests(unittest.TestCase):
     def setUp(self):
+        (ROOT / "outputs").mkdir(exist_ok=True)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.directory = Path(self.tmp.name)

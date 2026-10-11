@@ -75,7 +75,7 @@ sh harness.sh <本项目目录> --apply   # 写入
 <!-- PROJECT:OWNED:START -->
 ## 项目操作说明
 
-当前只有最小 bootstrap，无业务启动命令。先读 `docs/project-intake/etf-opportunity-ledger.md` 全文（尤其 §1 / §3）；权威文档、数据、源码及 Teardown 设计资产仍待导入，五项 Owner 决策仍未决。
+启动命令见 README.md。现状与待办见 docs/status.md。
 
 进入项目目录执行 `pi --name "00-orchestration"`，完成材料核对和实施 Plan Preview；本次初始化授权不等于业务实施授权。不运行研究，不自动安装依赖或修改全局配置。
 
