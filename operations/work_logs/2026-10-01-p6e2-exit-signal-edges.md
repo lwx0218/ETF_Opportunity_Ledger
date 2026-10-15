@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: replan §12 P6e-2——`src/ledger/` + `src/jobs/` 实现 schema v1.1-h 与 I-26 的每日任务部分（不阻塞 V1）
-- Timestamp (UTC): 2026-10-01
+- Date: 2026-10-01
 - Owner: Faye
 - Executor: Claude Code（云端）；包末复核：只读 reviewer 子代理
 - Route: direct-execute（Owner 指示「P7 → P6e-1 → P6e-2」）

@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 取代 `2026-09-27-orchestration-input.md` §B 的 round 切分；R0 收口；后续任务按执行者分包
-- Timestamp (UTC): 2026-09-29
+- Date: 2026-09-29
 - Owner: Faye（分工原则由她定：CC 建底座并最小化验证数据源；Cowork 负责规划、产品设计、策略有效性验证；astra 在服务器上补全与全量重算）
 - Route: plan
 - Source of truth: AGENTS.md；docs/etf-rotation-prereg-v1.md；docs/etf-card-schema-v1.md；docs/etf-fixed-sources-v1.md；operations/planning/2026-09-27-prereg-v1-implementation-notes.md；operations/planning/2026-09-27-astra-execution.md（A1–A7、C 已由 Owner 口头批准）
@@ -152,7 +152,7 @@ P1–P5 已合并（PR #1–#5，main `36b660f`，145 个测试通过）。CC �
 
 ### astra S1 补充
 
-CC 的执行顺序与注意事项照办：`probe --record` → `backfill --end 2026-09-30` → `package` → `verify`，打包等北京时间 10-01 05:00 美股收盘后；限流时只动 `--exec-start`，不动 `--start`。另外两项：① 生成 `data/calendar/sse-trading-days.csv`（用 09-27 已验证的深交所 `monthList` 接口，覆盖 2005 至次年，一行一个交易日）并随数据包交付；② NDXTMC 若 probe 失败，试 Nasdaq 官方历史数据页一次，不成就跳过。
+CC 的执行顺序与注意事项照办：`probe --record` → `backfill --end 2026-09-30` → `package` → `verify`，打包等 10-01 05:00 美股收盘后；限流时只动 `--exec-start`，不动 `--start`。另外两项：① 生成 `data/calendar/sse-trading-days.csv`（用 09-27 已验证的深交所 `monthList` 接口，覆盖 2005 至次年，一行一个交易日）并随数据包交付；② NDXTMC 若 probe 失败，试 Nasdaq 官方历史数据页一次，不成就跳过。
 
 ## 9. 追加（2026-09-30）· P6a / P6b 合并后的裁定与 P6c
 
@@ -255,7 +255,7 @@ P6d-1 / P6d-2 已合并（PR #10、#11，main `45573fa`，207 个测试通过；
 1. 推送 Cowork 的 bundle：`git fetch origin && git checkout main && git pull --ff-only && git fetch <bundle 文件> main:refs/heads/cowork && git merge --ff-only cowork && git push origin main && git branch -d cowork`。
 2. 删除已合并的远端分支：`git branch -r --merged origin/main | grep 'claude/bold-archimedes-8mka2j'`，确认每个都在 `--merged` 列表里后 `git push origin --delete <分支名>`（不带 `origin/` 前缀）。未合并的不删。
 3. 做 S2（replan §4：固定源 17 个 C 级 + 6 个待补时刻的 B 级，每个只核三项，结果写回 `docs/etf-fixed-sources-v1.csv`，一行一个来源，不另写日志），提交并推送。
-4. 等 Owner 通知 P7 合并后，`git pull` 再做 S1（§4 + §8 + §11）：`probe --record` → `backfill --end 2026-09-30` → 交易日历写入库 → 北京时间 05:00 之后 `package` → `verify`；全部写进 `data/market.sqlite`，提交库文件与一页工作日志，推送。不打包传文件。
+4. 等 Owner 通知 P7 合并后，`git pull` 再做 S1（§4 + §8 + §11）：`probe --record` → `backfill --end 2026-09-30` → 交易日历写入库 →  05:00 之后 `package` → `verify`；全部写进 `data/market.sqlite`，提交库文件与一页工作日志，推送。不打包传文件。
 5. 不做：审读与清理（§11，等第一次真实数据跑通后另行安排）。
 
 ## 13. 追加（2026-10-02）· P7 / P6e 合并后的裁定、治理层修订、P6f、S1 放行

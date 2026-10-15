@@ -4,10 +4,10 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 补齐观察口径并下发 Codex 页面工程、Pi 并行只读取证
-- Timestamp (UTC): 2026-10-06T10:35:43Z
+- Date: 2026-10-06
 - Owner: Faye
 - Route: plan
-- Source of truth: Owner 2026-10-06 18:35（北京时间）同意继续；AGENTS.md；docs/project-intake/etf-opportunity-ledger.md；docs/etf-card-schema-v1.md；docs/indicators-layer.md；operations/planning/2026-10-06-product-recovery-plan.md
+- Source of truth: Owner 2026-10-06 18:35同意继续；AGENTS.md；docs/project-intake/etf-opportunity-ledger.md；docs/etf-card-schema-v1.md；docs/indicators-layer.md；operations/planning/2026-10-06-product-recovery-plan.md
 - Baseline: `5bdeb945b051deda1004cc755e47e3fc40899376`
 
 ## 交付目标与分工
@@ -22,7 +22,7 @@ Codex 负责下面的读模型、页面、相称测试和独立复核。Pi 可�
 
 - 每个值携带：值、可用性/具体原因、容器、`code/adj/source`、序列用途、价格口径、观察日期、原生行情日期、计算窗口；抓取时间另列。`raw` 不代表价格指数：`H00300/raw` 是全收益指数。
 - 选定研究序列只认 coverage 的 `series_code/series_adj/route_used`；执行 ETF 和未选价格候选只能按自身身份展示，不自动替换研究序列。真实行情仅 SQLite 只读快照，不建库、不迁移、不写 coverage/universe。
-- A 股日期来自官方 calendar；非交易日请求映射到不晚于请求日的最后官方交易日，同时返回请求日与有效日。默认观察日按 Asia/Shanghai 时钟、15:00 收盘边界及官方日历取当前已完成交易日，并明确实际数据末日；日历未覆盖则报告无法确定，不猜工作日。数据滞后时不能悄悄把请求日改成最后有数据的日期。晚于当前已完成交易日的请求不作未来观察。
+- A 股日期来自官方 calendar；非交易日请求映射到不晚于请求日的最后官方交易日，同时返回请求日与有效日。默认观察日按 时钟、15:00 收盘边界及官方日历取当前已完成交易日，并明确实际数据末日；日历未覆盖则报告无法确定，不猜工作日。数据滞后时不能悄悄把请求日改成最后有数据的日期。晚于当前已完成交易日的请求不作未来观察。
 - 海外截面 D 使用 `native_date < D` 的最后一根，依 I-20/I-24 原生算指标再对齐。连续无新 K 线第 5 个 A 股交易日起 `data_hole=1`，当前状态/排名不可用；可单列最后真实值及旧日期。已批准的海外休市平盘占位不等于允许补源数据的缺失 OHLC。
 - **每个观察日 d 都先截至 d，再选量源、计算和对齐**。历史周列也逐列遵守，不能用页面末日 D 的借量选择倒灌较早列；尤其 I-21 的缺量比例不能受 d 后数据影响。图表缩放只裁显示，不重置 EMA 起点或预热。
 - 历史观察是“按当前库版本重建截至 D 的行情”，不冒充当时已抓取/已扫描/已作判断的记录。`fetched_at` 不等于历史可得时点；原件无法证明的迟到修订不能声称当时已知。论点证据仍须遵守 available_at 与创建冻结。切观察日期不把后来评分/出场结果塞进过去解释；台账保持自身记账截至日，清楚区分。

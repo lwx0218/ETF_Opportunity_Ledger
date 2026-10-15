@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: replan §9 P6c-1——`src/indicators/build.py` 实现 implementation-notes I-24（阻塞 V1）
-- Timestamp (UTC): 2026-09-30
+- Date: 2026-09-30
 - Owner: Faye
 - Executor: Claude Code（云端）；包末复核：只读 reviewer 子代理
 - Route: direct-execute（Owner 指示「先做 P6c-1，再做 P6c-2」）

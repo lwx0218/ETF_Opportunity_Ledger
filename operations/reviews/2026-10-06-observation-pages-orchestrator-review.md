@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: Codex 双页交付独立复核，形成可复现修复范围
-- Timestamp (UTC): 2026-10-06
+- Date: 2026-10-06
 - Owner: Faye
 - Route: review-only
 - Source of truth: AGENTS.md；operations/planning/2026-10-06-observation-and-pages.md；docs/project-intake/etf-opportunity-ledger.md；docs/etf-card-schema-v1.md

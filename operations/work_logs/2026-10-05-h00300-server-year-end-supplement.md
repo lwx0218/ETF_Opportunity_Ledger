@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 原采集短窗证据定向补录三个年末收盘
-- Timestamp (UTC): 2026-10-05T12:55:17Z
+- Date: 2026-10-05
 - Owner: Faye
 - Route: direct-execute
 - Source of truth: Owner 本轮授权；docs/h00300-year-end-supplement.md；main b0b43e6

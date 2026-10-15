@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 记录 Owner 已确认决定、astra 工作边界并启动 R0
-- Timestamp (UTC): 2026-09-27T12:18:16Z
+- Date: 2026-09-27
 - Owner: Faye
 - Route: plan
 - Source of truth: AGENTS.md；operations/planning/2026-09-27-orchestration-input.md；Owner 本次聊天指示「按建议执行吧」及执行通道确认

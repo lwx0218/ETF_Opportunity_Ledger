@@ -107,7 +107,7 @@ operations/reviews/2026-08-30-example-task-review.md
 
 - Project: ETF_Opportunity-Ledger
 - Task: <task name>
-- Timestamp (UTC): YYYY-MM-DDTHH:MM:SSZ
+- Date: YYYY-MM-DD
 - Owner: project owner
 - Route: direct-execute | plan | review-only | needs-package
 - Source of truth: AGENTS.md or approved Plan path

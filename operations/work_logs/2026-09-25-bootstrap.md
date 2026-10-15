@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 最小 Harness 下发与首次提交
-- Timestamp (UTC): 2026-09-25T09:05:36Z（本次初始化检查开始）
+- Date: 2026-09-25（本次初始化检查开始）
 - Owner: Faye
 - Route: direct-execute
 - Source of truth: AGENTS.md；Owner 在本次会话授权最小下发、排除 pi-web-ui、参考 serenity_quant_research packages，并允许初始化后推送一次

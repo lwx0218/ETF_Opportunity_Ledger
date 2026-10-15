@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 首批纠偏执行单第四节 · Pi 并行只读取证
-- Timestamp (UTC): 2026-10-06T11:09:39Z（基线）；短窗采集 11:12:35～11:12:42Z
+- Date: 2026-10-06（基线）；短窗采集 11:12:35～11:12:42
 - Owner: Faye
 - Route: direct-execute
 - Source of truth: operations/planning/2026-10-06-observation-and-pages.md §4；Owner 本轮指令

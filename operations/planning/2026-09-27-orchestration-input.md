@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 00-orchestration 的 Owner 输入（§10 待决项 + round 切分草案）
-- Timestamp (UTC): 2026-09-27（第三版：新增 A7、V1 验证环节、C 节更新、D 节分工；标明哪些是 Owner 判断、哪些是 Claude 技术决定）
+- Date: 2026-09-27（第三版：新增 A7、V1 验证环节、C 节更新、D 节分工；标明哪些是 Owner 判断、哪些是 Claude 技术决定）
 - Owner: Faye
 - Route: plan
 - Source of truth: AGENTS.md；docs/project-intake/etf-opportunity-ledger.md §7、§10；docs/etf-card-schema-v1.md §8；docs/etf-rotation-prereg-v1.md §9、§10

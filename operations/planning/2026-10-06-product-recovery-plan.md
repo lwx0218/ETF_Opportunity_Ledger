@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 根据完整性审计补齐原产品任务，明确开发、数据及部署依赖
-- Timestamp (UTC): 2026-10-06T10:14:41Z
+- Date: 2026-10-06
 - Owner: Faye
 - Route: plan
 - Source of truth: AGENTS.md；docs/project-intake/etf-opportunity-ledger.md；docs/etf-card-schema-v1.md；operations/planning/2026-09-29-replan-three-lanes.md；operations/reviews/2026-10-06-product-completeness-audit.md
@@ -16,7 +16,7 @@
 
 本轮仅审计与规划，尚未据此下发后续业务实现或部署指令；以下是待实施范围。这是当前任务边界，不新增逐轮 Owner 审批。
 
-> 2026-10-06 18:35（北京时间）Owner 同意继续。前两项已收敛为[真实观察与双页执行单](2026-10-06-observation-and-pages.md)，含明确字段口径及 Pi 并行取证任务；其余任务按下述依赖保留，A7 不变。
+> 2026-10-06 18:35Owner 同意继续。前两项已收敛为[真实观察与双页执行单](2026-10-06-observation-and-pages.md)，含明确字段口径及 Pi 并行取证任务；其余任务按下述依赖保留，A7 不变。
 
 完整缺口和提交归因见[审计](../reviews/2026-10-06-product-completeness-audit.md)。本计划修正 10 月 6 日首包计划遗漏的产品范围；其中有效的数据验证纪律、隔离和研究边界继续适用。现有数据、台账与引擎保留，行情长表退回辅助检查用途，不能继续代替主产品。
 

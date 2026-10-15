@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 评估参考目录 `ref/auto_filter_stock` 的策略与回测结果是否可靠、能否用于 ETF 轮动
-- Timestamp (UTC): 2026-09-27
+- Date: 2026-09-27
 - Owner: Faye
 - Route: direct-execute（Owner 2026-09-27 指示「做一次最小验证的计算」）
 - Source of truth: AGENTS.md；intake §3；`ref/auto_filter_stock/strong_backtest.py`

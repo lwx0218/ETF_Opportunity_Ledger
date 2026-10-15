@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 按 Owner 授权对齐当前 Web UI 原生规划、执行与 review 路由
-- Timestamp (UTC): 2026-10-11T07:09:33Z
+- Date: 2026-10-11
 - Owner: Faye
 - Route: direct-execute
 - Source of truth: AGENTS.md；Owner 本次授权；Harness 上游提交 `a0555942fca73027d0e46f975db1382ad3e54163`

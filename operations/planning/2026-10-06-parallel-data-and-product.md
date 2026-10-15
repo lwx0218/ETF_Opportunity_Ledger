@@ -6,10 +6,10 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 数据来源验证与策略工程、前后端并行交付
-- Timestamp (UTC): 2026-10-05T17:18:27Z
+- Date: 2026-10-05
 - Owner: Faye
 - Route: plan
-- Source of truth: Owner 2026-10-06 01:18（北京时间）本轮指令；AGENTS.md；docs/project-intake/etf-opportunity-ledger.md；operations/planning/2026-09-29-replan-three-lanes.md；docs/etf-card-schema-v1.md（含全部补充）
+- Source of truth: Owner 2026-10-06 01:18本轮指令；AGENTS.md；docs/project-intake/etf-opportunity-ledger.md；operations/planning/2026-09-29-replan-three-lanes.md；docs/etf-card-schema-v1.md（含全部补充）
 
 ## 决定与交付目标
 

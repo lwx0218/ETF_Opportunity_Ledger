@@ -16,9 +16,9 @@ python -m src.ledger init      [--db data/ledger.sqlite]    # 建库并同步 do
 python -m src.ledger summary   [--db …]                     # 分母、分档、手动出场占比、校准分桶
 ```
 
-代码里用 `src.ledger.store.Ledger`：`create_card(card, evidence, agent_score)` → `owner_score` → `enter` → `append_daily` → `exit` → `finalize`；`void` 作废。正式台账 `data/ledger.sqlite` 入 Git（replan §11）：`journal_mode = DELETE`，提交时不留 `-journal` / `-wal`；测试只许连临时库（`ETF_LEDGER_TESTING` 置位时连默认库即报错）。时间一律北京时间 `YYYY-MM-DDTHH:MM`，百分数存数值（12.5 = 12.5%）。卡片上的所有价格（失效位、进场、出场、每日收盘、止损）都在该卡的研究序列上，与信号同一口径；执行 ETF 的真实成交不在本层。
+代码里用 `src.ledger.store.Ledger`：`create_card(card, evidence, agent_score)` → `owner_score` → `enter` → `append_daily` → `exit` → `finalize`；`void` 作废。正式台账 `data/ledger.sqlite` 入 Git（replan §11）：`journal_mode = DELETE`，提交时不留 `-journal` / `-wal`；测试只许连临时库（`ETF_LEDGER_TESTING` 置位时连默认库即报错）。时间一律 `YYYY-MM-DDTHH:MM`，百分数存数值（12.5 = 12.5%）。卡片上的所有价格（失效位、进场、出场、每日收盘、止损）都在该卡的研究序列上，与信号同一口径；执行 ETF 的真实成交不在本层。
 
-**数据库时钟**：触发器用 `ledger_now()`（`Ledger` 注册，北京时间到分钟，每个事务内冻结为同一时刻）判断截止与「不能写未来」；各表的 `recorded_at` 必须等于它。没注册这个函数的连接（sqlite3 命令行、别的进程）写不进台账行与固定源版本；自己注册同名函数等于注入时钟，属于蓄意绕过，存储层不防。注入时钟只用于回放：`Ledger(回放库, clock=…, replay=True)`，不能指向正式库；库第一次打开时记下时钟模式（`ledger_meta.clock` = real / replay），之后换模式打开即拒绝——回放写出的卡进不了正式台账。
+**数据库时钟**：触发器用 `ledger_now()`（`Ledger` 注册，到分钟，每个事务内冻结为同一时刻）判断截止与「不能写未来」；各表的 `recorded_at` 必须等于它。没注册这个函数的连接（sqlite3 命令行、别的进程）写不进台账行与固定源版本；自己注册同名函数等于注入时钟，属于蓄意绕过，存储层不防。注入时钟只用于回放：`Ledger(回放库, clock=…, replay=True)`，不能指向正式库；库第一次打开时记下时钟模式（`ledger_meta.clock` = real / replay），之后换模式打开即拒绝——回放写出的卡进不了正式台账。
 
 **schema 版本**：`ledger_meta.schema` = `v1.1-i`（新库建库时写入；手动 / 论点作废信号的记录时限，P6f-2）。之前版本建的库（P3 / P5 的回放库没有 `evidence_status` 等列；P6b 的 `v1.1` 库出场记录没有触发收盘；P6c 的 `v1.1-f` 库没有出场信号表；P6d 的 `v1.1-g` 库没有 `ew_daily` / `job_days`；P7 的 `v1.1-g.1` 库出场信号表没有 `seq`；P6e-2 的 `v1.1-h` 库没有信号时限）打开即拒绝并提示迁移；正式台账按 A7 还没有启用，所以本包不提供迁移脚本，旧回放库删掉重跑即可。
 

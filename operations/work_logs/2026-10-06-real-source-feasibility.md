@@ -4,10 +4,10 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 为 Pi 全历史采集寻找并验证真实数据路径
-- Timestamp (UTC): 2026-10-05T17:27:00Z
+- Date: 2026-10-05
 - Owner: Faye
 - Route: review-only
-- Source of truth: Owner 2026-10-06 01:18（北京时间）指令；operations/planning/2026-10-06-parallel-data-and-product.md；本轮公开来源原响应
+- Source of truth: Owner 2026-10-06 01:18指令；operations/planning/2026-10-06-parallel-data-and-product.md；本轮公开来源原响应
 
 ## 结论
 

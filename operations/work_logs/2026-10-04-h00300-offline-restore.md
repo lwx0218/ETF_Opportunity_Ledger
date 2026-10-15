@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: H00300 离线恢复与正式 build 输入质量门禁
-- Timestamp (UTC): 2026-10-04T12:53:14Z
+- Date: 2026-10-04
 - Owner: Faye
 - Route: direct-execute
 - Source of truth: Owner 2026-10-04 本包指令；AGENTS.md；`operations/work_logs/2026-10-04-s1-data-delivery.md`

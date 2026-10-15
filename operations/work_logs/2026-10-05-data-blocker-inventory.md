@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 只读整理短窗证据、H00905 部分年度材料与研究输入阻塞
-- Timestamp (UTC): 2026-10-05T12:24:53Z
+- Date: 2026-10-05
 - Owner: Faye
 - Route: review-only
 - Source of truth: Owner 本轮指令；main `81e101e999812c5d5b7cb7bd771cb7e424338357`；data/market.sqlite；现有 requests/recorded 与正式 preflight 报告

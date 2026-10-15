@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: replan §11 P7——`src/data`、`src/indicators` 读写、`src/research/prereg_v1/panel.py`、`src/ledger`（`ew_daily` 表、版本）、`src/jobs`、`.gitignore`、四份文档（阻塞 astra S1）
-- Timestamp (UTC): 2026-10-01
+- Date: 2026-10-01
 - Owner: Faye
 - Executor: Claude Code（云端）；包末复核：只读 reviewer 子代理
 - Route: direct-execute（Owner 指示「先 P7，再 P6e-1，最后 P6e-2」）
@@ -31,7 +31,7 @@
 python -m src.data probe --end 2026-09-30 --record outputs/data/recorded/
 python -m src.data backfill --end 2026-09-30
 python -m src.data calendar outputs/calendar/sse-trading-days.csv     # 深交所 monthList 生成的清单，一行一个交易日
-# 北京时间 05:00 之后
+#  05:00 之后
 python -m src.data package --end 2026-09-30
 python -m src.data verify outputs/research-package-2026-09-30.sqlite
 git add data/market.sqlite && git commit …                            # 库文件提交前没有 -journal / -wal

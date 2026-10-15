@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: replan §8 P6a / P6b 合并后的研究逻辑复核（只读；工程复核已由 CC 包末 reviewer 完成）
-- Timestamp (UTC): 2026-09-30
+- Date: 2026-09-30
 - Owner: Faye
 - Reviewer: Claude（Cowork）
 - Route: review-only

@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: replan §3 P5——收盘后流程骨架（update → build → 候选卡 → 在场卡每日行 → 失效位 / 移动止盈 → 出场 → 跟踪期统计），幂等
-- Timestamp (UTC): 2026-09-29
+- Date: 2026-09-29
 - Owner: Faye
 - Executor: Claude Code（云端）；包末复核：只读 reviewer 子代理
 - Route: direct-execute（Owner 指示按 replan §3 顺序推进；P5 在 P2、P3 之后）

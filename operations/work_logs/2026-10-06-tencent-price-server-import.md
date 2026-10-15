@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 固定原件批次副本复验、正式离线入库及合并分支清理
-- Timestamp (UTC): 2026-10-06T07:21:01Z
+- Date: 2026-10-06
 - Owner: Faye
 - Route: direct-execute
 - Source of truth: Owner 本轮授权；docs/tencent-price-index-offline.md；main 6e5d017

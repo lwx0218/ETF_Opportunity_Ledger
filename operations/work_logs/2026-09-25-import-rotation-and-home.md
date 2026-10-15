@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 导入 QTradeResearch 权威文档、轮动面板与机会首页原型、研究脚本与设计参考资产
-- Timestamp (UTC): 2026-09-25T11:35:22Z
+- Date: 2026-09-25
 - Owner: Faye
 - Route: direct-execute
 - Source of truth: AGENTS.md；README「从这里接手」第 2 步；Owner 2026-09-25 指示「把当下完成的轮动和首页的部分做一个 bundle，我去做一次提交」

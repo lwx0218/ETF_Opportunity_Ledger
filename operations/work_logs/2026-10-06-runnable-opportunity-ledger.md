@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 三态产品接线、隔离演示与已定评分审查
-- Timestamp (UTC): 2026-10-06T03:42:53Z
+- Date: 2026-10-06
 - Owner: Faye
 - Route: direct-execute
 - Source of truth: Owner 本轮代码与合并授权；operations/planning/2026-10-06-parallel-data-and-product.md；AGENTS.md

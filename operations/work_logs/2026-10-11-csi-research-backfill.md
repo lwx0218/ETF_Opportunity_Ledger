@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 24 个容器 CSI 研究序列回填（runs 7/8）入库，复原审计过的 000905 离线价格序列
-- Timestamp (UTC): 2026-10-11T14:10:00Z
+- Date: 2026-10-11
 - Owner: Faye
 - Route: direct-execute
 - Baseline: dev `f7219fa9dda3eaf989ba7e22d08e113a08453fb3`（回填代码为 dev `f16b708`，记录在 `runs.git_commit`）

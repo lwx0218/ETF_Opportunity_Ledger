@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: replan §3 P3——按 card schema v1 建 SQLite 存储，冻结字段在存储层强制
-- Timestamp (UTC): 2026-09-29
+- Date: 2026-09-29
 - Owner: Faye
 - Executor: Claude Code（云端）
 - Route: direct-execute（Owner 指示按 replan §3 顺序推进）
@@ -34,7 +34,7 @@
 | F6 中 | calibration 把未结卡算进 n | n 只含终态卡（已结 + 作废），在途单列 |
 | F7 中 | 固定源表可直接改 | 按版本只追加（`source_loads` + `current_sources`）；证据存等级快照；Python 层再对照 CSV |
 | F8 中 | 日期只用 GLOB，`2026-02-31`、`2026-19-99`、空格分隔都能进 | 日期 / 时刻往返校验 |
-| F9 低 | 重跑重复建卡；期满不查跟踪期；进场价低于失效位；tracking_days 未锁 20；recorded_at 时区不一 | `scan_key` 唯一；出场后满 20 行每日才能期满；进场价须高于失效位；`tracking_days` 固定 20；`recorded_at` 统一北京时间 |
+| F9 低 | 重跑重复建卡；期满不查跟踪期；进场价低于失效位；tracking_days 未锁 20；recorded_at 时区不一 | `scan_key` 唯一；出场后满 20 行每日才能期满；进场价须高于失效位；`tracking_days` 固定 20；`recorded_at` 统一 |
 
 复验跟进（已修）：
 1. owner 仍可能在出场后打分（截止写晚）：进场不得早于 owner 截止那次开盘，owner 打分时交易未发生；立卡不得晚于信号日后第一个工作日 09:30。

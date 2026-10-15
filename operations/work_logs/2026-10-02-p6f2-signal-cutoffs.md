@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: replan §13 P6f-2——`src/ledger/` + `src/jobs/` 实现 schema v1.1-i 四条（不阻塞 V1），版本各升一版
-- Timestamp (UTC): 2026-10-02
+- Date: 2026-10-02
 - Owner: Faye
 - Executor: Claude Code（云端）；包末复核：只读 reviewer 子代理
 - Route: direct-execute（Owner 指示「G1 → P6f-1 → P6f-2」）

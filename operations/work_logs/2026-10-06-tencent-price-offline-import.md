@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 000852 / 000905 固定证据批次离线导入
-- Timestamp (UTC): 2026-10-06T05:19:05Z
+- Date: 2026-10-06
 - Owner: Faye
 - Route: direct-execute
 - Source of truth: Owner 本轮指令及已有代码合并授权；357d2f3 报告与证据索引；AGENTS.md；docs/data-layer.md

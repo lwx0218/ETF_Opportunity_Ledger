@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 对照原始产品合同审计当前交付，定位范围偏移与遗漏
-- Timestamp (UTC): 2026-10-06T10:14:41Z
+- Date: 2026-10-06
 - Owner: Faye
 - Route: review-only
 - Source of truth: AGENTS.md；docs/project-intake/etf-opportunity-ledger.md；docs/etf-card-schema-v1.md；operations/planning/2026-09-27-orchestration-input.md；operations/planning/2026-09-29-replan-three-lanes.md

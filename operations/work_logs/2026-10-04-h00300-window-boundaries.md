@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 修复 2005 年硬截断及海外尾日可用性误判
-- Timestamp (UTC): 2026-10-04T14:27:28Z
+- Date: 2026-10-04
 - Owner: Faye
 - Route: direct-execute
 - Source of truth: Owner 本轮复核修复与条件合并授权；AGENTS.md；`docs/h00300-offline-restore.md`

@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: observation-and-pages 第一至三节
-- Timestamp (UTC): 2026-10-06T11:32:00Z
+- Date: 2026-10-06
 - Owner: Faye
 - Route: direct-execute
 - Source of truth: Owner 本轮指令；operations/planning/2026-10-06-observation-and-pages.md §1–3；AGENTS.md
@@ -13,7 +13,7 @@
 
 从最新 `main=ae7b63d` 建立 `codex/observation-and-pages`。开发前对照完整 intake、framework §12–13、冻结卡片合同、Main/Detail/Scroll 与轮动方向稿和深浅设计规则。复核者先读原始要求，再读本轮执行单；没有把旧原型的 17 容器、510300、回放成绩或参数带入产品。
 
-新增 `src/observation`，仅在调用方提供的只读快照上执行 SELECT。研究选择来自当前 coverage；执行 ETF、独立价格候选分别显示，不替换研究选择。观察日按北京时间 15:00 与官方日历裁定，不把行情末日冒充当前观察日。海外遵守 D−1 与原生指标、第五个连续平盘日断档；每一历史周先截至自身日期再选量源。字段返回身份、用途、价格口径、观察日、原生日、窗口、获取时刻及具体不可用原因。
+新增 `src/observation`，仅在调用方提供的只读快照上执行 SELECT。研究选择来自当前 coverage；执行 ETF、独立价格候选分别显示，不替换研究选择。观察日按 15:00 与官方日历裁定，不把行情末日冒充当前观察日。海外遵守 D−1 与原生指标、第五个连续平盘日断档；每一历史周先截至自身日期再选量源。字段返回身份、用途、价格口径、观察日、原生日、窗口、获取时刻及具体不可用原因。
 
 复用既有 RS、ATR20、月末 z 和形态函数：22 个完整对齐收盘点才算 RS；状态要求完整历史 close/来源及最近 70 根真实 OHLC，不重启 EMA；ext 使用内部 ATR14。原始异常保留，不补 OHL 或扩包络；无效量仅在计算副本遮为缺失，避免负量伪造放量状态。未核定单位不画量柱。声明池仍是 37 个容器，未知缺口时全池 rank=null；已知上市/预热排除与未知缺口分开，排名为 method=min。完整研究质量资格另行显示，未由字段可用性放行研究。
 
@@ -57,7 +57,7 @@
 
 - `outputs/observation-preview/index.json`：实际双页深浅、窄屏、执行/候选详情截图的 URL、源码与图片哈希；`frontend-journey.json`：前端旅程断言。
 - `outputs/independent-product-review/market/product-review.json`：独立真实双页产品复核及截图；相邻 `demo/` 含独立评分、作废、出场信号、次日开盘、连续 20 个出场后观察到“已结”的证据。
-- 本轮早期 37×12 首算约 5.36 秒；同一快照与参数的缓存请求约 0.08 秒。缓存按文件版本、北京时间日期/15:00 边界及请求身份隔离，未用末日量源污染历史列。
+- 本轮早期 37×12 首算约 5.36 秒；同一快照与参数的缓存请求约 0.08 秒。缓存按文件版本、日期/15:00 边界及请求身份隔离，未用末日量源污染历史列。
 
 ## 复现与剩余范围
 

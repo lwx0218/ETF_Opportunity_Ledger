@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: S1 行情保全、官方日历导入、提交与来源锚定
-- Timestamp (UTC): 2026-10-04T10:05:21Z
+- Date: 2026-10-04
 - Owner: Faye
 - Route: direct-execute
 - Source of truth: 本轮 Owner 指令；`operations/planning/2026-09-29-replan-three-lanes.md` §4/8/11/13；AGENTS.md

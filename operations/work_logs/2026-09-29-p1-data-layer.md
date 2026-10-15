@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: replan §3 P1——数据层代码 + probe（数据源可用性的最小验证）
-- Timestamp (UTC): 2026-09-29
+- Date: 2026-09-29
 - Owner: Faye
 - Executor: Claude Code（云端）；包末复核：只读 reviewer 子代理
 - Route: direct-execute（Owner 指示「按 §3 从 P1 开始，P1 先交 probe」）
@@ -61,7 +61,7 @@
 ## 下一步（astra S1 注意事项）
 
 - 顺序：`probe --record` → 全量 `backfill --end 2026-09-30`（不带 `--only`）→ `package --end 2026-09-30` → `verify`。backfill 之后不要再跑 probe（package 会把不一致的容器标 error，但数据就缺了）。
-- `package --end 2026-09-30` 要等北京时间 2026-10-01 05:00（美股 09-30 收盘）之后。
+- `package --end 2026-09-30` 要等 2026-10-01 05:00（美股 09-30 收盘）之后。
 - 首次实网重点看：中证对基日之前年份的返回（notes 里若出现「first_date 可能被截短」要逐条看）；T07（931743）中证元数据发布日早于基日，若早年只有零星几行、之后整年为空，会按空段规则整条失败，看它的 error。
 - 东财执行序列从 2000 年按 120 天分段约 82 次请求 / 只，41 条序列约 80 分钟；若被限流用 `backfill --exec-start 2005-01-01` 之类只缩短执行序列，**不要调 `--start`**（会丢研究序列的设计期）。
 - 服务器需有 tzdata（`python -c "import zoneinfo; zoneinfo.ZoneInfo('America/New_York')"`）；缺了也能跑，但收盘判定按冬令时，夏令时期间会多等一小时。

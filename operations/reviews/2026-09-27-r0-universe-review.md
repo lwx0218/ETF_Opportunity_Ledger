@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: R0 第一阶段证据包与 P2 引用修正复核，不是完整 R0 验收
-- Timestamp (UTC): 2026-09-27T13:03:09Z
+- Date: 2026-09-27
 - Owner: Faye
 - Route: review-only
 - Source of truth: AGENTS.md；operations/planning/2026-09-27-astra-execution.md；operations/work_logs/2026-09-27-r0-universe.md

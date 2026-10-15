@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 三个年末缺日补录代码、审计与年度恢复兼容
-- Timestamp (UTC): 2026-10-05T11:36:55Z
+- Date: 2026-10-05
 - Owner: Faye
 - Route: direct-execute
 - Source of truth: Owner 本轮指令；AGENTS.md；`operations/work_logs/2026-10-04-h00300-server-restore.md`

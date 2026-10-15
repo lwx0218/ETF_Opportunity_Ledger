@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: replan §10 P6d-2——`src/ledger/` + `src/jobs/` 实现 `docs/etf-card-schema-v1.md` v1.1-g 第 3 条，`SCHEMA_VERSION` 与 `TERMS_VERSION` 各升一版（不阻塞 V1）
-- Timestamp (UTC): 2026-10-01
+- Date: 2026-10-01
 - Owner: Faye
 - Executor: Claude Code（云端）；包末复核：只读 reviewer 子代理
 - Route: direct-execute（Owner 指示「先做 P6d-1，再做 P6d-2」）

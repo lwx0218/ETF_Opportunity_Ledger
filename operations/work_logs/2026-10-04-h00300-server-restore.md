@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 日期约束升级与原年度响应恢复
-- Timestamp (UTC): 2026-10-04
+- Date: 2026-10-04
 - Owner: Faye
 - Route: direct-execute
 - Source of truth: Owner 本轮授权；docs/h00300-offline-restore.md；main c7091f0

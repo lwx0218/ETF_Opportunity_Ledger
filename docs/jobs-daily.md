@@ -12,7 +12,7 @@
 ## 用法
 
 ```bash
-# 北京时间 15:30 之后运行（A 股 D 日已收盘；海外容器按 I-20 用 D−1 的 K 线；定时与无人值守交 astra，replan §4 S3）
+#  15:30 之后运行（A 股 D 日已收盘；海外容器按 I-20 用 D−1 的 K 线；定时与无人值守交 astra，replan §4 S3）
 python -m src.jobs daily  --rules config/ledger-rules.json [--date D] [--db data/ledger.sqlite] [--market data/market.sqlite] \
        [--events-dir data/events] [--no-update]
 # 回放冒烟（只验流程；必须用单独的回放库，正式库会被拒绝）

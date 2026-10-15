@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: 000852 / 000905 年度原响应保全与全历史候选核验
-- Timestamp (UTC): 2026-10-06T04:03:42Z
+- Date: 2026-10-06
 - Owner: Faye
 - Route: direct-execute
 - Source of truth: Owner 本轮指令；operations/work_logs/2026-10-06-real-source-feasibility.md「Pi 下一包」；main 60196ae

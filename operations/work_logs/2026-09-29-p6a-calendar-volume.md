@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: replan §8 P6a——`src/indicators/build.py` 实现 I-20、I-21（阻塞 V1）
-- Timestamp (UTC): 2026-09-29
+- Date: 2026-09-29
 - Owner: Faye
 - Executor: Claude Code（云端）；包末复核：只读 reviewer 子代理
 - Route: direct-execute（Owner 指示「读 replan §8，做 P6a 再 P6b」）

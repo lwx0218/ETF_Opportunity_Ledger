@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: SQLite 3.42.0 日期约束回归及旧 market-v1 升级
-- Timestamp (UTC): 2026-10-04T15:40:56Z
+- Date: 2026-10-04
 - Owner: Faye
 - Route: direct-execute
 - Source of truth: Owner 本轮指令；AGENTS.md；`docs/data-layer.md`

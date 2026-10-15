@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: replan §3 P2——状态机抽出、ATR20、rs_1m、z_month → V1 长表 + 基准表
-- Timestamp (UTC): 2026-09-29
+- Date: 2026-09-29
 - Owner: Faye
 - Executor: Claude Code（云端）；包末复核：只读 reviewer 子代理
 - Route: direct-execute（Owner 指示按 replan §3 顺序推进）

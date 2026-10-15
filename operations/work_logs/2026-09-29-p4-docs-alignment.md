@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: replan §3 P4——把已批准的 A1–A7 / C 与 A6 的权威位置落到文档与 AGENTS.md
-- Timestamp (UTC): 2026-09-29
+- Date: 2026-09-29
 - Owner: Faye
 - Executor: Claude Code（云端）
 - Route: direct-execute（Owner 指示：改 AGENTS.md 的这一包单独一个 PR）

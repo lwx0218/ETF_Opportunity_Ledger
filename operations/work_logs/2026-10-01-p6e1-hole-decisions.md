@@ -4,7 +4,7 @@
 
 - Project: ETF_Opportunity-Ledger
 - Task: replan §12 P6e-1——`src/research/prereg_v1/{engine,signals,characterize,run}.py` 实现 implementation-notes I-26（V1 之前合并）
-- Timestamp (UTC): 2026-10-01
+- Date: 2026-10-01
 - Owner: Faye
 - Executor: Claude Code（云端）；包末复核：只读 reviewer 子代理
 - Route: direct-execute（Owner 指示「P7 → P6e-1 → P6e-2」）
