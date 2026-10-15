@@ -21,12 +21,13 @@ import pandas as pd
 from src.data import db as DB
 from src.data import runner as data_runner
 from src.indicators.calendar import load_trading_days
-from src.ledger.store import DEFAULT_DB, Ledger
+from src.ledger.store import DEFAULT_DB, Ledger, LedgerError
 from src.research.prereg_v1.panel import read_table
 from . import rules as R
 from .daily import DailyJob, check_panel
 from .guard import preflight
 from .live import coverage, instruments, live_panel
+from .maintain import execution_panel, open_cards, preflight_open
 
 
 def default_day() -> date:
@@ -47,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
     d = sub.add_parser("daily")
     d.add_argument("--date", type=date.fromisoformat, default=None, help="默认：A 股已收盘的最近日期")
     d.add_argument("--no-update", action="store_true", help="不先跑数据增量（库已是最新时用）")
+    d.add_argument("--maintain-only", action="store_true", help="不扫描、不要求启用规则；只维护已有的在场卡")
+    d.add_argument("--replay", action="store_true", help="用当日 16:00 的回放时钟打开台账（不能指向正式库）")
     d.add_argument("--market", type=Path, default=DB.MARKET_DB, help="行情库")
     r = sub.add_parser("replay")
     r.add_argument("--panel", type=Path, required=True, help="build 产出的面板库 panel-D.sqlite")
@@ -64,34 +67,61 @@ def main(argv: list[str] | None = None) -> int:
     rules = R.load_rule_config(a.rules, rule_problems)
     for x in rule_problems:
         print(f"规则配置：{x}", file=sys.stderr)
-    if not rules:
+    if not rules and not (a.cmd == "daily" and a.maintain_only):
         print(f"规则配置里没有启用的规则：confirmed_terms 须为 {R.TERMS_VERSION}、规则 enabled 为 true（V1 结论前全部关闭，A7）",
               file=sys.stderr)
         return 2
 
     if a.cmd == "daily":
+        if not Path(a.db).exists():
+            print(f"正式台账不存在，未创建。先运行：python -m src.ledger init --db {a.db}", file=sys.stderr)
+            return 3
         day = a.date or default_day()
+        scope = "mvp" if a.maintain_only else None
         if not a.no_update:
-            failed = [r for r in data_runner.update(day, db=a.market) if not r.get("ok")]
+            failed = [r for r in data_runner.update(day, db=a.market, scope=scope) if not r.get("ok")]
             for r in failed:
                 print(f"update 失败：{r.get('theme_id')} {r.get('code')}/{r.get('adj')}：{(r.get('error') or '')[:120]}", file=sys.stderr)
+            if a.maintain_only and failed:
+                print("mvp 更新未完成，已有行情未覆盖，台账未记为已处理", file=sys.stderr)
+                return 1
         trading_days = calendar_or_exit(a.market)
-        panel, bench, bench_open, problems = live_panel(a.market, day, trading_days)
-        covs = coverage(a.market)
-        done = set()
-        if Path(a.db).exists():                          # 先做运行前检查再建库：被拦下时不留一个空台账库
-            L = Ledger(a.db)
-            done = L.processed_days()
-            L.close()
-        blocking, notes = preflight(panel, bench, day.isoformat(), covs, done)
-        if blocking:
-            print("\n".join(["运行前检查未通过，台账未动："] + blocking), file=sys.stderr)
-            return 3
-        L = Ledger(a.db)
+        clock = {"now": f"{day.isoformat()}T16:00"}
         try:
-            job = DailyJob(L, panel, bench, rules=rules, instruments=instruments(covs=covs), events_dir=a.events_dir,
-                           bench_open=bench_open, trading_days=trading_days)
-            rep = job.run(day.isoformat())
+            L = Ledger(a.db, clock=lambda: clock["now"], replay=True) if a.replay else Ledger(a.db)
+        except LedgerError as exc:
+            print(str(exc), file=sys.stderr)
+            return 3
+        try:
+            if a.maintain_only:
+                held = open_cards(L)
+                if not held:
+                    dates = [] if trading_days is None else [item.date().isoformat() for item in trading_days]
+                    if day.isoformat() in dates:
+                        L.mark_processed(day.isoformat())
+                        print(json.dumps({"day": day.isoformat(), "open_cards": 0, "marked": True}, ensure_ascii=False))
+                    else:
+                        print(json.dumps({"day": day.isoformat(), "open_cards": 0, "marked": False, "note": "非交易日或没有官方日历"}, ensure_ascii=False))
+                    return 0
+                panel, bench, bench_open, trading_days = execution_panel(a.market, held, day)
+                blocking = preflight_open(day.isoformat(), held, panel, bench, trading_days, L.processed_days())
+                if blocking:
+                    print("\n".join(["运行前检查未通过，台账未动："] + blocking), file=sys.stderr)
+                    return 3
+                covs, problems, notes = [], [], []
+                job = DailyJob(L, panel, bench, rules=rules, instruments={}, events_dir=a.events_dir,
+                               bench_open=bench_open, trading_days=trading_days)
+                rep = job.run(day.isoformat(), maintain_only=True)
+            else:
+                panel, bench, bench_open, problems = live_panel(a.market, day, trading_days)
+                covs = coverage(a.market)
+                blocking, notes = preflight(panel, bench, day.isoformat(), covs, L.processed_days())
+                if blocking:
+                    print("\n".join(["运行前检查未通过，台账未动："] + blocking), file=sys.stderr)
+                    return 3
+                job = DailyJob(L, panel, bench, rules=rules, instruments=instruments(covs=covs), events_dir=a.events_dir,
+                               bench_open=bench_open, trading_days=trading_days)
+                rep = job.run(day.isoformat())
             if rep.blocked:
                 print(f"台账未动：{rep.blocked}", file=sys.stderr)
                 return 3

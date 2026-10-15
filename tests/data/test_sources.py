@@ -223,6 +223,51 @@ class Mapping(unittest.TestCase):
         self.assertEqual(sum(1 for r in uni if U.in_panel(r)), 37)
         self.assertTrue(all(r["research_route"] in U.RESEARCH_CHAIN for r in uni if U.in_panel(r)))
 
+    def test_mvp_scope_is_execution_plus_benchmark(self):
+        from src.data.runner import mvp_targets, update
+        targets = mvp_targets(U.load(), {})
+        codes = [item[3] for item in targets]
+        self.assertEqual(len(codes), len(set(codes)))
+        self.assertEqual(len([item for item in targets if item[2] == "exec"]), 37)
+        self.assertIn("H00300", codes)
+        self.assertIn("512200", codes)
+        self.assertNotIn("931775", codes)
+        with self.assertRaisesRegex(SystemExit, "scope"):
+            update(date(2026, 9, 30), scope="full")
+
+
+class CsindexThrottle(unittest.TestCase):
+    def test_forbidden_waits_once_then_uses_the_payload(self):
+        payload = json.loads((FX / "csindex_000300.json").read_text(encoding="utf-8"))
+        calls = {"n": 0}
+
+        def fake(url, params=None, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise http.FetchError("HTTPError: HTTP 403 Forbidden  ← https://www.csindex.com.cn/")
+            return payload
+
+        with mock.patch.object(http, "get_json", side_effect=fake), mock.patch("src.data.sources.time.sleep") as sleep:
+            got = S.fetch_csindex("000300", date(2026, 9, 24), date(2026, 9, 25), forbidden_wait=90)
+        sleep.assert_called_once_with(90)
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(got.rows[-1]["close"], 4580.4)
+
+    def test_second_forbidden_does_not_invent_rows(self):
+        def fake(url, params=None, **kw):
+            raise http.FetchError("HTTPError: HTTP 403 Forbidden")
+
+        with mock.patch.object(http, "get_json", side_effect=fake), mock.patch("src.data.sources.time.sleep") as sleep:
+            with self.assertRaises(http.FetchError):
+                S.fetch_csindex("000300", date(2026, 9, 24), date(2026, 9, 25), forbidden_wait=90)
+        sleep.assert_called_once_with(90)
+
+    def test_year_gap_uses_the_given_pause(self):
+        payload = json.loads((FX / "csindex_000300.json").read_text(encoding="utf-8"))
+        with mock.patch.object(http, "get_json", return_value=payload), mock.patch("src.data.sources.time.sleep") as sleep:
+            S.fetch_csindex("000300", date(2025, 6, 1), date(2026, 9, 25), pause=1.5)
+        sleep.assert_called_once_with(1.5)
+
 
 if __name__ == "__main__":
     unittest.main()

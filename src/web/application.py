@@ -1,11 +1,14 @@
 """HTTP 无关的薄应用层；不改冻结字段，不向浏览器投影 agent 个体评分。"""
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import secrets
 import sqlite3
 import threading
+import time as wall
 from contextlib import contextmanager
 from datetime import date, datetime, time
 from pathlib import Path
@@ -14,13 +17,17 @@ from zoneinfo import ZoneInfo
 from src.data import db as MarketDB
 from src.data.quality import preflight
 from src.data.universe import PANEL_STATUSES
+from src.indicators.build import BENCH_CODE
+from src.indicators.calendar import load_trading_days
+from src.jobs.daily import next_weekday_open
 from src.jobs.rules import ACTIVE_BEFORE_V1, load_rule_config
 from src.ledger.read import summary
-from src.ledger.store import CARD_FIELDS, DEFAULT_DB, ROOT, SCHEMA_VERSION, LedgerError, beijing_now
+from src.ledger.store import CARD_FIELDS, DEFAULT_DB, FROZEN_FIELDS, ROOT, SCHEMA_VERSION, Ledger, LedgerError, beijing_now
 from src.scoring.review import counterfactual, review_report
 from src.observation import observe
 from .demo import DemoStore
 from .demo_observation import demo_market
+from .write_card import FormError, active_sources, assemble, panel_containers, source_grades
 
 
 class RequestError(ValueError):
@@ -120,14 +127,27 @@ def read_market(path: Path):
 
 class Application:
     def __init__(self, demo_dir=ROOT / "outputs" / "app-demo", *, mode="demo",
-                 ledger_path=DEFAULT_DB, market_path=ROOT / "data" / "market.sqlite", demo_only=False):
+                 ledger_path=DEFAULT_DB, market_path=ROOT / "data" / "market.sqlite", demo_only=False,
+                 write=False, write_token=None, clock=None):
         if mode not in ("demo", "readonly", "market"):
             raise ValueError("mode must be demo, readonly or market")
         if demo_only and mode != "demo":
             raise ValueError("纯演示服务只能使用 demo 模式")
         if demo_only and not Path(demo_dir).resolve().is_relative_to((ROOT / "outputs").resolve()):
             raise ValueError("纯演示目录必须位于 outputs 内")
+        if write and mode != "readonly":
+            raise ValueError("--write 只在 --mode readonly 下有效")
+        if write and (not isinstance(write_token, str) or len(write_token) < 16):
+            raise ValueError("开启 --write 必须设置环境变量 LEDGER_WRITE_TOKEN（至少 16 个字符）")
+        if clock is not None and not write:
+            raise ValueError("注入时钟只用于带 --write 的回放验收")
+        if clock is not None and not _minute(clock):
+            raise ValueError("时钟须为 YYYY-MM-DDTHH:MM")
+        if clock is not None and Path(ledger_path).resolve() == DEFAULT_DB.resolve():
+            raise ValueError("回放不能写正式台账库")
         self.mode, self.demo_only = mode, demo_only
+        self.write, self.write_token, self.clock = bool(write), write_token, clock
+        self.sessions: dict[str, float] = {}
         self.ledger_path, self.market_path = Path(ledger_path), Path(market_path)
         self.lock = threading.RLock()
         self.revision, self.csrf_token = ((None, None) if mode == "market" else
@@ -159,7 +179,23 @@ class Application:
         mode = self.effective_mode(mode)
         if mode == "market":
             raise RequestError("行情只读服务不读取机会台账", 403)
-        return read_ledger(self.demo.path if mode == "demo" else self.ledger_path, replay=mode == "demo")
+        replay = mode == "demo" or (mode == "readonly" and self.clock is not None)
+        return read_ledger(self.demo.path if mode == "demo" else self.ledger_path, replay=replay)
+
+    def clock_text(self):
+        return self.clock or beijing_now()
+
+    def session_ok(self, token):
+        if not token or not self.write:
+            return False
+        expiry = self.sessions.get(token)
+        if not expiry or expiry < wall.time():
+            self.sessions.pop(token, None)
+            return False
+        return True
+
+    def _rotate(self):
+        self.revision = secrets.token_urlsafe(24)
 
     def data_status(self):
         if self.demo_only or self.mode == "market":
@@ -179,15 +215,16 @@ class Application:
             self._data_cache = key, report
         return self._data_cache[1]
 
-    def state(self, mode=None):
+    def state(self, mode=None, session=None):
         with self.lock:
             mode = self.effective_mode(mode)
             if mode == "market":
                 market = read_market(self.market_path)
                 return {"mode": "market", "as_of": beijing_now(), "observation_as_of": market["last"],
-                        "writable": False, "demo_available": False, "cards": [], "market": market,
+                        "writable": False, "write_enabled": False, "authenticated": False,
+                        "demo_available": False, "cards": [], "market": market,
                         "ledger_note": "此观察入口不载入正式判断/扫描结果。"}
-            now = self.demo.now() if mode == "demo" else beijing_now()
+            now = self.demo.now() if mode == "demo" else self.clock_text()
             cards = []
             observation_as_of = None
             review = None
@@ -217,10 +254,12 @@ class Application:
                     "已过期" if now >= card["owner_score_deadline"] else "待独立评分")
             problems = []
             enabled = ["事件驱动"] if mode == "demo" else list(load_rule_config(ROOT / "config" / "ledger-rules.json", problems))
-            return {"mode": mode, "as_of": now, "observation_as_of": observation_as_of,
+            authed = mode == "readonly" and self.session_ok(session)
+            payload = {"mode": mode, "as_of": now, "observation_as_of": observation_as_of,
                     "demo_available": self.demo is not None, "readonly_available": self.mode != "market" and not self.demo_only,
-                    "writable": mode == "demo", "revision": self.revision,
-                    "csrf_token": self.csrf_token, "cards": cards, "summary": totals, "review": review,
+                    "writable": mode == "demo" or authed, "write_enabled": mode == "readonly" and self.write,
+                    "authenticated": authed,
+                    "revision": self.revision, "csrf_token": self.csrf_token, "cards": cards, "summary": totals, "review": review,
                     "scan": {"latest_processed_day": latest_processed_day,
                              "note": "配置启用不表示已扫描；此处仅报告台账已处理日。"},
                     "rules": {"enabled": enabled, "blocked": [] if mode == "demo" else [r for r in ACTIVE_BEFORE_V1 if r not in enabled] + ["形态突破"],
@@ -228,6 +267,10 @@ class Application:
                                       "；".join(problems) or "正式规则配置仅供查看，不表示已执行扫描。"},
                     "data_status": {"benchmark_ready": False, "research_ready": False,
                                     "note": "纯演示：行情全部合成，不读取正式数据库。"} if mode == "demo" else self.data_status()}
+            if payload["write_enabled"]:
+                payload["containers"] = panel_containers()
+                payload["sources"] = active_sources()
+            return payload
 
     def observation(self, mode=None, *, as_of=None, theme=None, series="execution", weeks=12):
         """页面只读投影；请求不能选择数据库、修改 coverage 或执行研究。"""
@@ -243,7 +286,7 @@ class Application:
         if not isinstance(weeks, int) or not 1 <= weeks <= 26:
             raise RequestError("周窗口须为 1–26")
         with self.lock:
-            now = datetime.fromisoformat(self.demo.now() if mode == "demo" else beijing_now()).replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+            now = datetime.fromisoformat(self.demo.now() if mode == "demo" else self.clock_text()).replace(tzinfo=ZoneInfo("Asia/Shanghai"))
             stamp = None
             if mode != "demo":
                 MarketDB.refuse_default_in_tests(self.market_path, MarketDB.MARKET_DB)
@@ -286,10 +329,10 @@ class Application:
             if row is None or json.loads(row[0]).get("status") not in PANEL_STATUSES:
                 raise RequestError("未知容器编号")
 
-    def detail(self, card_id, mode=None):
+    def detail(self, card_id, mode=None, session=None):
         with self.lock:
             mode = self.effective_mode(mode)
-            now = self.demo.now() if mode == "demo" else beijing_now()
+            now = self.demo.now() if mode == "demo" else self.clock_text()
             with self._reader(mode) as con:
                 card = one(con, f"SELECT {','.join(CARD_FIELDS)} FROM cards WHERE id=? AND sealed=1", (card_id,)) if con else None
                 if not card:
@@ -300,58 +343,209 @@ class Application:
                 daily = rows(con, "SELECT * FROM daily WHERE card_id=? ORDER BY date", (card_id,))
                 signals = rows(con, "SELECT * FROM exit_signals WHERE card_id=? ORDER BY seq", (card_id,))
                 owner = one(con, "SELECT score,reason,scored_at FROM strength_scores WHERE card_id=? AND rater='owner'", (card_id,))
+                has_agent = con.execute("SELECT 1 FROM strength_scores WHERE card_id=? AND rater='agent'", (card_id,)).fetchone()
                 evidence = rows(con, "SELECT * FROM evidence WHERE card_id=? ORDER BY seq", (card_id,))
                 comparisons = counterfactual(con, card_id)
             completed = sum(d["date"] > parts["exit"]["exit_date"] for d in daily) if parts["exit"] else 0
             signal_date = daily[-1]["date"] if daily else None
             can_signal = status == "当下" and bool(daily) and (not signals or
                 len(signals) == 1 and signals[0]["reason"] in ("失效位", "移动止盈") and signals[0]["signal_date"] == signal_date)
+            can = mode == "demo" or self.session_ok(session)
             return {"card": card, "status": status, **parts, "daily": daily, "evidence": evidence, "signals": signals,
                     "counterfactual": comparisons,
-                    "scores": {"owner": owner, "agent": None, "agent_hidden": card["evidence_status"] != "未检索"},
-                    "actions": {"can_score": mode == "demo" and owner is None and now < card["owner_score_deadline"] and card["evidence_status"] != "未检索",
-                                "can_void": mode == "demo" and status == "候选",
-                                "can_signal": mode == "demo" and can_signal,
+                    "scores": {"owner": owner, "agent": None, "agent_hidden": bool(has_agent)},
+                    "actions": {"can_score": can and owner is None and now < card["owner_score_deadline"] and card["evidence_status"] != "未检索",
+                                "can_void": can and status == "候选",
+                                "can_signal": can and can_signal,
                                 "signal_date": signal_date, "score_deadline": card["owner_score_deadline"]},
                     "tracking": {"completed": completed, "required": card["tracking_days"]}}
 
-    def mutate(self, action, body, *, card_id=None, mode=None):
+    def mutate(self, action, body, *, card_id=None, mode=None, session=None):
         with self.lock:
             mode = self.effective_mode(mode)
-            if mode != "demo":
+            if mode == "demo":
+                return self._mutate_demo(action, body, card_id=card_id, mode=mode)
+            if not (mode == "readonly" and self.write and self.session_ok(session)):
                 raise RequestError("正式入口只读", 403)
-            fields = {"score": {"score", "reason"}, "void": {"reason"},
-                      "exit-signal": {"reason", "manual_reason"}, "advance": set(), "reset": set()}
-            if action not in fields:
-                raise RequestError("未知操作", 404)
-            if not isinstance(body, dict) or set(body) - (fields[action] | {"revision"}):
+            if action == "create":
+                created = self._create(body)
+                self._rotate()
+                return {**self.state(mode, session), "created_id": created}
+            self._check_revision(body)
+            if set(body) & set(FROZEN_FIELDS):
                 raise RequestError("请求含不允许的字段；冻结字段不可修改")
-            if body.get("revision") != self.revision:
-                raise RequestError("页面已更新，请刷新后重试", 409)
-            if action in ("advance", "reset"):
-                getattr(self.demo, action)()
-            else:
-                detail = self.detail(card_id, mode)
-                reason = body.get("reason")
-                if not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
-                    raise RequestError("请填写理由（1–2000 字）")
-                with self.demo.open_ledger() as ledger:
-                    if action == "score":
-                        score = body.get("score")
-                        if type(score) is not int or not 0 <= score <= 5:
-                            raise RequestError("评分须为 0–5 的整数")
-                        ledger.owner_score(card_id, score, reason)
-                    elif action == "void":
-                        ledger.void(card_id, reason)
-                    else:
-                        if reason not in ("手动", "论点作废") or not detail["actions"]["can_signal"]:
-                            raise RequestError("当前不能声明此出场信号")
-                        manual = body.get("manual_reason")
-                        if reason == "手动" and (not isinstance(manual, str) or not manual.strip() or len(manual) > 2000):
-                            raise RequestError("手动出场须填写理由（1–2000 字）")
-                        if reason == "论点作废" and manual is not None:
-                            raise RequestError("论点作废不接受手动出场理由")
-                        latest = detail["daily"][-1]
-                        ledger.signal_exit(card_id, latest["date"], reason, latest["close"], manual)
-            self.revision = secrets.token_urlsafe(24)
-            return self.state(mode)
+            fields = {"score": {"score", "reason"}, "void": {"reason"}, "exit-signal": {"reason", "manual_reason"}}
+            if action not in fields or not isinstance(body, dict) or set(body) - (fields[action] | {"revision"}):
+                raise RequestError("请求含不允许的字段；冻结字段不可修改")
+            with self._writer() as ledger:
+                self._apply(ledger, action, body, card_id, self.detail(card_id, mode, session))
+            self._rotate()
+            return self.state(mode, session)
+
+    def _mutate_demo(self, action, body, *, card_id, mode):
+        fields = {"score": {"score", "reason"}, "void": {"reason"},
+                  "exit-signal": {"reason", "manual_reason"}, "advance": set(), "reset": set()}
+        if action not in fields:
+            raise RequestError("未知操作", 404)
+        if not isinstance(body, dict) or set(body) - (fields[action] | {"revision"}):
+            raise RequestError("请求含不允许的字段；冻结字段不可修改")
+        self._check_revision(body)
+        if action in ("advance", "reset"):
+            getattr(self.demo, action)()
+        else:
+            detail = self.detail(card_id, mode)
+            with self.demo.open_ledger() as ledger:
+                self._apply(ledger, action, body, card_id, detail)
+        self._rotate()
+        return self.state(mode)
+
+    def _check_revision(self, body):
+        if not isinstance(body, dict) or body.get("revision") != self.revision:
+            raise RequestError("页面已更新，请刷新后重试", 409)
+
+    def _apply(self, ledger, action, body, card_id, detail):
+        reason = body.get("reason")
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
+            raise RequestError("请填写理由（1–2000 字）")
+        if action == "score":
+            score = body.get("score")
+            if type(score) is not int or not 0 <= score <= 5:
+                raise RequestError("评分须为 0–5 的整数")
+            ledger.owner_score(card_id, score, reason)
+        elif action == "void":
+            ledger.void(card_id, reason)
+        else:
+            if reason not in ("手动", "论点作废") or not detail["actions"]["can_signal"]:
+                raise RequestError("当前不能声明此出场信号")
+            manual = body.get("manual_reason")
+            if reason == "手动" and (not isinstance(manual, str) or not manual.strip() or len(manual) > 2000):
+                raise RequestError("手动出场须填写理由（1–2000 字）")
+            if reason == "论点作废" and manual is not None:
+                raise RequestError("论点作废不接受手动出场理由")
+            latest = detail["daily"][-1]
+            ledger.signal_exit(card_id, latest["date"], reason, latest["close"], manual)
+
+    def login(self, body):
+        if not self.write:
+            raise RequestError("未找到操作", 404)
+        self._check_revision(body)
+        if not isinstance(body, dict) or set(body) - {"password", "revision"}:
+            raise RequestError("请求含不允许的字段")
+        password = body.get("password")
+        if not isinstance(password, str) or not hmac.compare_digest(
+                hashlib.sha256(password.encode()).digest(), hashlib.sha256(self.write_token.encode()).digest()):
+            raise RequestError("口令不正确", 403)
+        token = secrets.token_urlsafe(32)
+        self.sessions[token] = wall.time() + 12 * 3600
+        self._rotate()
+        return token
+
+    def logout(self, token):
+        self.sessions.pop(token, None)
+        self._rotate()
+
+    @contextmanager
+    def _writer(self):
+        if not self.ledger_path.exists():
+            raise RequestError("正式台账不存在。请先运行 python -m src.ledger init --db <路径>", 503)
+        ledger = Ledger(self.ledger_path, clock=lambda: self.clock, replay=True) if self.clock else Ledger(self.ledger_path)
+        try:
+            yield ledger
+        finally:
+            ledger.close()
+
+    def quote(self, theme_id, mode=None):
+        found = next((item for item in panel_containers() if item["theme_id"] == theme_id), None)
+        if found is None:
+            raise RequestError("未知容器")
+        observed = self.observation(mode, theme=theme_id, series="execution", weeks=1)
+        fields = (observed.get("detail") or {}).get("fields") or {}
+        close = (fields.get("close") or {}).get("value")
+        atr = (fields.get("atr20") or {}).get("value")
+        state = (fields.get("state") or {}).get("value")
+        rank = (fields.get("rank") or {}).get("value")
+        if not _finite(close) or not _finite(atr) or atr <= 0:
+            raise RequestError("该执行 ETF 的最近收盘或 ATR20 不可用")
+        return {"theme_id": theme_id, "container": found["container"], "code": found["code"], "name": found["name"],
+                "close": close, "atr20": atr, "suggested": round(close - 2 * atr, 6), "state": state,
+                "rank": rank, "close_date": observed.get("effective_date"),
+                "reason": (fields.get("atr20") or {}).get("reason")}
+
+    def _create(self, body):
+        self._check_revision(body)
+        if not isinstance(body, dict):
+            raise RequestError("请求含不允许的字段；冻结字段不可修改")
+        theme = body.get("theme_id")
+        instrument = next((item for item in panel_containers() if item["theme_id"] == theme), None)
+        if instrument is None:
+            raise RequestError("未知容器")
+        try:
+            quote = self.quote(theme, "readonly")
+            if not quote["close_date"]:
+                raise FormError("当前没有已完成的交易日，不能立卡")
+            trading = _trading_days(self.market_path)
+            deadline = next_weekday_open(quote["close_date"], trading)
+            grades = source_grades()
+            hs300 = _benchmark_close(self.market_path, quote["close_date"])
+        except FormError as exc:
+            raise RequestError(str(exc)) from exc
+        if hs300 is None:
+            raise RequestError("创建日没有 H00300 收盘，不能立卡")
+        try:
+            payload = {key: value for key, value in body.items() if key != "revision"}
+            with self._writer() as ledger:
+                level = _ew_level(ledger, quote["close_date"])
+                card, evidence = assemble(payload, quote=quote, now=ledger.now(), deadline=deadline, ew_level=level,
+                                          hs300=hs300, instrument=instrument, grades=grades)
+                if body.get("supersedes"):
+                    ledger.void(body["supersedes"], str(body.get("void_reason")).strip())
+                return ledger.create_card(card, evidence, None)
+        except FormError as exc:
+            raise RequestError(str(exc)) from exc
+
+
+def _minute(value):
+    try:
+        return bool(value) and datetime.strptime(value, "%Y-%m-%dT%H:%M").strftime("%Y-%m-%dT%H:%M") == value
+    except (TypeError, ValueError):
+        return False
+
+
+def _finite(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value == value and abs(value) < 1e15
+
+
+def _trading_days(path):
+    if not path.exists():
+        return None
+    con = MarketDB.connect(path, readonly=True)
+    try:
+        return load_trading_days(con)
+    finally:
+        con.close()
+
+
+def _benchmark_close(path, day):
+    if not path.exists():
+        return None
+    con = MarketDB.connect(path, readonly=True)
+    try:
+        row = con.execute("SELECT close FROM bars WHERE code=? AND adj='raw' AND date=? AND close > 0 ORDER BY source LIMIT 1",
+                          (BENCH_CODE, day)).fetchone()
+        return float(row[0]) if row and row[0] == row[0] else None
+    finally:
+        con.close()
+
+
+def _ew_level(ledger, day):
+    rows = ledger.ew_rows()
+    if day in rows:
+        return rows[day][1]
+    if rows and day < max(rows):
+        raise FormError("等权日收益已记到更晚的日期，不能补记这张卡的创建日")
+    if not rows:
+        ledger.record_ew(day, 0.0, 1.0, 1)
+        return 1.0
+    previous = rows[max(rows)][1]
+    ledger.record_ew(day, 0.0, previous, 1)
+    return previous

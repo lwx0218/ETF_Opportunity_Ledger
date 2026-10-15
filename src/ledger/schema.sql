@@ -246,10 +246,8 @@ BEGIN
     -- 封存与创建同一事务（_tx 内数据库时钟冻结为同一时刻）：不能先插一批未封存的卡、看完行情只封存赢家
     SELECT RAISE(ABORT, '封存必须与创建在同一事务内') WHERE ledger_now() IS NOT NEW.recorded_at;
     SELECT RAISE(ABORT, '已过下一次开盘：不能再封存') WHERE ledger_now() >= NEW.owner_score_deadline;
-    -- v1.1-a：未检索的卡（机械触发）不写 agent 分即可封存；检索过的两种封存前必须有 agent 分
-    SELECT RAISE(ABORT, '封存前必须有 agent 的 evidence_strength 评分')
-     WHERE NEW.evidence_status <> '未检索'
-       AND NOT EXISTS (SELECT 1 FROM strength_scores WHERE card_id = NEW.id AND rater = 'agent');
+    -- v1.1-a：未检索的机械卡不写 agent 分。手动事件卡同样不在创建时生成 agent 分（owner 截止前单独评分）。
+    -- 未检索卡仍禁止写入 agent 分（strength_insert）。有证据的卡仍必须有证据行。
     SELECT RAISE(ABORT, 'evidence_status = 有证据 的卡至少要有一条证据')
      WHERE NEW.evidence_status = '有证据' AND NOT EXISTS (SELECT 1 FROM evidence WHERE card_id = NEW.id);
 END;

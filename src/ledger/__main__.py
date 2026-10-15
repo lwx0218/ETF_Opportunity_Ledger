@@ -13,8 +13,18 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m src.ledger", description="机会卡片台账")
     ap.add_argument("cmd", choices=["init", "summary"], help="init：建库并同步固定源清单；summary：分母与分档统计")
     ap.add_argument("--db", type=Path, default=DEFAULT_DB)
+    ap.add_argument("--replay", action="store_true", help="以回放时钟建库（不能指向正式库）")
+    ap.add_argument("--clock", default=None, help="回放时钟 YYYY-MM-DDTHH:MM，须与 --replay 同用")
     a = ap.parse_args(argv)
-    L = Ledger(a.db)
+    if a.clock and not a.replay:
+        print("注入时钟只用于回放：请同时传 --replay，并使用单独的库", file=sys.stderr)
+        return 2
+    clock = (lambda: a.clock) if a.clock else None
+    try:
+        L = Ledger(a.db, clock=clock, replay=a.replay)
+    except Exception as exc:  # noqa: BLE001 — 正式库与时钟模式错误要留在命令行
+        print(str(exc), file=sys.stderr)
+        return 2
     try:
         if a.cmd == "init":
             n = L.conn.execute("SELECT count(*), sum(grade IN ('A','B')) FROM current_sources").fetchone()

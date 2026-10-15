@@ -16,7 +16,7 @@
     <header class="topbar">
       <button class="brand" id="home-button" aria-label="返回机会台账首页"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>ETF <span class="brand-sub">前向机会台账</span></span></button>
       <nav class="page-nav" aria-label="主导航"><a id="nav-home" href="/">机会</a><a id="nav-rotation" href="/rotation">轮动</a></nav>
-      <div class="topbar-actions"><span id="mode-label" class="mode-label">正在连接</span><button class="icon-button" id="theme-toggle" aria-label="切换为浅色" title="切换深浅色">◐</button></div>
+      <div class="topbar-actions"><button class="text-button" id="login-button" type="button" hidden>登录记账</button><form id="login-form" class="login-form" hidden><label class="sr-only" for="login-password">记账口令</label><input id="login-password" type="password" autocomplete="current-password" required placeholder="记账口令"><button class="primary-button" type="submit">登录</button></form><button class="text-button" id="logout-button" type="button" hidden>退出记账</button><span id="mode-label" class="mode-label">正在连接</span><button class="icon-button" id="theme-toggle" aria-label="切换为浅色" title="切换深浅色">◐</button></div>
     </header>
     <div class="context-row">
       <div class="contextbar"><nav id="breadcrumb" aria-label="当前位置">ETF 前向机会台账 › 机会</nav><span class="asof mono" id="as-of">读取截至时间…</span></div>

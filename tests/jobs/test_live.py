@@ -11,6 +11,7 @@ import pandas as pd
 
 from src.data import db as DB
 from src.jobs.live import live_panel
+from src.ledger.store import Ledger
 from src.jobs.__main__ import main as jobs_main
 from src.jobs import rules as R
 from tests.marketdb import put
@@ -172,9 +173,13 @@ class LiveInputs(unittest.TestCase):
                                      "恐慌下轨": {"enabled": True, **R.RULE_R}}), encoding="utf-8")
         ledger = root / "ledger.sqlite"
         before = DB.sha256_file(self.db)
-        with mock.patch("src.jobs.__main__.DailyJob", side_effect=AssertionError("门禁失败不得创建作业")):
+        with mock.patch("src.jobs.__main__.DailyJob", side_effect=AssertionError("门禁失败不得创建作业")) as job:
+            self.assertEqual(jobs_main(["daily", "--no-update", "--date", self.end.isoformat(), "--market", str(self.db),
+                                        "--db", str(ledger), "--rules", str(config)]), 3)
+            self.assertFalse(ledger.exists())
+            Ledger(ledger).close()
             with self.assertRaisesRegex(SystemExit, "缺真实 OHLC"):
                 jobs_main(["daily", "--no-update", "--date", self.end.isoformat(), "--market", str(self.db),
                            "--db", str(ledger), "--rules", str(config)])
-        self.assertFalse(ledger.exists())
+            job.assert_not_called()
         self.assertEqual(DB.sha256_file(self.db), before)

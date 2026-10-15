@@ -43,6 +43,9 @@ def main(argv: list[str] | None = None) -> int:
         if name != "package":
             p.add_argument("--only", type=lambda s: [x.strip() for x in s.split(",") if x.strip()], default=None,
                            help="只跑这些 theme_id，逗号分隔")
+        if name == "update":
+            p.add_argument("--scope", choices=("mvp",), default=None,
+                           help="mvp：只更新 37 个执行 ETF 与 H00300；中证请求间隔至少 1.5 秒，403 等 90 秒重试一次")
         if name == "probe":
             p.add_argument("--record", type=Path, default=None, help="把原始响应存到该目录（替换构造的 fixtures 用）")
         if name == "package":
@@ -87,8 +90,11 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "backfill":
         runner.backfill(a.end, start=a.start, exec_start=a.exec_start, only=a.only, db=a.db)
     elif a.cmd == "update":
-        rep = runner.update(a.end, only=a.only, db=a.db)
+        rep = runner.update(a.end, only=a.only, scope=a.scope, db=a.db)
+        failed = [r for r in rep if not r.get("ok")]
         print(f"更新 {sum(1 for r in rep if r.get('ok'))} / {len(rep)} 条序列")
+        if a.scope == "mvp" and failed:
+            return 1
     elif a.cmd == "calendar":
         runner.load_calendar(a.file, replace=a.replace, db=a.db)
     elif a.cmd == "package":

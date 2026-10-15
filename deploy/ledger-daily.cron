@@ -1,0 +1,4 @@
+# 交易日、A 股收盘 15:30 之后跑一次。下面的 40 15 是服务器本地时区的分和时。
+# 先核对时区再改：timedatectl | grep Time.zone    或    date +%Z
+# 服务器本地时区若不是 Asia/Shanghai，把 15 改成「本地时钟走到北京时间 15:30 之后」的那个小时。
+40 15 * * 1-5 cd /opt/etf-ledger && mkdir -p outputs/logs && .venv/bin/python -m src.jobs daily --maintain-only --rules config/ledger-rules.json >> outputs/logs/daily-$(date +\%Y\%m\%d).log 2>&1

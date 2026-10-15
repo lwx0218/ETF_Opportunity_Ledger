@@ -3,7 +3,7 @@
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state, observation, selectedId = null, busy = false, noticeTimer, loadSequence = 0;
-const page = () => location.pathname === '/rotation' ? 'rotation' : location.pathname === '/market' ? 'market' : 'home';
+const page = () => location.pathname === '/rotation' ? 'rotation' : location.pathname === '/market' ? 'market' : location.pathname === '/new' ? 'new' : 'home';
 const params = () => new URLSearchParams(location.search);
 function routeFrom(search, path, changes = {}, mode) {
   const next = new URLSearchParams(search);
@@ -203,12 +203,17 @@ function emptyCardLane(kind, withCards) {
     next: ['lane-next', '下一个 · 候选', '暂无候选机会。', ''],
   }[kind];
   const note = withCards ? '' : copy[3];
-  return `<section class="lane ${copy[0]} lane-empty"><div class="eyebrow">${copy[1]}</div><h3>${copy[2]}</h3>${note ? `<p class="muted">${note}</p>` : ''}</section>`;
+  const extra = kind === 'next' ? createEntry() : '';
+  return `<section class="lane ${copy[0]} lane-empty"><div class="eyebrow">${copy[1]}</div><h3>${copy[2]}</h3>${note ? `<p class="muted">${note}</p>` : ''}${extra}</section>`;
+}
+function createEntry() {
+  if (!(state && state.authenticated && state.mode === 'readonly')) return '';
+  return '<p class="next-create"><a data-route href="/new">立卡</a></p>';
 }
 function renderCardLane(kind, items, withCards) {
   if (!items.length) return emptyCardLane(kind, withCards);
   const heading = {past: ['lane-past', '上一次 · 出场后跟踪'], now: ['lane-now present', '当下 · 持有'], next: ['lane-next', '下一个 · 候选']}[kind];
-  return `<section class="lane ${heading[0]}"><div class="eyebrow">${heading[1]}</div>${items.map(cardButton).join('')}</section>`;
+  return `<section class="lane ${heading[0]}"><div class="eyebrow">${heading[1]}</div>${kind === 'next' ? createEntry() : ''}${items.map(cardButton).join('')}</section>`;
 }
 function renderNextLane(picked) {
   if (!picked.enterable.length) {
@@ -221,7 +226,7 @@ function renderNextLane(picked) {
   const detail = observation && observation.detail;
   const chart = detail && detail.theme_id === row.theme_id ? homeSpark(detail.chart || [], row.window, row.code) : '<p class="empty">这个窗口尚无正且有限的收盘。</p>';
   const others = picked.others.map(watchRow).join('');
-  return `<section class="lane lane-next"><div class="eyebrow">下一个 · 观察 · ${esc(row.container)} ${esc(row.code)} · 未入账 · ${esc(ruleLabel(state))}</div>
+  return `<section class="lane lane-next"><div class="eyebrow">下一个 · 观察 · ${esc(row.container)} ${esc(row.code)} · 未入账 · ${esc(ruleLabel(state))}</div>${createEntry()}
     <div class="big-number mono ${direction(row.rs)}">${excessText(row.rs)}<small>观察</small></div>
     <p class="next-meta mono">近 1 月相对沪深300 · 名次 ${row.rank == null ? '—' : esc(row.rank)} / ${esc(picked.pool)}${esc(extText)}</p>
     <p class="next-explain">${esc(row.stateLabel || '—')}${esc(meaningText)}，落在可进集合里，所以放在这一栏。它是价格观察量，不是进场信号；入账前不冻结论点、预期和失效位。</p>
@@ -244,7 +249,103 @@ function renderWorth() {
   if (buckets.some(bucket => bucket.enough)) return `<section class="worth">${renderReview(state.review)}</section>`;
   return `<section class="worth"><div class="eyebrow">规则今年值多少</div><h3>前向样本不足，不展示胜率或收益。</h3><p class="muted">正式台账跑出前向样本后，这里按 R 倍数分布报告，并给出去掉最好 1 / 2 / 3 笔后的期望；双基准是等权组合与沪深300。</p></section>`;
 }
+function sourceOptions() {
+  return (state.sources || []).map(item => `<option value="${esc(item.source_id)}">${esc(item.source_id)} · ${esc(item.grade)} · ${esc(item.name)}</option>`).join('');
+}
+function evidenceFields(index) {
+  return `<fieldset class="evidence-row"><legend class="field-label">证据 ${index}</legend>
+    <label class="field-label" for="ev-source-${index}">固定源</label><select id="ev-source-${index}" name="source_id" required>${sourceOptions()}</select>
+    <label class="field-label" for="ev-url-${index}">URL</label><input id="ev-url-${index}" name="url" type="text" required maxlength="2000" autocomplete="off">
+    <label class="field-label" for="ev-title-${index}">标题</label><input id="ev-title-${index}" name="title" type="text" required maxlength="200" autocomplete="off">
+    <label class="field-label" for="ev-published-${index}">发布时间</label><input id="ev-published-${index}" name="published_at" type="text" required maxlength="16" placeholder="YYYY-MM-DDTHH:MM" autocomplete="off">
+    <label class="field-label" for="ev-excerpt-${index}">摘录原文</label><textarea id="ev-excerpt-${index}" name="summary" required maxlength="4000"></textarea></fieldset>`;
+}
+function renderComposer() {
+  if (!(state && state.authenticated && state.mode === 'readonly')) {
+    $('#overview').innerHTML = '<section class="composer"><div class="eyebrow">立卡</div><h1>登录后才能立卡。</h1></section>';
+    return;
+  }
+  const containers = (state.containers || []).map(item => `<option value="${esc(item.theme_id)}">${esc(item.container)} · ${esc(item.code)}</option>`).join('');
+  const prior = params().get('supersedes');
+  const rebuild = prior ? `<p class="lede">作废并重建 ${esc(prior)}。旧卡保留并计入分母，新卡在提交时冻结。</p><label class="field-label" for="void-reason">作废理由</label><textarea id="void-reason" name="void_reason" required maxlength="2000"></textarea>` : '<p class="lede">只立事件驱动卡。论点、证据、量化预期和失效位在提交时冻结，之后不能改。</p>';
+  $('#overview').innerHTML = `<form id="card-form" class="composer"><div class="eyebrow">事件驱动 · 提交即冻结</div><h1>立一张卡</h1>${rebuild}
+    <label class="field-label" for="card-theme">容器</label><select id="card-theme" name="theme_id" required><option value="">选择容器</option>${containers}</select>
+    <p id="quote-box" class="quote-box">选择容器后显示该执行 ETF 的最近收盘、ATR20，以及建议失效位（收盘 − 2 × ATR20）。</p>
+    <label class="field-label" for="card-thesis">论点</label><textarea id="card-thesis" name="thesis" required maxlength="80"></textarea>
+    <div id="evidence-list">${evidenceFields(1)}</div><button type="button" class="text-button" id="add-evidence">再加一条证据</button>
+    <div class="composer-grid"><div><label class="field-label" for="horizon-days">期限（交易日）</label><input id="horizon-days" name="horizon_days" type="number" min="1" step="1" required></div>
+    <div><label class="field-label" for="target-excess">超额目标 %</label><input id="target-excess" name="target_excess_pct" type="number" step="any" required></div></div>
+    <label class="field-label" for="benchmark">基准</label><select id="benchmark" name="benchmark" required><option value="沪深300">沪深300</option><option value="等权组合">等权组合</option></select>
+    <label class="field-label" for="invalidation">价格失效位</label><input id="invalidation" name="invalidation_price" type="number" step="any" min="0" required>
+    <label class="field-label" for="inval-source">论点失效来源</label><select id="inval-source" name="thesis_inval_source_id" required>${sourceOptions()}</select>
+    <label class="field-label" for="inval-deadline">论点失效截止</label><input id="inval-deadline" name="thesis_inval_deadline" type="date" required>
+    <label class="field-label" for="inval-statement">论点失效条件</label><textarea id="inval-statement" name="thesis_inval_statement" required maxlength="500"></textarea>
+    <div class="composer-grid"><div><label class="field-label" for="planned-size">计划仓位 %</label><input id="planned-size" name="planned_size_pct" type="number" min="0" max="25" step="any" required></div>
+    <div><label class="field-label" for="tracking-days">跟踪天数</label><input id="tracking-days" name="tracking_days" type="number" value="20" readonly></div></div>
+    <p class="muted small">评分规则 schema-v1-§3。跟踪天数固定 20。不生成 agent 分数。</p>
+    <button class="primary-button" type="submit">提交并冻结</button></form>`;
+  let evidenceCount = 1;
+  $('#add-evidence').addEventListener('click', () => {
+    evidenceCount += 1;
+    $('#evidence-list').insertAdjacentHTML('beforeend', evidenceFields(evidenceCount));
+  });
+  $('#card-theme').addEventListener('change', refreshQuote);
+  $('#card-form').addEventListener('submit', submitCard);
+}
+async function refreshQuote() {
+  const theme = $('#card-theme').value;
+  const box = $('#quote-box');
+  if (!theme) {
+    box.textContent = '选择容器后显示该执行 ETF 的最近收盘、ATR20，以及建议失效位（收盘 − 2 × ATR20）。';
+    return;
+  }
+  box.textContent = '正在读取最近收盘与 ATR20…';
+  try {
+    const quote = await api(`/api/quote?theme=${encodeURIComponent(theme)}`);
+    box.innerHTML = `<span class="mono">${esc(quote.code)}</span> ${esc(quote.name || '')}<br>最近收盘 <span class="mono">${number(quote.close, 3)}</span> · ATR20 <span class="mono">${number(quote.atr20, 3)}</span> · 建议失效位 <span class="mono">${number(quote.suggested, 3)}</span> · ${esc(quote.close_date || '')}`;
+    const field = $('#invalidation');
+    if (field && !field.value) field.value = quote.suggested;
+  } catch (error) {
+    box.textContent = error.message;
+  }
+}
+async function submitCard(event) {
+  event.preventDefault();
+  if (busy) return;
+  const form = event.currentTarget;
+  const fields = new FormData(form);
+  const evidence = [...form.querySelectorAll('.evidence-row')].map(row => ({
+    source_id: row.querySelector('[name=source_id]').value,
+    url: row.querySelector('[name=url]').value.trim(),
+    title: row.querySelector('[name=title]').value.trim(),
+    published_at: row.querySelector('[name=published_at]').value.trim(),
+    summary: row.querySelector('[name=summary]').value.trim(),
+  }));
+  const body = {
+    theme_id: fields.get('theme_id'), thesis: String(fields.get('thesis') || '').trim(), evidence,
+    horizon_days: Number(fields.get('horizon_days')), target_excess_pct: Number(fields.get('target_excess_pct')),
+    benchmark: fields.get('benchmark'), invalidation_price: Number(fields.get('invalidation_price')),
+    thesis_inval_source_id: fields.get('thesis_inval_source_id'), thesis_inval_deadline: fields.get('thesis_inval_deadline'),
+    thesis_inval_statement: String(fields.get('thesis_inval_statement') || '').trim(),
+    planned_size_pct: Number(fields.get('planned_size_pct')), tracking_days: 20, scoring_rule: 'schema-v1-§3',
+  };
+  const prior = params().get('supersedes');
+  if (prior) { body.supersedes = prior; body.void_reason = String(fields.get('void_reason') || '').trim(); }
+  busy = true;
+  form.querySelector('[type=submit]').disabled = true;
+  try {
+    const result = await api('/api/cards', body);
+    state = result;
+    notify('卡片已冻结。');
+    await navigate(route('/', {card: result.created_id, supersedes: null}));
+  } catch (error) {
+    notify(error.message);
+    const button = form.querySelector('[type=submit]');
+    if (button) button.disabled = false;
+  } finally { busy = false; }
+}
 function renderOverview() {
+  if (page() === 'new') { renderComposer(); return; }
   if (page() === 'rotation') { renderRotation(); return; }
   const cards = state.cards || [];
   const headline = homeHeadline(observation, state);
@@ -252,7 +353,7 @@ function renderOverview() {
   const past = cards.filter(card => card.status === '过去');
   const now = cards.filter(card => card.status === '当下');
   const waiting = cards.filter(card => card.status === '候选');
-  const actions = state.writable ? '<div class="demo-actions"><button id="reset-demo" class="text-button">重置演示</button><button id="advance-demo" class="primary-button">推进下一交易日 <span aria-hidden="true">→</span></button></div>' : '';
+  const actions = state.mode === 'demo' && state.writable ? '<div class="demo-actions"><button id="reset-demo" class="text-button">重置演示</button><button id="advance-demo" class="primary-button">推进下一交易日 <span aria-hidden="true">→</span></button></div>' : '';
   const next = cards.length ? renderCardLane('next', waiting, true) : renderNextLane(picked);
   $('#overview').innerHTML = `<section class="home-head"><div><div class="eyebrow">今天</div><h1>${esc(headline.title)}</h1>${headline.lead ? `<p class="home-lead">${esc(headline.lead)}</p>` : ''}</div>${actions}</section>
     <section class="lanes" aria-label="上一次、当下与下一个">${renderCardLane('past', past, cards.length > 0)}<div class="lane-join" aria-hidden="true"><span class="lane-join-line"></span><span class="lane-join-mark">›</span></div>${renderCardLane('now', now, cards.length > 0)}<div class="lane-join" aria-hidden="true"><span class="lane-join-line"></span><span class="lane-join-mark">›</span></div>${next}</section>
@@ -495,14 +596,19 @@ function renderCounterfactual(data) {
 function renderShell() {
   document.body.dataset.page = page();
   $('#loading').hidden = true;
-  $('#mode-label').textContent = state.mode === 'market' ? '真实观察 · 只读' : state.mode === 'demo' ? '演示数据 · 合成观察' : '正式台账 · 只读';
+  $('#mode-label').textContent = state.mode === 'market' ? '真实观察 · 只读' : state.mode === 'demo' ? '演示数据 · 合成观察' : state.authenticated ? '正式台账 · 记账' : '正式台账 · 只读';
+  const loginButton = $('#login-button'), loginForm = $('#login-form'), logoutButton = $('#logout-button');
+  const canLogin = state.write_enabled && !state.authenticated;
+  if (loginButton) loginButton.hidden = !canLogin;
+  if (loginForm && !canLogin) loginForm.hidden = true;
+  if (logoutButton) logoutButton.hidden = !state.authenticated;
   if (page() === 'rotation') {
     const count = observation?.weeks?.length || 12;
     $('#as-of').textContent = `截至 ${observation?.effective_date || '—'} 收盘 · 近 1 月 · ${count} 周`;
     $('#footer-source').textContent = state.mode === 'market' ? '真实观察 · 只读' : state.mode === 'demo' ? '隔离演示 · 全部为合成数据' : '正式台账 · 只读';
   } else {
     $('#as-of').textContent = `截至 ${observation?.effective_date || '—'} 收盘 · ${ruleLabel(state)}`;
-    $('#footer-source').textContent = state.mode === 'demo' ? '隔离演示 · 全部为合成数据' : state.mode === 'readonly' ? '正式台账 · 只读' : '真实观察 · 只读';
+    $('#footer-source').textContent = state.mode === 'demo' ? '隔离演示 · 全部为合成数据' : state.mode === 'readonly' ? (state.authenticated ? '正式台账 · 记账' : '正式台账 · 只读') : '真实观察 · 只读';
   }
   $('#mode-link').textContent = state.mode === 'demo' ? '正式台账 · 只读 ↗' : '返回演示台账 ↗';
   $('#mode-link').href = route(location.pathname, {mode:state.mode === 'demo' ? 'readonly' : 'demo',card:null});
@@ -512,7 +618,7 @@ function renderShell() {
   $('#nav-rotation').href = navHref(params().toString(), '/rotation', state?.mode);
   $('#nav-home').setAttribute('aria-current', page() === 'rotation' ? 'false' : 'page');
   $('#nav-rotation').setAttribute('aria-current',page() === 'rotation' ? 'page' : 'false');
-  $('#observation-controls').hidden = !observation;
+  $('#observation-controls').hidden = page() === 'new' || !observation;
   if (observation) {
     $('#observation-date').value = params().get('as_of') || observation.requested_date || '';
     if (observation.completed_date) $('#observation-date').max = observation.completed_date;
@@ -529,7 +635,7 @@ function renderShell() {
   renderOverview();
   $('#overview').hidden = selectedId !== null;
   $('#detail').hidden = selectedId === null;
-  if (!selectedId) $('#breadcrumb').textContent = page() === 'rotation' ? 'ETF 前向机会台账 › 轮动' : page() === 'market' ? 'ETF 前向机会台账 › 机会 › 行情检查' : 'ETF 前向机会台账 › 机会';
+  if (!selectedId) $('#breadcrumb').textContent = page() === 'rotation' ? 'ETF 前向机会台账 › 轮动' : page() === 'market' ? 'ETF 前向机会台账 › 机会 › 行情检查' : page() === 'new' ? 'ETF 前向机会台账 › 立卡' : 'ETF 前向机会台账 › 机会';
 }
 
 function fact(label, value) {
@@ -608,6 +714,7 @@ function renderDetail(data) {
     mutate(`/api/cards/${encodeURIComponent(card.id)}/exit-signal`, {reason:fields.get('reason'),...(fields.get('reason') === '手动' ? {manual_reason:fields.get('manual_reason')} : {})}, '出场信号已记录，等待后续交易日开盘成交。');
   });
   $('#signal-reason')?.addEventListener('change', event => { const manual = event.target.value === '手动'; $('#manual-reason').required = manual; $('#manual-reason').hidden = !manual; $('label[for=manual-reason]').hidden = !manual; $('#thesis-signal-note').hidden = manual; });
+  wireNavigation();
 }
 
 function renderScores(scores, actions, card) {
@@ -618,7 +725,10 @@ function renderScores(scores, actions, card) {
 function renderActions(data) {
   if (!state.writable) return '<p class="readonly-note">正式台账仅供查看。</p>';
   const actions = data.actions || {};
-  if (actions.can_void) return `<section class="action-section"><h2>作废这次候选</h2><p>原判断与评分继续保留，也计入全部记录。</p><form id="void-form" class="action-form"><label class="field-label" for="void-reason">作废理由</label><textarea id="void-reason" name="reason" required maxlength="1000" placeholder="记录为什么不再等待入场。"></textarea><button class="primary-button" type="submit">记录作废</button></form></section>`;
+  if (actions.can_void) {
+    const rebuild = state.mode === 'readonly' ? `<p class="next-create"><a data-route href="${esc(route('/new', {card: null, supersedes: data.card.id}))}">作废并重建</a></p>` : '';
+    return `<section class="action-section"><h2>作废这次候选</h2><p>原判断与评分继续保留，也计入全部记录。</p><form id="void-form" class="action-form"><label class="field-label" for="void-reason">作废理由</label><textarea id="void-reason" name="reason" required maxlength="1000" placeholder="记录为什么不再等待入场。"></textarea><button class="primary-button" type="submit">记录作废</button></form>${rebuild}</section>`;
+  }
   if (actions.can_signal) return `<section class="action-section"><h2>记录出场信号</h2><p>以 ${esc(actions.signal_date)} 收盘为信号，等待后续有效交易日开盘成交。</p><form id="signal-form" class="action-form"><label class="field-label" for="signal-reason">出场原因</label><select id="signal-reason" name="reason"><option value="手动">手动出场</option><option value="论点作废">论点作废</option></select><p id="thesis-signal-note" class="space-top" hidden>论点作废将按锁定的评分规则记为证伪。</p><label class="field-label" for="manual-reason">记录理由</label><textarea id="manual-reason" name="manual_reason" required maxlength="1000" placeholder="记录这次出场决定。"></textarea><button class="primary-button" type="submit">记录信号，等待成交</button></form></section>`;
   return '';
 }
@@ -671,6 +781,16 @@ async function loadPage(focusDetail = false) {
     const currentState=await api('/api/state');
     if (sequence !== loadSequence) return;
     state=currentState;
+    if (page() === 'new') {
+      selectedId = null;
+      observation = null;
+      const normalized = params();
+      normalized.set('mode', state.mode);
+      history.replaceState(null, '', `${location.pathname}?${normalized}`);
+      renderShell();
+      window.scrollTo({top: 0});
+      return;
+    }
     const search=params();
     const observationQuery=new URLSearchParams({weeks:'12'});
     ['as_of','theme','series'].forEach(key=>{if(search.get(key)) observationQuery.set(key,search.get(key));});
@@ -755,6 +875,31 @@ function boot() {
   selectedId = new URLSearchParams(location.search).get('card');
   try { setTheme(localStorage.getItem('etf-ledger-theme') === 'light' ? 'light' : 'dark'); } catch (_) { setTheme('dark'); }
   $('#theme-toggle').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+  $('#login-button')?.addEventListener('click', () => { $('#login-form').hidden = false; $('#login-password').focus(); });
+  $('#login-form')?.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (busy || !state) return;
+    busy = true;
+    try {
+      state = await api('/api/login', {password: $('#login-password').value});
+      $('#login-password').value = '';
+      $('#login-form').hidden = true;
+      await loadPage();
+      notify('已登录，可以记账。');
+    } catch (error) { notify(error.message); }
+    finally { busy = false; }
+  });
+  $('#logout-button')?.addEventListener('click', async () => {
+    if (busy || !state) return;
+    busy = true;
+    try {
+      state = await api('/api/logout', {});
+      if (page() === 'new') history.replaceState(null, '', route('/', {card: null, supersedes: null}));
+      await loadPage();
+      notify('已退出记账。');
+    } catch (error) { notify(error.message); }
+    finally { busy = false; }
+  });
   $('#home-button').addEventListener('click', () => { if (state) navigate(route('/',{card:null})); });
   ['nav-home','nav-rotation'].forEach(id=>$('#'+id).addEventListener('click',event=> {if(event.ctrlKey||event.metaKey||event.shiftKey||event.altKey||event.button!==0)return;event.preventDefault();navigate(route(id==='nav-home'?'/':'/rotation',{card:null}));}));
   $('#observation-controls').addEventListener('submit',event=> {event.preventDefault();navigate(route(location.pathname,{as_of:$('#observation-date').value,theme:$('#observation-theme').value,card:null}), page() === 'rotation');});

@@ -109,6 +109,15 @@ class Replay(unittest.TestCase):
             reps.append(job.run(d))
         return reps
 
+    def test_maintain_only_does_not_scan(self):
+        panel, bench = make_panel()
+        job = DailyJob(self.L, panel, bench, rules={}, instruments=INST)
+        self.now = "2026-02-02T16:00"
+        with mock.patch.object(job, "_triggers", side_effect=AssertionError("maintain 不得扫描")):
+            rep = job.run("2026-02-02", maintain_only=True)
+        self.assertEqual(rep.created, [])
+        self.assertFalse(rep.blocked)
+
     def test_full_lifecycle(self):
         panel, bench = make_panel()
         reps = {r.day: r for r in self.replay(panel, bench)}
@@ -852,6 +861,7 @@ class Pieces(unittest.TestCase):
         sha = __import__("src.data.db", fromlist=["sha256_file"]).sha256_file(market)
         (tmp / "rules.json").write_text(json.dumps(CONFIG, ensure_ascii=False), encoding="utf-8")
         base = ["daily", "--no-update", "--market", str(market), "--db", str(tmp / "ledger.sqlite"), "--rules", str(tmp / "rules.json")]
+        Ledger(tmp / "ledger.sqlite").close()                                          # 每日作业不创建正式库
         with mock.patch("builtins.print"):
             for d in ("2026-02-02", "2026-02-03", "2026-02-03"):                              # 同一天重跑无妨
                 self.assertEqual(jobs_main(base + ["--date", d]), 0)

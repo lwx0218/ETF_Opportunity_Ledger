@@ -1,0 +1,13 @@
+[Unit]
+Description=ETF 前向机会台账
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/etf-ledger
+EnvironmentFile=/etc/etf-ledger.env
+ExecStart=/opt/etf-ledger/.venv/bin/python -m src.web --mode readonly --write --host 0.0.0.0 --public-host <占位> --port 8765
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

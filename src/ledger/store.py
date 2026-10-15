@@ -183,7 +183,7 @@ class Ledger:
     def create_card(self, card: dict, evidence: list[dict], agent_score: dict | None) -> str:
         """一次事务：卡片（未封存）→ 证据 → agent 评分 → 封存。任何一步被拒，整张卡不入库。
         v1.1-a：evidence_status = 未检索（机械卡）时 evidence 为空、agent_score 为 None；已检索无证据时 evidence 为空；
-        有证据时至少一条。后两种必须带 agent 评分。"""
+        有证据时至少一条。agent_score 可省略（手动事件卡不生成 agent 分）；传入则随创建写入。未检索卡仍不能写 agent 分。"""
         unknown = set(card) - set(CARD_FIELDS)
         if unknown:
             raise LedgerError(f"未知字段：{sorted(unknown)}")

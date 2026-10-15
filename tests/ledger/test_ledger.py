@@ -182,7 +182,7 @@ class Creation(Base):
     def test_seal_requires_agent_score_and_raw_connection_fails_closed(self):
         c = card(id="T-2026-900", scoring_rule="schema-v1-§3", recorded_at=T0)
         self.raw(f"INSERT INTO cards ({', '.join(c)}) VALUES ({', '.join('?' * len(c))})", *c.values())
-        self.rejects("UPDATE cards SET sealed = 1 WHERE id = 'T-2026-900'", msg="agent")
+        self.rejects("UPDATE cards SET sealed = 1 WHERE id = 'T-2026-900'", msg="至少要有一条证据")
         bare = sqlite3.connect(":memory:")                                   # 没注册 ledger_now() 的裸连接
         bare.executescript((ROOT / "src" / "ledger" / "schema.sql").read_text(encoding="utf-8"))
         with self.assertRaises(sqlite3.OperationalError):
@@ -206,9 +206,13 @@ class SchemaV11(Base):
         with self.assertRaisesRegex(LedgerError, "只有 evidence_status = 有证据"):
             self.L.create_card(card(**RULE), [ev()], None)
 
-    def test_searched_cards_need_agent_score_and_matching_evidence(self):
-        with self.assertRaisesRegex(LedgerError, "agent"):
-            self.L.create_card(card(evidence_status="已检索无证据"), [], None)
+    def test_searched_cards_match_evidence_and_manual_event_omits_agent(self):
+        cid = self.L.create_card(card(evidence_status="已检索无证据"), [], None)
+        self.assertIsNone(self.L.conn.execute("SELECT agent_strength FROM card_status WHERE id = ?", (cid,)).fetchone()[0])
+        manual = self.L.create_card(card(trigger_type="事件驱动", thesis_inval_source_id=A_SRC,
+                                          thesis_inval_deadline="2026-10-22",
+                                          thesis_inval_statement="10 月 22 日前 EIA 周报显示库存转为增加即失效"), [ev()], None)
+        self.assertIsNone(self.L.conn.execute("SELECT 1 FROM strength_scores WHERE card_id = ? AND rater = 'agent'", (manual,)).fetchone())
         with self.assertRaisesRegex(LedgerError, "至少要有一条证据"):
             self.L.create_card(card(evidence_status="有证据"), [], dict(score=1, reason="x", scored_at=T0))
         with self.assertRaisesRegex(LedgerError, "只有 evidence_status = 有证据"):

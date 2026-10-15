@@ -331,51 +331,92 @@ def _refresh(cov: dict, con) -> None:
             cov["exec_route"] = sp["source"]
 
 
-def update(end: date, *, only=None, uni_path: Path = U.UNIVERSE, db: Path = DB.MARKET_DB, log=print) -> list[dict]:
-    """按每条序列已有的来源增量更新；不换路由（换了就不是同一条序列）。"""
+def mvp_targets(uni: list[dict], covs: dict) -> list[tuple[dict, dict, str, str, str]]:
+    """37 个执行 ETF（腾讯不复权）和 H00300。返回 (universe 行, coverage, kind, code, adj)。"""
+    out, seen = [], set()
+    for row in uni:
+        if not U.in_panel(row):
+            continue
+        cov = covs.get(row["theme_id"]) or {}
+        code = cov.get("exec_code") or row.get("execution_fund_code")
+        if not code or (code, "raw") in seen:
+            continue
+        seen.add((code, "raw"))
+        out.append((row, {**cov, "exec_code": code, "exec_route": cov.get("exec_route") or "tencent_etf"}, "exec", code, "raw"))
+    if ("H00300", "raw") not in seen:
+        bench_row = {"theme_id": "H00300", "research_route": "csi"}
+        out.append((bench_row, {"exec_route": "csi"}, "benchmark", "H00300", "raw"))
+    return out
+
+
+def update(end: date, *, only=None, scope=None, uni_path: Path = U.UNIVERSE, db: Path = DB.MARKET_DB, log=print) -> list[dict]:
+    """按每条序列已有的来源增量更新；不换路由（换了就不是同一条序列）。scope=mvp 只更新执行 ETF 与 H00300。"""
+    if scope not in (None, "mvp"):
+        raise SystemExit("scope 只能是 mvp")
+    if scope == "mvp" and only:
+        raise SystemExit("--scope mvp 不能和 --only 一起用")
     http.LOG.clear()
-    with _job(db, "update", end=end, args={"only": only}, uni_path=uni_path, create=False) as (con, run_id, uni):
+    with _job(db, "update", end=end, args={"only": only, "scope": scope}, uni_path=uni_path, create=False) as (con, run_id, uni):
         covs = {c["theme_id"]: c for c in DB.read_coverage(con)}
         if not covs:
             raise SystemExit("库里没有 coverage：先跑 backfill")
         report, touched = [], []
-        for row in _select(uni, only):
-            cov = covs.get(row["theme_id"])
-            if not cov:
+        csi_calls = 0
+        if scope == "mvp":
+            selected = mvp_targets(uni, covs)
+        else:
+            selected = []
+            for row in _select(uni, only):
+                cov = covs.get(row["theme_id"])
+                if not cov:
+                    continue
+                for kind, code, adj in container_series(cov, row):
+                    selected.append((row, cov, kind, code, adj))
+        seen, themes = set(), []
+        for row, cov, kind, code, adj in selected:
+            if (code, adj) in seen:
                 continue
-            seen = set()
-            for kind, code, adj in container_series(cov, row):
-                if (code, adj) in seen:
-                    continue
-                seen.add((code, adj))
-                old = store.read(con, code, adj)
-                if not old:
-                    if kind == "research":        # coverage 指向的研究序列不在：多半是 backfill 之后又跑了 probe
-                        report.append({"theme_id": row["theme_id"], "kind": kind, "code": code, "adj": adj, "ok": False,
-                                       "error": "coverage 指向的研究序列不在库里：重跑 backfill"})
-                        log(f"  ERR {row['theme_id']} {code}/{adj}: 序列不在库里，重跑 backfill")
-                    continue
-                route = store.source_of(old)
-                ent = {"theme_id": row["theme_id"], "kind": kind, "code": code, "adj": adj, "route": route}
-                fn = U.route_fn(route or "", code)
-                since = date.fromisoformat(old[-1]["date"]) - timedelta(days=OVERLAP_DAYS)
-                try:
+            seen.add((code, adj))
+            old = store.read(con, code, adj)
+            if not old:
+                if kind == "research" or scope == "mvp":
+                    report.append({"theme_id": row["theme_id"], "kind": kind, "code": code, "adj": adj, "ok": False,
+                                   "error": "序列不在库里：重跑 backfill" if kind == "research" else "mvp 范围的序列不在库里，未覆盖已有数据"})
+                    log(f"  ERR {row['theme_id']} {code}/{adj}: 序列不在库里")
+                continue
+            route = store.source_of(old)
+            ent = {"theme_id": row["theme_id"], "kind": kind, "code": code, "adj": adj, "route": route}
+            since = date.fromisoformat(old[-1]["date"]) - timedelta(days=OVERLAP_DAYS)
+            try:
+                if scope == "mvp" and route == "csi":
+                    import time as wall
+                    from . import sources as S
+                    if csi_calls:
+                        wall.sleep(1.5)
+                    csi_calls += 1
+                    got = S.fetch_csindex(code, since, end, pause=1.5, forbidden_wait=90)
+                else:
+                    fn = U.route_fn(route or "", code)
                     if fn is None:
                         raise http.FetchError(f"无 {code} 在 {route} 的代码映射")
                     got = fn(since, end)
-                    cutoff = last_complete(route).isoformat()
-                    new = [r for r in got.rows if r["date"] <= cutoff]
-                    merged, added, revised = store.merge(old, new, route)
-                    strict = route in STRICT_ROUTES or (kind == "research" and code == cov.get("tr_code_used"))
-                    if strict and revised:
-                        raise store.MixError(f"重叠区 {revised} 行被改写：后复权 / 全收益序列的基准可能变了，不拼接，需重新全量 backfill")
-                    store.upsert(con, code, route, new, _now())
-                    ent.update(ok=True, since=since.isoformat(), added=added, revised=revised, last_date=merged[-1]["date"])
-                    log(f"  ok  {row['theme_id']} {code}/{adj}: +{added} 行，修正 {revised} 行，至 {merged[-1]['date']}")
-                except Exception as e:  # noqa: BLE001
-                    ent.update(ok=False, error=str(e)[:300])
-                    log(f"  ERR {row['theme_id']} {code}/{adj}: {str(e)[:120]}")
-                report.append(ent)
+                cutoff = last_complete(route).isoformat()
+                new = [r for r in got.rows if r["date"] <= cutoff]
+                merged, added, revised = store.merge(old, new, route)
+                strict = route in STRICT_ROUTES or (kind == "research" and code == cov.get("tr_code_used"))
+                if strict and revised:
+                    raise store.MixError(f"重叠区 {revised} 行被改写：后复权 / 全收益序列的基准可能变了，不拼接，需重新全量 backfill")
+                store.upsert(con, code, route, new, _now())
+                ent.update(ok=True, since=since.isoformat(), added=added, revised=revised, last_date=merged[-1]["date"])
+                log(f"  ok  {row['theme_id']} {code}/{adj}: +{added} 行，修正 {revised} 行，至 {merged[-1]['date']}")
+            except Exception as e:  # noqa: BLE001
+                ent.update(ok=False, error=str(e)[:300])
+                log(f"  ERR {row['theme_id']} {code}/{adj}: {str(e)[:120]}")
+            report.append(ent)
+            if row["theme_id"] in covs and row["theme_id"] not in themes:
+                themes.append(row["theme_id"])
+        for theme_id in themes:
+            cov = covs[theme_id]
             _refresh(cov, con)
             cov["checked_at"] = _now()
             touched.append(cov)

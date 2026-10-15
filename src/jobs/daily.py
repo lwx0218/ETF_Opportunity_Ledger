@@ -124,7 +124,7 @@ class DailyJob:
         return (b1 / b0 - 1) if b0 and b1 else 0.0
 
     # ------------------------------------------------------------ 主流程
-    def run(self, day: str) -> DayReport:
+    def run(self, day: str, *, maintain_only: bool = False) -> DayReport:
         D = pd.Timestamp(day)
         rep = DayReport(day)
         today = self.panel[self.panel["date"] == D]
@@ -140,7 +140,8 @@ class DailyJob:
         self._entries(D, rep)
         self._daily(D, today, rep)
         self._finals(D, rep)
-        self._triggers(D, today, rep)
+        if not maintain_only:
+            self._triggers(D, today, rep)
         self._reminders(D, rep)
         return rep
 

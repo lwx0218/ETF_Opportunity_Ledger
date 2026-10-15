@@ -101,13 +101,26 @@ def parse_csindex_data(data: list[dict], *, preserve_null_close: bool = False) -
     return Fetched(rows, name)
 
 
-def fetch_csindex(code: str, start: date, end: date) -> Fetched:
-    """`perf/index-perf?indexCode=&startDate=&endDate=`，按年分段。任一段失败即整条失败（不留缺口）。"""
+def fetch_csindex(code: str, start: date, end: date, *, pause: float | None = None, forbidden_wait: float | None = None) -> Fetched:
+    """`perf/index-perf?indexCode=&startDate=&endDate=`，按年分段。任一段失败即整条失败（不留缺口）。
+    pause 默认沿用 PAUSE['csi']。forbidden_wait 给出时，HTTP 403 等待该秒数后重试一次。"""
+    gap = PAUSE["csi"] if pause is None else pause
     rows, name, biz_err = [], None, []
     segs = list(_year_segments(start, end))
+
+    def pull(b, e):
+        params = {"indexCode": code, "startDate": b.strftime("%Y%m%d"), "endDate": e.strftime("%Y%m%d")}
+        headers = {"Referer": "https://www.csindex.com.cn/"}
+        try:
+            return http.get_json(CSI_PERF, params, headers=headers)
+        except http.FetchError as exc:
+            if forbidden_wait is None or "403" not in str(exc):
+                raise
+            time.sleep(forbidden_wait)
+            return http.get_json(CSI_PERF, params, headers=headers)
+
     for i, (b, e) in enumerate(segs):
-        d = http.get_json(CSI_PERF, {"indexCode": code, "startDate": b.strftime("%Y%m%d"), "endDate": e.strftime("%Y%m%d")},
-                          headers={"Referer": "https://www.csindex.com.cn/"})
+        d = pull(b, e)
         ok = isinstance(d, dict) and str(d.get("code")) == "200"
         if not ok:
             why = (f"code={d.get('code')} msg={d.get('msg')}" if isinstance(d, dict) else str(d)[:60])
@@ -121,7 +134,7 @@ def fetch_csindex(code: str, start: date, end: date) -> Fetched:
         name = name or parsed.name
         rows.extend(parsed.rows)
         if i + 1 < len(segs):
-            time.sleep(PAUSE["csi"])
+            time.sleep(gap)
     if not rows and biz_err:
         raise http.FetchError(f"csindex {code}: 各段均无数据，业务错误 {len(biz_err)} 段，最后一段 {biz_err[-1]}")
     warn = [f"起点前 {len(biz_err)} 段返回业务错误（{biz_err[-1]}），first_date 可能被截短"] if rows and biz_err else []
