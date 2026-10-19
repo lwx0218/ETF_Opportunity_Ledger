@@ -51,12 +51,19 @@ class MaintainOnly(unittest.TestCase):
         report = DayReport("2026-09-28")
         held = [{"id": "T-2026-001", "container": "地产", "instrument_code": "512200"}]
         with mock.patch("src.jobs.__main__.open_cards", return_value=held), \
-             mock.patch("src.jobs.__main__.execution_panel", return_value=(None, None, None, None)), \
-             mock.patch("src.jobs.__main__.preflight_open", return_value=[]), \
+             mock.patch("src.jobs.__main__.execution_panel", return_value=(None, None, None, None)) as panel, \
+             mock.patch("src.jobs.__main__.preflight_open", return_value=[]) as preflight, \
              mock.patch("src.jobs.__main__.DailyJob") as job, \
              mock.patch("builtins.print"):
             job.return_value.run.return_value = report
             self.assertEqual(jobs_main(self.args("2026-09-28")), 0)
+        targets = panel.call_args.args[1]
+        names = [item["container"] for item in targets]
+        self.assertEqual(len(names), 37)
+        self.assertEqual(len(set(names)), 37)
+        self.assertEqual(sum(name == "地产" for name in names), 1)
+        self.assertEqual(next(item["instrument_code"] for item in targets if item["container"] == "地产"), "512200")
+        self.assertEqual(preflight.call_args.args[1], held)
         self.assertEqual(job.return_value.run.call_args.kwargs["maintain_only"], True)
         self.assertEqual(job.call_args.kwargs["rules"], {"事件驱动": {}})
         self.assertEqual(job.call_args.kwargs["instruments"]["地产"]["code"], "512200")

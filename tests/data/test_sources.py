@@ -92,6 +92,16 @@ class FixtureParse(NoSleep):
             S.fetch_tencent("sh510300", self.D0, self.D1)
         self.assertTrue(all(p["param"].endswith(",400,") for p in seen))
 
+    def test_tencent_qfq_reads_qfqday(self):
+        body = json.dumps({"code": 0, "data": {"sh511260": {"qt": {"sh511260": ["", "国债ETF"]},
+            "qfqday": [["2026-09-17", "134.7", "134.695", "134.8", "134.6", "1"],
+                       ["2026-09-18", "134.7", "134.739", "134.8", "134.6", "1"]]}}}).encode()
+        seen = []
+        with mock.patch.object(http, "get", side_effect=lambda url, params=None, **kw: seen.append(params) or body):
+            got = S.fetch_tencent("sh511260", date(2026, 9, 17), date(2026, 9, 18), adjust="qfq")
+        self.assertEqual(seen[0]["param"], "sh511260,day,2026-09-17,2026-09-18,400,qfq")
+        self.assertEqual([r["close"] for r in got.rows], [134.695, 134.739])
+
     def test_yahoo_local_date_and_null_rows(self):
         with serve("yahoo_NDX.json"):
             got = S.fetch_yahoo("^NDX", self.D0, self.D1)

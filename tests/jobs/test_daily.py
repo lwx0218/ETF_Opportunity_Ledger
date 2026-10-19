@@ -439,6 +439,52 @@ class Replay(unittest.TestCase):
         self.replay(panel.assign(data_hole=0), bench, days=DAYS[: DAYS.index(d) + 1])
         self.assertEqual(self.L.card("T-2026-001")["crowd_rs_1m_rank"], 2)
 
+    def _bond_panel(self, ex_open, ex_close):
+        i0 = DAYS.index(SIGNAL)
+        closes = [100.0] * (i0 + 2) + [ex_close] + [ex_close] * (len(DAYS) - i0 - 3)
+        panel, bench = make_panel(semis=closes, semis_open={DAYS[i0 + 1]: 100.0, DAYS[i0 + 2]: ex_open})
+        panel.loc[panel["container"] == "半导体", "atr20"] = 0.4
+        return panel, bench, DAYS[i0 + 2]
+
+    def test_cash_dividend_does_not_false_exit(self):
+        """不复权价跌破 2×ATR，但阶跃等于现金分红时，创建日基准的复权价不触发出场。失效位保持创建时的原值。"""
+        panel, bench, ex = self._bond_panel(98.0, 98.0)
+        self.replay(panel, bench, days=DAYS[: DAYS.index(ex) + 2])
+        raw = dict(self.L.conn.execute("SELECT * FROM exit_signals WHERE card_id = 'T-2026-001'").fetchone())
+        self.assertEqual((raw["signal_date"], raw["reason"]), (ex, "失效位"))
+        self.assertAlmostEqual(raw["signal_close"], 98.0)
+        locked = self.L.card("T-2026-001")["invalidation_price"]
+        self.assertAlmostEqual(locked, 99.2)
+        self.new_ledger()
+        panel, bench, ex = self._bond_panel(98.0, 98.0)
+        divs = {"512480": [{"ex_date": ex, "amount": 2.0, "prev_close": 100.0}]}
+        self.replay(panel, bench, days=DAYS[: DAYS.index(ex) + 2], dividends=divs)
+        self.assertIsNone(self.L.conn.execute("SELECT 1 FROM exit_signals WHERE card_id = 'T-2026-001'").fetchone())
+        self.assertIsNone(self.L.conn.execute("SELECT 1 FROM exits WHERE card_id = 'T-2026-001'").fetchone())
+        self.assertAlmostEqual(self.L.card("T-2026-001")["invalidation_price"], locked)
+        row = next(r for r in self.L.daily_rows("T-2026-001") if r["date"] == ex)
+        self.assertAlmostEqual(row["close"], 100.0)
+        self.assertGreater(row["close"], row["stop_now"])
+
+    def test_unexplained_gap_is_a_data_hole_and_does_not_exit(self):
+        """开盘跳空超过 5% 且推不出分红：当天不写出场决定，名次让出，止损不跟这个收盘上移或击穿。"""
+        panel, bench, ex = self._bond_panel(90.0, 90.0)
+        job = DailyJob(self.L, panel, bench, rules=RULES, instruments=INST)
+        reps = {}
+        for d in DAYS[: DAYS.index(ex) + 1]:
+            self.now = f"{d}T16:00"
+            reps[d] = job.run(d)
+        self.assertIsNone(self.L.conn.execute("SELECT 1 FROM exit_signals WHERE card_id = 'T-2026-001'").fetchone())
+        self.assertEqual(self.L.status("T-2026-001"), "当下")
+        self.assertTrue(any("推不出现金分红" in line and "不做出场决定" in line for line in reps[ex].skipped))
+        row = next(r for r in self.L.daily_rows("T-2026-001") if r["date"] == ex)
+        self.assertIsNone(row["rs_1m_rank"])
+        self.assertAlmostEqual(row["stop_now"], 99.2)
+        self.assertAlmostEqual(row["close"], 90.0)
+        ranks = DailyJob._ranks(job.panel[job.panel["date"] == pd.Timestamp(ex)])
+        self.assertTrue(np.isnan(ranks["半导体"]))
+        self.assertEqual(int(ranks.notna().sum()), 2)
+
     def test_lifecycle_matches_the_engine(self):
         panel, bench = make_panel()
         self.replay(panel, bench)

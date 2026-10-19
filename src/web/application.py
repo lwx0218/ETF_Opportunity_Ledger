@@ -12,6 +12,7 @@ import time as wall
 from contextlib import contextmanager
 from datetime import date, datetime, time
 from pathlib import Path
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from src.data import db as MarketDB
@@ -64,6 +65,28 @@ def rows(con, sql, args=()):
 def one(con, sql, args=()):
     row = con.execute(sql, args).fetchone()
     return dict(row) if row else None
+
+
+GROK_RAW = "https://github.com/lwx0218/ETF_Opportunity_Ledger/blob/archive/grok-raw/"
+
+
+def snapshot_link(path):
+    """events-snapshots/ 开头的路径指向 archive/grok-raw 上的同名文件。"""
+    if not isinstance(path, str) or not path.startswith("events-snapshots/"):
+        return None
+    return GROK_RAW + "/".join(quote(part, safe="") for part in path.split("/") if part != "")
+
+
+def evidence_rows(con, card_id):
+    items = rows(con, """SELECT e.*, f.name AS source_name
+                         FROM evidence e
+                         LEFT JOIN fixed_sources f
+                           ON f.source_id = e.source_id
+                          AND f.csv_sha256 = (SELECT csv_sha256 FROM source_loads ORDER BY seq DESC LIMIT 1)
+                         WHERE e.card_id = ? ORDER BY e.seq""", (card_id,))
+    for item in items:
+        item["snapshot_url"] = snapshot_link(item.get("snapshot_path"))
+    return items
 
 
 def read_market(path: Path):
@@ -341,7 +364,7 @@ class Application:
                 daily = rows(con, "SELECT * FROM daily WHERE card_id=? ORDER BY date", (card_id,))
                 signals = rows(con, "SELECT * FROM exit_signals WHERE card_id=? ORDER BY seq", (card_id,))
                 agent = one(con, "SELECT score,reason,scored_at FROM strength_scores WHERE card_id=? AND rater='agent'", (card_id,))
-                evidence = rows(con, "SELECT * FROM evidence WHERE card_id=? ORDER BY seq", (card_id,))
+                evidence = evidence_rows(con, card_id)
                 checks = rows(con, "SELECT seq,verdict,note,checked_at FROM spot_checks WHERE card_id=? ORDER BY seq", (card_id,))
                 comparisons = counterfactual(con, card_id)
             completed = sum(d["date"] > parts["exit"]["exit_date"] for d in daily) if parts["exit"] else 0

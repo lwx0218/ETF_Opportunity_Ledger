@@ -1,7 +1,7 @@
 """--maintain-only 用的窄预检和执行 ETF 面板。不读研究池完整性，不生成候选。"""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -14,9 +14,38 @@ from src.indicators.states import STATES
 
 def open_cards(ledger) -> list[dict]:
     return [dict(row) for row in ledger.conn.execute(
-        """SELECT c.id, c.container, c.instrument_code FROM cards c
+        """SELECT c.id, c.container, c.instrument_code, c.close_date FROM cards c
            JOIN card_status s ON s.id = c.id
            WHERE c.sealed = 1 AND s.status IN ('候选', '当下', '过去')""")]
+
+
+def panel_targets(held: list[dict], inst: dict) -> list[dict]:
+    """排名用全部执行 ETF。台账里容器不在 universe 的卡也装上，避免漏记账。同一容器只出现一次。"""
+    targets = [{"container": name, "instrument_code": meta["code"]} for name, meta in inst.items() if meta.get("code")]
+    seen = {item["container"] for item in targets}
+    for card in held:
+        if card["container"] not in seen:
+            targets.append({"container": card["container"], "instrument_code": card["instrument_code"]})
+            seen.add(card["container"])
+    return targets
+
+
+def dividend_windows(held: list[dict], names: list[str], inst: dict, day: date) -> dict:
+    """在场卡从创建日前 10 天取 qfq，当天草稿从 D−10 取。同一代码用更早的起点。"""
+    windows = {}
+    for card in held:
+        code, close = card.get("instrument_code"), card.get("close_date")
+        if not code or not close:
+            continue
+        start = date.fromisoformat(close) - timedelta(days=10)
+        windows[code] = min(windows.get(code, start), start)
+    for name in names:
+        code = (inst.get(name) or {}).get("code")
+        if not code:
+            continue
+        start = day - timedelta(days=10)
+        windows[code] = min(windows.get(code, start), start)
+    return windows
 
 
 def _bars(con, code, source, end: date) -> pd.DataFrame:

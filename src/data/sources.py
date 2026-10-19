@@ -169,14 +169,18 @@ def fetch_eastmoney(secid: str, start: date, end: date, fqt: int = 0) -> Fetched
     return Fetched(_finish(rows, start, end), name)
 
 
-# ------------------------------------------------------------------ 腾讯（只用不复权）
-def fetch_tencent(sym: str, start: date, end: date) -> Fetched:
-    """`fqkline/get?param=<sym>,day,<start>,<end>,400,`（复权参数留空 = 不复权）。
-    腾讯的 qfq 是减法复权（intake §4.2 陷阱 3），这里从不请求 qfq。返回行是 [日期, 开, 收, 高, 低, 量]。"""
+# ------------------------------------------------------------------ 腾讯
+def fetch_tencent(sym: str, start: date, end: date, *, adjust: str = "") -> Fetched:
+    """`fqkline/get?param=<sym>,day,<start>,<end>,400,<adjust>`。
+    adjust 为空是不复权，行情库存的就是这条。qfq 是减法复权（intake §4.2 陷阱 3），只用来从价差推导现金分红，不写入 bars。
+    不复权序列的键是 `day`，前复权是 `qfqday`。返回行是 [日期, 开, 收, 高, 低, 量]。"""
+    if adjust not in ("", "qfq"):
+        raise http.FetchError(f"tencent {sym}: adjust 只能是空或 qfq")
+    key = "qfqday" if adjust == "qfq" else "day"
     rows, name = [], None
     segs = list(_segments(start, end, TENCENT_CHUNK_DAYS))
     for i, (b, e) in enumerate(segs):
-        d = http.get_json(TENCENT_KLINE, {"param": f"{sym},day,{b.isoformat()},{e.isoformat()},400,"})
+        d = http.get_json(TENCENT_KLINE, {"param": f"{sym},day,{b.isoformat()},{e.isoformat()},400,{adjust}"})
         if not isinstance(d, dict) or d.get("code") not in (0, "0"):
             raise http.FetchError(f"tencent {sym} {b}~{e}: {str(d)[:80]}")
         node = ((d.get("data") or {}).get(sym)) or {}
@@ -185,9 +189,9 @@ def fetch_tencent(sym: str, start: date, end: date) -> Fetched:
         qt = (node.get("qt") or {}).get(sym)
         if isinstance(qt, list) and len(qt) > 1:
             name = name or qt[1]
-        if not node.get("day"):
+        if not node.get(key):
             _hole(f"tencent {sym}", b, e, bool(rows), i + 1 == len(segs))
-        for p in node.get("day") or []:
+        for p in node.get(key) or []:
             if len(p) >= 6:
                 rows.append(_row(p[0], p[1], p[3], p[4], p[2], p[5]))
         if i + 1 < len(segs):

@@ -37,32 +37,34 @@
 
 `source_id` 不在固定源清单、或等级是 C，整条退回，不锁半张卡。
 
+`snapshot_path` 填 `archive/grok-raw` 分支里的路径 `events-snapshots/<D>/<文件名>`。快照要在草稿推送前先推到这个分支。页面只给以 `events-snapshots/` 开头的路径做链接。
+
 ## 能通过校验的样例
 
 ```json
 [
   {
     "container": "地产",
-    "thesis": "重点城市成交回升，一手数据确认",
+    "thesis": "房地产投资增速回升，统计局月报确认",
     "evidence_status": "有证据",
     "evidence": [
       {
-        "source_id": "ENE-EIA-WPSR",
-        "published_at": "2026-09-30T15:00",
-        "summary": "周度库存低于预期",
-        "url": "https://www.eia.gov/petroleum/supply/weekly/",
-        "first_seen_at": "2026-09-30T15:10",
-        "available_at": "2026-09-30T15:00",
-        "snapshot_path": "snapshots/2026-09-30/wpsr.txt",
+        "source_id": "CN-NBS-MONTHLY",
+        "published_at": "2026-09-30T10:00",
+        "summary": "全国房地产投资月报显示开发投资降幅收窄",
+        "url": "https://www.stats.gov.cn/sj/zxfb/",
+        "first_seen_at": "2026-09-30T10:05",
+        "available_at": "2026-09-30T10:00",
+        "snapshot_path": "events-snapshots/2026-09-30/nbs-realestate.txt",
         "snapshot_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       }
     ],
-    "agent_score": {"score": 4, "reason": "一手库存数据，方向与论点一致"},
+    "agent_score": {"score": 4, "reason": "统计局房地产投资数据，方向与论点一致"},
     "expectation": {"horizon_days": 20, "target_excess_pct": 3.0, "benchmark": "沪深300"},
     "thesis_invalidation": {
-      "source_id": "ENE-EIA-WPSR",
+      "source_id": "CN-NBS-MONTHLY",
       "deadline": "2026-10-30",
-      "statement": "10 月 30 日前库存转增即失效"
+      "statement": "下一期房地产投资再度走弱即失效"
     }
   }
 ]
@@ -82,7 +84,7 @@
     "agent_score": {"score": 2, "reason": "只有标题"},
     "expectation": {"horizon_days": 20, "target_excess_pct": 3.0, "benchmark": "沪深300"},
     "thesis_invalidation": {
-      "source_id": "ENE-EIA-WPSR",
+      "source_id": "CN-NBS-MONTHLY",
       "deadline": "2026-10-30",
       "statement": "到期未兑现即失效"
     }

@@ -349,14 +349,19 @@ def mvp_targets(uni: list[dict], covs: dict) -> list[tuple[dict, dict, str, str,
     return out
 
 
-def update(end: date, *, only=None, scope=None, uni_path: Path = U.UNIVERSE, db: Path = DB.MARKET_DB, log=print) -> list[dict]:
-    """按每条序列已有的来源增量更新；不换路由（换了就不是同一条序列）。scope=mvp 只更新执行 ETF 与 H00300。"""
+def update(end: date, *, only=None, scope=None, uni_path: Path = U.UNIVERSE, db: Path = DB.MARKET_DB,
+           dividend_windows: dict | None = None, log=print) -> list[dict]:
+    """按每条序列已有的来源增量更新；不换路由（换了就不是同一条序列）。scope=mvp 只更新执行 ETF 与 H00300。
+    dividend_windows 给出时，为这些执行 ETF 再取一次腾讯 qfq，把现金分红追加进 cash_dividends。qfq 失败不让本次更新失败。"""
     if scope not in (None, "mvp"):
         raise SystemExit("scope 只能是 mvp")
     if scope == "mvp" and only:
         raise SystemExit("--scope mvp 不能和 --only 一起用")
     http.LOG.clear()
-    with _job(db, "update", end=end, args={"only": only, "scope": scope}, uni_path=uni_path, create=False) as (con, run_id, uni):
+    args = {"only": only, "scope": scope}
+    if dividend_windows:
+        args["dividend_codes"] = sorted(dividend_windows)
+    with _job(db, "update", end=end, args=args, uni_path=uni_path, create=False) as (con, run_id, uni):
         covs = {c["theme_id"]: c for c in DB.read_coverage(con)}
         if not covs:
             raise SystemExit("库里没有 coverage：先跑 backfill")
@@ -420,6 +425,9 @@ def update(end: date, *, only=None, scope=None, uni_path: Path = U.UNIVERSE, db:
             _refresh(cov, con)
             cov["checked_at"] = _now()
             touched.append(cov)
+        if dividend_windows:
+            from src.data.dividends import sync_qfq
+            sync_qfq(con, run_id, dividend_windows, end, log=log)
         DB.write_coverage(con, run_id, touched)
         DB.write_update_results(con, run_id, report)
         DB.write_requests(con, run_id, http.LOG)

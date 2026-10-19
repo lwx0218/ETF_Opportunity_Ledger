@@ -23,6 +23,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from src.data.dividends import GAP_LIMIT
 from src.indicators.calendar import next_trading_day
 from src.ledger.store import Ledger, LedgerError, mechanical_score
 from src.research.prereg_v1.config import Params
@@ -91,8 +92,9 @@ def _num(x):
 class DailyJob:
     def __init__(self, ledger: Ledger, panel: pd.DataFrame, bench: pd.Series, *, rules: dict, instruments: dict,
                  events_dir=None, scorer: Callable[[R.Candidate], dict | None] = default_scorer, p: Params = Params(),
-                 bench_open: pd.Series | None = None, trading_days=None):
+                 bench_open: pd.Series | None = None, trading_days=None, dividends: dict | None = None):
         self.L, self.p, self.rules, self.instruments, self.events_dir, self.scorer = ledger, p, rules, instruments, events_dir, scorer
+        self.dividends = dividends or {}
         check_panel(panel)
         self.panel = panel.assign(date=pd.to_datetime(panel["date"])).sort_values(["date", "container"])
         self.bench = bench.sort_index()
@@ -125,6 +127,69 @@ class DailyJob:
         b1 = self._level(s, pd.Timestamp(exit_date) - timedelta(days=1))
         return (b1 / b0 - 1) if b0 and b1 else 0.0
 
+    def _factor(self, code: str, close_date: str, day: str) -> float:
+        """创建日之后的现金分红，把价格乘回创建日空间。创建日当天的分红不回改已锁死的失效位。"""
+        factor = 1.0
+        for item in self.dividends.get(code) or ():
+            if close_date < item["ex_date"] <= day:
+                prev, amount = float(item["prev_close"]), float(item["amount"])
+                if prev > amount:
+                    factor *= prev / (prev - amount)
+        return factor
+
+    def _instrument_code(self, container: str) -> str | None:
+        code = (self.instruments.get(container) or {}).get("code")
+        if code:
+            return code
+        row = self.L.conn.execute(
+            "SELECT instrument_code FROM cards WHERE container = ? ORDER BY close_date DESC LIMIT 1", (container,)).fetchone()
+        return row["instrument_code"] if row else None
+
+    def _gap_without_dividend(self, container: str, code: str | None, D, raw) -> bool:
+        """开盘相对前收的跳空超过 GAP_LIMIT，且这一天推不出现金分红。"""
+        if raw is None or code is None or not np.isfinite(raw.open):
+            return False
+        prev_d = self._prev_date(container, D)
+        if prev_d is None:
+            return False
+        prev = self._row(container, prev_d)
+        if prev is None or not np.isfinite(prev.close) or float(prev.close) <= 0:
+            return False
+        if abs(float(raw.open) / float(prev.close) - 1) <= GAP_LIMIT:
+            return False
+        day = D.date().isoformat()
+        return not any(item["ex_date"] == day for item in self.dividends.get(code) or ())
+
+    def _mark_unexplained_gaps(self, D) -> None:
+        """跳空对不上分红的容器，当天按 data_hole：排名置空，并且不参与出场。"""
+        day_rows = self.panel[self.panel["date"] == D]
+        for container in day_rows["container"].unique():
+            raw = self._row(container, D)
+            code = self._instrument_code(container)
+            if self._gap_without_dividend(container, code, D, raw):
+                mask = (self.panel["container"] == container) & (self.panel["date"] == D)
+                self.panel.loc[mask, "data_hole"] = 1
+
+    def _priced(self, card: dict, D):
+        """当日 OHLC 换成创建日基准的复权价。面板上的原行保持不复权，ATR 不缩放。"""
+        row = self._row(card["container"], D)
+        if row is None:
+            return None
+        factor = self._factor(card["instrument_code"], card["close_date"], D.date().isoformat())
+        view = row.copy()
+        for col in ("open", "high", "low", "close"):
+            if np.isfinite(view[col]):
+                view[col] = float(view[col]) * factor
+        view["action_hole"] = 1 if self._gap_without_dividend(
+            card["container"], card["instrument_code"], D, row) else 0
+        return view
+
+    def _note_gap(self, cid: str, day: str, rep: DayReport) -> None:
+        msg = (f"{cid}：{day} 开盘相对前收跳空超过 {GAP_LIMIT:.0%}，推不出现金分红（可能是份额折算），"
+               f"按 data_hole 处理，不做出场决定")
+        if msg not in rep.skipped:
+            rep.skipped.append(msg)
+
     # ------------------------------------------------------------ 主流程
     def run(self, day: str, *, maintain_only: bool = False) -> DayReport:
         D = pd.Timestamp(day)
@@ -140,6 +205,8 @@ class DailyJob:
             return rep
         if self.ew_store.ensure(self.panel[self.panel["date"] <= D], D) is None:
             rep.skipped.append(f"等权日收益已记到更晚的日期，{day} 不能补记（只追加）；本日反事实等权点位取最近一条")
+        self._mark_unexplained_gaps(D)
+        today = self.panel[self.panel["date"] == D]
         self._exits(D, rep)
         self._entries(D, rep)
         self._daily(D, today, rep)
@@ -186,7 +253,9 @@ class DailyJob:
             if sig is None or sig["signal_date"] >= D.date().isoformat():
                 continue
             card = self.L.card(cid)
-            r = self._row(card["container"], D)
+            r = self._priced(card, D)
+            if r is not None and int(r.get("action_hole") or 0) == 1:
+                self._note_gap(cid, D.date().isoformat(), rep)
             if r is None or not np.isfinite(r.open) or r.data_hole == 1:
                 why = "数据断档" if r is not None and r.data_hole == 1 else "无开盘价"
                 rep.skipped.append(f"{cid}：{sig['signal_date']} 的出场信号，{D.date()} {why}，顺延（信号不撤销）")
@@ -221,7 +290,9 @@ class DailyJob:
             cands.append((prio, cid, card))
         for _, cid, card in sorted(cands, key=lambda t: (t[0], t[1])):
             prev = self._prev_date(card["container"], D)
-            r = self._row(card["container"], D)
+            r = self._priced(card, D)
+            if r is not None and int(r.get("action_hole") or 0) == 1:
+                self._note_gap(cid, D.date().isoformat(), rep)
             live = [self.L.card(x) | {"entry": self._entry(x)} for x in self.L.cards_in("当下")]
             held = {c["container"] for c in live}
             why = None                                   # 判定顺序与 V1 引擎一致：已持有 → 持仓已满 → 数据断档 → 无开盘价 → 开盘在失效位下方 → 额度
@@ -268,7 +339,7 @@ class DailyJob:
         hs = self._level(self.bench, D)
         for cid in self.L.cards_in("当下", "过去"):
             card = self.L.card(cid)
-            r = self._row(card["container"], D)
+            r = self._priced(card, D)
             rows = self.L.daily_rows(cid)
             if r is None or (rows and rows[-1]["date"] >= D.date().isoformat()):
                 continue
@@ -278,13 +349,19 @@ class DailyJob:
             r_cur = (close - entry["entry_price"]) / r_unit
             exited = self.L.status(cid) == "过去"
             pending = not exited and self.L.exit_signal(cid) is not None      # 有未成交的出场信号
+            gap = int(r.get("action_hole") or 0) == 1
+            if gap:
+                self._note_gap(cid, D.date().isoformat(), rep)
             prev_mfe = rows[-1]["mfe"] if rows else None
             prev_mae = rows[-1]["mae"] if rows else None
             if exited:
                 mfe, mae, stop_now = prev_mfe, prev_mae, None
-            elif pending:                                        # v1.1-h 第 1 条：信号之后 MFE / MAE 冻结、止损不更新，直到成交
-                stop_eff = rows[-1]["stop_now"]                  # （与引擎在 exit_flag 之后不再更新 hi_close 一致）
-                mfe, mae, stop_now = prev_mfe, prev_mae, stop_eff
+            elif pending or gap:                                # v1.1-h 第 1 条：信号之后 MFE / MAE 冻结、止损不更新，直到成交
+                stop_eff = rows[-1]["stop_now"] if rows else card["invalidation_price"]
+                if gap and prev_mfe is None:                    # 对不上分红的跳空不拿这个收盘去改止损，也不当作出场
+                    mfe, mae, stop_now = r_cur, r_cur, stop_eff
+                else:
+                    mfe, mae, stop_now = prev_mfe, prev_mae, stop_eff
             else:
                 mfe = max(r_cur, prev_mfe) if prev_mfe is not None else r_cur
                 mae = min(r_cur, prev_mae) if prev_mae is not None else r_cur
@@ -296,9 +373,9 @@ class DailyJob:
                     activated = max(closes) >= entry["entry_price"] + self.p.activate_at_r * r_unit
                     atr = float(r.atr20) if np.isfinite(r.atr20) else None
                     stop_now = max(stop_eff, max(closes) - self.p.trail_atr * atr) if activated and atr else stop_eff
-            rank = ranks.get(card["container"])
+            rank = None if gap else ranks.get(card["container"])
             signal = None
-            if not exited and not pending and close < stop_eff:                 # v1.1-g：跌破那天收盘后写出场信号（与每日行同一事务）
+            if not gap and not exited and not pending and close < stop_eff:   # v1.1-g：跌破那天收盘后写出场信号（与每日行同一事务）
                 activated = any(x["close"] >= entry["entry_price"] + self.p.activate_at_r * r_unit for x in rows)
                 signal = {"reason": "移动止盈" if activated else "失效位", "signal_close": close}
             self.L.append_daily(cid, dict(date=D.date().isoformat(), close=close, state=r.state, z=_num(r.z_month),

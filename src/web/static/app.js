@@ -695,7 +695,7 @@ function textOrDash(value) {
   return value == null || value === '' ? '—' : esc(value);
 }
 function renderDetail(data) {
-  const card = data.card, daily = data.daily || [], last = daily.at(-1), scores = data.scores || {}, actions = data.actions || {};
+  const card = data.card, daily = data.daily || [], last = daily.at(-1);
   const value = last?.r_current ?? data.exit?.realized_r;
   const expectation = card.expectation_target_r != null ? `以 ${signed(card.expectation_target_r)}R 为达标刻度` : `在 ${esc(card.expectation_horizon_days)} 个交易日内，超额目标 ${number(card.expectation_target_excess_pct)}%`;
   $('#breadcrumb').innerHTML = `<button id="breadcrumb-back">ETF 前向机会台账</button><span>›</span><strong>${esc(data.status)} · ${esc(card.container)}</strong>`;
@@ -708,10 +708,10 @@ function renderDetail(data) {
       <section class="detail-section"><div class="section-heading"><h2>价格与窗口</h2><span class="eyebrow">${esc(card.instrument_code)} · 账内收盘</span></div>${priceChart(daily,0,{code:card.instrument_code})}<p class="chart-caption">关注 ${esc(card.close_date)} · 入场 ${esc(data.entry?.entry_date || '未发生')} · 出场 ${esc(data.exit?.exit_date || '未发生')}。只画逐日记账收盘；没有入场前行情与 OHLC，不补画蜡烛。</p></section>
       <section class="detail-section"><div class="section-heading"><h2>现在发生了什么</h2><span class="eyebrow">逐日观测</span></div>${chart(daily)}${daily.length ? `<details class="disclosure"><summary>查看 ${daily.length} 条每日记录</summary><div class="observations"><div class="observation-row observation-heading"><span>日期</span><span>收盘</span><span>浮动 R</span><span>当前止损</span></div>${daily.map(row=>`<div class="observation-row mono"><span>${esc(row.date)}</span><span>${number(row.close,3)}</span><span class="${direction(row.r_current)}">${signed(row.r_current)}</span><span>${number(row.stop_now,3)}</span></div>`).join('')}</div></details>` : ''}</section>
       ${renderCounterfactual(data.counterfactual)}
-      <section class="detail-section"><div class="section-heading"><h2>判断从何而来</h2><span class="eyebrow">${esc(card.evidence_status)}</span></div>${(data.evidence || []).length ? data.evidence.map(e => `<article class="evidence-item"><p>${esc(e.summary)}</p><div class="evidence-meta mono">${esc(e.source_id)} · 发布 ${time(e.published_at)}<br>首次看到 ${time(e.first_seen_at)} · 可得 ${time(e.available_at)}</div>${/^https?:\/\//.test(e.url || '') ? `<a href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">查看原始来源 ↗</a>` : ''}</article>`).join('') : `<p class="empty">${card.evidence_status === '未检索' ? '这是一条机械触发的记录，创建时未检索外部证据。' : '创建时已检索，没有登记可用证据。'}</p>`}</section>
+      ${renderEvidence(data)}
       <section class="detail-section"><div class="section-heading"><h2>同类历史</h2><span class="eyebrow">证据尚不足</span></div><p class="summary-note">尚未形成可靠的结果盲选样口径，不能判断哪些历史记录可作同类。这里不挑选盈利案例，也不把旧回放成绩当成这张卡的预期。</p></section>
       <section class="detail-section"><div class="section-heading"><h2>后续观察</h2><span class="eyebrow">原记录保留</span></div>${renderEvents(data)}</section>
-    </div><aside aria-label="证据强度与操作">${renderScores(scores)}${renderSpot(data)}${renderActions(data)}<div class="action-section"><h2>下一观察点</h2><p>${esc(observed({...card,status:data.status,next_observation:data.next_observation}))}</p>${data.tracking ? `<p class="space-top">出场后跟踪 <span class="mono">${esc(data.tracking.completed)} / ${esc(data.tracking.required)}</span> 个交易日</p>` : ''}</div><button class="detail-back" id="detail-back">← 返回全部机会</button></aside></div>`;
+    </div><aside aria-label="操作">${renderActions(data)}<div class="action-section"><h2>下一观察点</h2><p>${esc(observed({...card,status:data.status,next_observation:data.next_observation}))}</p>${data.tracking ? `<p class="space-top">出场后跟踪 <span class="mono">${esc(data.tracking.completed)} / ${esc(data.tracking.required)}</span> 个交易日</p>` : ''}</div><button class="detail-back" id="detail-back">← 返回全部机会</button></aside></div>`;
   $('#detail-back').addEventListener('click', showHome);
   $('#spot-form')?.addEventListener('submit', event => {
     event.preventDefault(); const fields = new FormData(event.currentTarget);
@@ -729,6 +729,25 @@ function renderDetail(data) {
   wireNavigation();
 }
 
+function shortSha(value) {
+  const text = String(value || '');
+  return text.length <= 16 ? text : `${text.slice(0, 16)}…`;
+}
+function renderEvidenceItem(item) {
+  const grade = item.source_grade ? ` · ${item.source_grade}` : '';
+  const name = item.source_name ? ` · ${item.source_name}` : '';
+  const url = /^https?:\/\//.test(item.url || '') ? `<a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">原文</a>` : '';
+  const snap = item.snapshot_url
+    ? `<a href="${esc(item.snapshot_url)}" target="_blank" rel="noopener noreferrer" title="${esc(item.snapshot_sha256)}">快照 ${esc(shortSha(item.snapshot_sha256))}</a>`
+    : `<span class="mono" title="${esc(item.snapshot_sha256)}">快照 ${esc(shortSha(item.snapshot_sha256))}</span>`;
+  return `<article class="evidence-item"><p>${esc(item.summary)}</p><div class="evidence-meta mono">${esc(item.source_id)}${esc(name)}${esc(grade)}<br>发布 ${time(item.published_at)} · 可得 ${time(item.available_at)} · 首次看到 ${time(item.first_seen_at)}<br><span title="${esc(item.snapshot_sha256)}">sha256 ${esc(shortSha(item.snapshot_sha256))}</span></div><div class="evidence-links">${url}${snap}</div></article>`;
+}
+function renderEvidence(data) {
+  const card = data.card;
+  const items = data.evidence || [];
+  const body = items.length ? items.map(renderEvidenceItem).join('') : `<p class="empty">${card.evidence_status === '未检索' ? '这是一条机械触发的记录，创建时未检索外部证据。' : '创建时已检索，没有登记可用证据。'}</p>`;
+  return `<section class="detail-section" id="evidence"><div class="section-heading"><h2>判断从何而来</h2><span class="eyebrow">${esc(card.evidence_status)}</span></div><div class="evidence-layout"><div class="evidence-list">${body}</div>${renderScores(data.scores || {})}</div>${renderSpot(data)}</section>`;
+}
 function renderScores(scores) {
   const agent = scores.agent;
   if (!agent) return '<section class="action-section"><h2>证据强度</h2><p class="empty">这张卡没有 agent 评分。</p></section>';

@@ -27,7 +27,8 @@ from . import rules as R
 from .daily import DailyJob, check_panel
 from .guard import preflight
 from .live import coverage, instruments, live_panel
-from .maintain import execution_panel, open_cards, preflight_open
+from src.data.dividends import load_dividends
+from .maintain import dividend_windows, execution_panel, open_cards, panel_targets, preflight_open
 
 
 def default_day() -> date:
@@ -77,14 +78,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"正式台账不存在，未创建。先运行：python -m src.ledger init --db {a.db}", file=sys.stderr)
             return 3
         day = a.date or default_day()
-        scope = "mvp" if a.maintain_only else None
-        if not a.no_update:
-            failed = [r for r in data_runner.update(day, db=a.market, scope=scope) if not r.get("ok")]
-            for r in failed:
-                print(f"update 失败：{r.get('theme_id')} {r.get('code')}/{r.get('adj')}：{(r.get('error') or '')[:120]}", file=sys.stderr)
-            if a.maintain_only and failed:
-                print("mvp 更新未完成，已有行情未覆盖，台账未记为已处理", file=sys.stderr)
-                return 1
         trading_days = calendar_or_exit(a.market)
         clock = {"now": f"{day.isoformat()}T16:00"}
         try:
@@ -93,25 +86,29 @@ def main(argv: list[str] | None = None) -> int:
             print(str(exc), file=sys.stderr)
             return 3
         try:
+            held = open_cards(L)
+            names = R.draft_container_names(a.events_dir, day.isoformat()) if "事件驱动" in rules else []
+            if a.maintain_only and not held and not names:
+                dates = [] if trading_days is None else [item.date().isoformat() for item in trading_days]
+                if day.isoformat() in dates:
+                    L.mark_processed(day.isoformat())
+                    print(json.dumps({"day": day.isoformat(), "open_cards": 0, "marked": True}, ensure_ascii=False))
+                else:
+                    print(json.dumps({"day": day.isoformat(), "open_cards": 0, "marked": False, "note": "非交易日或没有官方日历"}, ensure_ascii=False))
+                return 0
+            inst = instruments()
+            windows = dividend_windows(held, names, inst, day)
+            scope = "mvp" if a.maintain_only else None
+            if not a.no_update:
+                failed = [r for r in data_runner.update(day, db=a.market, scope=scope, dividend_windows=windows or None) if not r.get("ok")]
+                for r in failed:
+                    print(f"update 失败：{r.get('theme_id')} {r.get('code')}/{r.get('adj')}：{(r.get('error') or '')[:120]}", file=sys.stderr)
+                if a.maintain_only and failed:
+                    print("mvp 更新未完成，已有行情未覆盖，台账未记为已处理", file=sys.stderr)
+                    return 1
+            divs = load_dividends(a.market, windows)
             if a.maintain_only:
-                held = open_cards(L)
-                names = R.draft_container_names(a.events_dir, day.isoformat()) if "事件驱动" in rules else []
-                if not held and not names:
-                    dates = [] if trading_days is None else [item.date().isoformat() for item in trading_days]
-                    if day.isoformat() in dates:
-                        L.mark_processed(day.isoformat())
-                        print(json.dumps({"day": day.isoformat(), "open_cards": 0, "marked": True}, ensure_ascii=False))
-                    else:
-                        print(json.dumps({"day": day.isoformat(), "open_cards": 0, "marked": False, "note": "非交易日或没有官方日历"}, ensure_ascii=False))
-                    return 0
-                inst = instruments()
-                targets = [dict(card) for card in held]
-                seen = {card["container"] for card in targets}
-                for name in names:
-                    if name in seen or name not in inst:
-                        continue
-                    targets.append({"container": name, "instrument_code": inst[name]["code"]})
-                    seen.add(name)
+                targets = panel_targets(held, inst)
                 panel, bench, bench_open, trading_days = execution_panel(a.market, targets, day)
                 blocking = preflight_open(day.isoformat(), held, panel, bench, trading_days, L.processed_days())
                 if blocking:
@@ -119,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
                     return 3
                 covs, problems, notes = [], [], []
                 job = DailyJob(L, panel, bench, rules=rules, instruments=inst, events_dir=a.events_dir,
-                               bench_open=bench_open, trading_days=trading_days)
+                               bench_open=bench_open, trading_days=trading_days, dividends=divs)
                 rep = job.run(day.isoformat(), maintain_only=True)
             else:
                 panel, bench, bench_open, problems = live_panel(a.market, day, trading_days)
@@ -129,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
                     print("\n".join(["运行前检查未通过，台账未动："] + blocking), file=sys.stderr)
                     return 3
                 job = DailyJob(L, panel, bench, rules=rules, instruments=instruments(covs=covs), events_dir=a.events_dir,
-                               bench_open=bench_open, trading_days=trading_days)
+                               bench_open=bench_open, trading_days=trading_days, dividends=divs)
                 rep = job.run(day.isoformat())
             if rep.blocked:
                 print(f"台账未动：{rep.blocked}", file=sys.stderr)

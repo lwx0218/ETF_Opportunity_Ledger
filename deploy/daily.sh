@@ -21,15 +21,22 @@ if [ -z "$DAY" ]; then
 fi
 
 if git fetch origin events; then
-  if git cat-file -e "origin/events:events/${DAY}.json" 2>/dev/null; then
-    mkdir -p data/events
-    git show "origin/events:events/${DAY}.json" > "data/events/${DAY}.json"
-    COMMIT="$(git rev-parse "origin/events")"
-    SHA="$(sha256sum "data/events/${DAY}.json" | awk '{print $1}')"
-    printf '{"commit":"%s","sha256":"%s"}\n' "$COMMIT" "$SHA" > "data/events/${DAY}.meta.json"
-    echo "events 分支 ${COMMIT} 文件 sha256 ${SHA} 已复制到 data/events/${DAY}.json"
+  AUTHOR="$(git log -1 --format='%an' origin/events)"
+  EMAIL="$(git log -1 --format='%ae' origin/events)"
+  echo "origin/events 最新提交作者 ${AUTHOR} <${EMAIL}>"
+  if [ "$AUTHOR" = "Grok bot" ]; then
+    if git cat-file -e "origin/events:events/${DAY}.json" 2>/dev/null; then
+      mkdir -p data/events
+      git show "origin/events:events/${DAY}.json" > "data/events/${DAY}.json"
+      COMMIT="$(git rev-parse "origin/events")"
+      SHA="$(sha256sum "data/events/${DAY}.json" | awk '{print $1}')"
+      printf '{"commit":"%s","sha256":"%s"}\n' "$COMMIT" "$SHA" > "data/events/${DAY}.meta.json"
+      echo "events 分支 ${COMMIT} 文件 sha256 ${SHA} 已复制到 data/events/${DAY}.json"
+    else
+      echo "origin/events 没有 events/${DAY}.json（当天没有合格事件时这是正常的）"
+    fi
   else
-    echo "origin/events 没有 events/${DAY}.json（当天没有合格事件时这是正常的）"
+    echo "origin/events 最新提交作者不是 Grok bot（${AUTHOR} <${EMAIL}>），不复制 events/${DAY}.json"
   fi
 else
   echo "拉取 origin/events 失败，维护作业继续" >&2

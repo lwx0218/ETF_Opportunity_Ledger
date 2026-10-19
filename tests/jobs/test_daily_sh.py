@@ -29,7 +29,7 @@ class DailySh(unittest.TestCase):
         (self.repo / "events").mkdir()
         (self.repo / "events" / ".gitkeep").write_text("", encoding="utf-8")
         self.git("add", "README.md", "events/.gitkeep")
-        self.git("commit", "-m", "events")
+        self.git("-c", "user.name=Grok bot", "-c", "user.email=grok-bot@example.com", "commit", "-m", "events")
         self.git("remote", "add", "origin", str(self.bare))
         self.git("push", "-u", "origin", "events")
 
@@ -45,7 +45,7 @@ class DailySh(unittest.TestCase):
         body = "{\"container\":\"地产\"}\n"
         (self.repo / "events" / "2026-09-30.json").write_text(body, encoding="utf-8")
         self.git("add", "events/2026-09-30.json")
-        self.git("commit", "-m", "draft")
+        self.git("-c", "user.name=Grok bot", "-c", "user.email=grok-bot@example.com", "commit", "-m", "draft")
         self.git("push", "origin", "events")
         proc = self.invoke("--no-update")
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -54,6 +54,8 @@ class DailySh(unittest.TestCase):
         commit = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "origin/events"], text=True).strip()
         digest = hashlib.sha256(body.encode()).hexdigest()
         self.assertIn(commit, proc.stdout)
+        self.assertIn("Grok bot", proc.stdout)
+        self.assertIn("grok-bot@example.com", proc.stdout)
         self.assertIn(digest, proc.stdout)
         self.assertIn(digest, (self.repo / "data" / "events" / "2026-09-30.meta.json").read_text(encoding="utf-8"))
         logged = self.job_log.read_text(encoding="utf-8")
@@ -64,7 +66,23 @@ class DailySh(unittest.TestCase):
     def test_missing_file_still_runs_the_job(self):
         proc = self.invoke()
         self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Grok bot", proc.stdout)
+        self.assertIn("grok-bot@example.com", proc.stdout)
         self.assertIn("没有 events/2026-09-30.json", proc.stdout)
+        self.assertFalse((self.repo / "data" / "events" / "2026-09-30.json").exists())
+        self.assertIn("--maintain-only", self.job_log.read_text(encoding="utf-8"))
+
+    def test_other_author_is_not_copied_and_the_job_still_runs(self):
+        body = "{\"container\":\"地产\"}\n"
+        (self.repo / "events" / "2026-09-30.json").write_text(body, encoding="utf-8")
+        self.git("add", "events/2026-09-30.json")
+        self.git("commit", "-m", "not grok")
+        self.git("push", "origin", "events")
+        proc = self.invoke()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("daily-sh", proc.stdout)
+        self.assertIn("daily-sh@example.com", proc.stdout)
+        self.assertIn("不是 Grok bot", proc.stdout)
         self.assertFalse((self.repo / "data" / "events" / "2026-09-30.json").exists())
         self.assertIn("--maintain-only", self.job_log.read_text(encoding="utf-8"))
 

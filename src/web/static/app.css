@@ -125,6 +125,10 @@ h3{font-size:17px;line-height:1.6}
 .evidence-item p{font-size:13px;color:var(--ink-2)}
 .evidence-meta{font-size:10px;color:var(--muted);margin-top:8px;line-height:1.9;overflow-wrap:anywhere}
 .evidence-item a{font-size:11px}
+.evidence-layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(180px,.75fr);gap:28px;align-items:start}
+.evidence-layout .action-section{border-top:0;padding-top:0;margin-bottom:0}
+.evidence-links{display:flex;flex-wrap:wrap;gap:16px;margin-top:8px}
+.evidence-links a,.evidence-links span{font-size:11px}
 .chart{margin:10px 0 12px;width:100%;height:auto;display:block}
 .chart .baseline{stroke:var(--hair-2);stroke-dasharray:4 5;stroke-width:1}
 .chart .curve{fill:none;stroke:var(--ink-2);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
@@ -231,6 +235,7 @@ h1{font-size:29px}
 .detail-metric .metric-caption{font-size:10px}
 .detail-header .eyebrow{font-size:10px}
 .detail-grid{gap:10px}
+.evidence-layout{grid-template-columns:1fr;gap:18px}
 .fact-row{grid-template-columns:89px 1fr;gap:12px;font-size:12px}
 .archive-row{grid-template-columns:minmax(90px,1fr) 38px 57px 54px;gap:8px}
 .archive-row .archive-name{font-size:12px}
