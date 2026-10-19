@@ -3,7 +3,7 @@
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state, observation, selectedId = null, busy = false, noticeTimer, loadSequence = 0;
-const page = () => location.pathname === '/rotation' ? 'rotation' : location.pathname === '/market' ? 'market' : location.pathname === '/new' ? 'new' : 'home';
+const page = () => location.pathname === '/rotation' ? 'rotation' : location.pathname === '/market' ? 'market' : location.pathname === '/new' ? 'new' : location.pathname === '/events' ? 'events' : 'home';
 const params = () => new URLSearchParams(location.search);
 function routeFrom(search, path, changes = {}, mode) {
   const next = new URLSearchParams(search);
@@ -62,7 +62,6 @@ function cardButton(card) {
     <div class="metric-line"><span class="metric ${direction(card.r_current)}">${hasR ? signed(card.r_current) : card.status === '候选' ? '待进场' : '—'}</span>${hasR ? '<span class="metric-unit">R</span>' : ''}</div>
     <div class="metric-caption">${hasR ? `${card.exit_date ? '出场后继续跟踪' : '当前浮动'} · ${card.daily_date ? `${shortDate(card.daily_date)} 收盘` : '读数日期待登记'}` : `入场条件待检查 · ${shortDate(card.close_date)} 关注`}</div>
     <div class="opportunity-note"><span>下一观察</span><span>${esc(observed(card))}</span></div>
-    ${['待评分','待独立评分'].includes(card.owner_score_status) ? '<div class="score-cue">待独立评分 · 查看冻结判断</div>' : ''}
   </button>`;
 }
 
@@ -203,17 +202,16 @@ function emptyCardLane(kind, withCards) {
     next: ['lane-next', '下一个 · 候选', '暂无候选机会。', ''],
   }[kind];
   const note = withCards ? '' : copy[3];
-  const extra = kind === 'next' ? createEntry() : '';
-  return `<section class="lane ${copy[0]} lane-empty"><div class="eyebrow">${copy[1]}</div><h3>${copy[2]}</h3>${note ? `<p class="muted">${note}</p>` : ''}${extra}</section>`;
+  return `<section class="lane ${copy[0]} lane-empty"><div class="eyebrow">${copy[1]}</div><h3>${copy[2]}</h3>${note ? `<p class="muted">${note}</p>` : ''}</section>`;
 }
-function createEntry() {
+function auxEntry() {
   if (!(state && state.authenticated && state.mode === 'readonly')) return '';
-  return '<p class="next-create"><a data-route href="/new">立卡</a></p>';
+  return '<p class="aux-entry"><a data-route href="/new">手填立卡</a></p>';
 }
 function renderCardLane(kind, items, withCards) {
   if (!items.length) return emptyCardLane(kind, withCards);
   const heading = {past: ['lane-past', '上一次 · 出场后跟踪'], now: ['lane-now present', '当下 · 持有'], next: ['lane-next', '下一个 · 候选']}[kind];
-  return `<section class="lane ${heading[0]}"><div class="eyebrow">${heading[1]}</div>${kind === 'next' ? createEntry() : ''}${items.map(cardButton).join('')}</section>`;
+  return `<section class="lane ${heading[0]}"><div class="eyebrow">${heading[1]}</div>${items.map(cardButton).join('')}</section>`;
 }
 function renderNextLane(picked) {
   if (!picked.enterable.length) {
@@ -226,7 +224,7 @@ function renderNextLane(picked) {
   const detail = observation && observation.detail;
   const chart = detail && detail.theme_id === row.theme_id ? homeSpark(detail.chart || [], row.window, row.code) : '<p class="empty">这个窗口尚无正且有限的收盘。</p>';
   const others = picked.others.map(watchRow).join('');
-  return `<section class="lane lane-next"><div class="eyebrow">下一个 · 观察 · ${esc(row.container)} ${esc(row.code)} · 未入账 · ${esc(ruleLabel(state))}</div>${createEntry()}
+  return `<section class="lane lane-next"><div class="eyebrow">下一个 · 观察 · ${esc(row.container)} ${esc(row.code)} · 未入账 · ${esc(ruleLabel(state))}</div>
     <div class="big-number mono ${direction(row.rs)}">${excessText(row.rs)}<small>观察</small></div>
     <p class="next-meta mono">近 1 月相对沪深300 · 名次 ${row.rank == null ? '—' : esc(row.rank)} / ${esc(picked.pool)}${esc(extText)}</p>
     <p class="next-explain">${esc(row.stateLabel || '—')}${esc(meaningText)}，落在可进集合里，所以放在这一栏。它是价格观察量，不是进场信号；入账前不冻结论点、预期和失效位。</p>
@@ -245,7 +243,7 @@ function renderAvoid(picked) {
   return `<section class="avoid"><div class="eyebrow">今天不碰 · 形态不利，观察量不是禁入</div><h3>过热 / 破位 / 遇阻 / 阴跌</h3>${body}<p class="muted">另有 ${picked.unavailable} 个容器形态不可用（原生历史有收盘缺口，不修补），不在此列，名次仍然有效。</p></section>`;
 }
 function renderWorth() {
-  const buckets = state.review && state.review.calibration && state.review.calibration.owner || [];
+  const buckets = state.review && state.review.calibration && state.review.calibration.agent || [];
   if (buckets.some(bucket => bucket.enough)) return `<section class="worth">${renderReview(state.review)}</section>`;
   return `<section class="worth"><div class="eyebrow">规则今年值多少</div><h3>前向样本不足，不展示胜率或收益。</h3><p class="muted">正式台账跑出前向样本后，这里按 R 倍数分布报告，并给出去掉最好 1 / 2 / 3 笔后的期望；双基准是等权组合与沪深300。</p></section>`;
 }
@@ -344,8 +342,23 @@ async function submitCard(event) {
     if (button) button.disabled = false;
   } finally { busy = false; }
 }
+async function renderEventDrafts() {
+  const requested = params().get('date');
+  let data;
+  try {
+    data = await api(requested ? `/api/events?date=${encodeURIComponent(requested)}` : '/api/events');
+  } catch (error) {
+    $('#overview').innerHTML = `<p class="empty">${esc(error.message)}</p>`;
+    return;
+  }
+  const days = (data.days || []).map(day => `<a data-route href="${esc(route('/events', {date: day}))}">${esc(day)}</a>`).join(' ');
+  const rows = (data.drafts || []).map(row => `<article class="event-draft"><div class="eyebrow">${esc(row.outcome)} · ${esc(row.container || '—')}</div><h3>${row.outcome === '锁卡' ? esc(row.card_id || '已锁卡') : '整条退回'}</h3><p>${row.reason ? esc(row.reason) : '校验通过，已锁卡。'}</p><p class="mono event-sha">events ${esc(row.events_commit || '—')}</p><p class="mono event-sha">sha256 ${esc(row.file_sha256 || '—')}</p></article>`).join('');
+  $('#overview').innerHTML = `<section class="home-head"><div><div class="eyebrow">事件草稿</div><h1>${esc(data.day || '还没有草稿结果')}</h1><p class="home-lead">不登录也能看。锁卡或退回以作业写入的原文为准。</p></div></section><p class="event-days">${days || '<span class="muted">没有已处理的日期。</span>'}</p><div class="event-list">${rows || '<p class="empty">这一天没有草稿结果。当天没有合格事件时，不会有文件。</p>'}</div>`;
+  wireNavigation();
+}
 function renderOverview() {
   if (page() === 'new') { renderComposer(); return; }
+  if (page() === 'events') { renderEventDrafts(); return; }
   if (page() === 'rotation') { renderRotation(); return; }
   const cards = state.cards || [];
   const headline = homeHeadline(observation, state);
@@ -354,11 +367,12 @@ function renderOverview() {
   const now = cards.filter(card => card.status === '当下');
   const waiting = cards.filter(card => card.status === '候选');
   const actions = state.mode === 'demo' && state.writable ? '<div class="demo-actions"><button id="reset-demo" class="text-button">重置演示</button><button id="advance-demo" class="primary-button">推进下一交易日 <span aria-hidden="true">→</span></button></div>' : '';
+  const unchecked = Number.isInteger(state.unchecked) ? `<p class="unchecked">未抽查 ${esc(state.unchecked)} 张</p>` : '';
   const next = cards.length ? renderCardLane('next', waiting, true) : renderNextLane(picked);
-  $('#overview').innerHTML = `<section class="home-head"><div><div class="eyebrow">今天</div><h1>${esc(headline.title)}</h1>${headline.lead ? `<p class="home-lead">${esc(headline.lead)}</p>` : ''}</div>${actions}</section>
+  $('#overview').innerHTML = `<section class="home-head"><div><div class="eyebrow">今天</div><h1>${esc(headline.title)}</h1>${headline.lead ? `<p class="home-lead">${esc(headline.lead)}</p>` : ''}${unchecked}</div>${actions}</section>
     <section class="lanes" aria-label="上一次、当下与下一个">${renderCardLane('past', past, cards.length > 0)}<div class="lane-join" aria-hidden="true"><span class="lane-join-line"></span><span class="lane-join-mark">›</span></div>${renderCardLane('now', now, cards.length > 0)}<div class="lane-join" aria-hidden="true"><span class="lane-join-line"></span><span class="lane-join-mark">›</span></div>${next}</section>
     <p class="lane-nav" aria-hidden="true"><span>‹ 上一次</span><span class="lane-nav-now">● 当下</span><span>下一个 ›</span></p>
-    ${renderAvoid(picked)}${renderWorth()}${registryOnPage(page()) ? renderRegistry() : ''}<p class="home-foot">${esc(homeFootNote())}</p>`;
+    ${auxEntry()}${renderAvoid(picked)}${renderWorth()}${registryOnPage(page()) ? renderRegistry() : ''}<p class="home-foot">${esc(homeFootNote())}</p>`;
   $('#overview').querySelectorAll('[data-card]').forEach(button => button.addEventListener('click', () => openCard(button.dataset.card)));
   $('#advance-demo')?.addEventListener('click', () => mutate('/api/demo/advance', {}, '已推进到下一交易日。'));
   $('#reset-demo')?.addEventListener('click', () => {
@@ -562,13 +576,11 @@ function renderDataStatus(data) {
 
 function renderReview(report) {
   if (!report || !Object.keys(report).length) return '<div class="section-heading"><h2>这套规则值多少</h2><span class="eyebrow">前向样本尚不足</span></div><p class="lead">尚无可用于评价规则的前向记录。</p><p class="summary-note">配置与行情不能代替封存判断及其后续验证；当前不展示规则胜率、预期收益或旧回放成绩。</p>';
-  const buckets = report.calibration?.owner || [];
+  const buckets = report.calibration?.agent || [];
   const statusText = {triggered:'需人工审查', clear:'未触发', insufficient:'样本不足'};
   return `<div class="section-heading"><h2>评分与审查</h2><span class="eyebrow">${state.mode === 'demo' ? '演示记录' : '前向记录'}</span></div>
-    <div class="review-grid"><div><h3>我的事前评分，正在积累答案</h3><p class="review-caption">每桶至少 30 条终态记录，才讨论区分度。</p>
-      ${buckets.length ? `<div class="calibration-row calibration-heading"><span>事前分数</span><span>终态记录</span><span>当前结论</span></div>${buckets.map(bucket => `<div class="calibration-row"><div><span>${esc(bucket.bucket)}</span><small>已结 ${esc(bucket.closed)} · 作废 ${esc(bucket.voided)}</small></div><span class="mono">${esc(bucket.n)}</span><div>${bucket.enough ? `<span>达标率 ${number(bucket.hit_rate * 100, 1)}%</span><small>已结平均 <span class="mono ${direction(bucket.mean_r_closed)}">${signed(bucket.mean_r_closed)}R</span></small>` : '<span class="muted">样本不足，不下结论</span>'}</div></div>`).join('')}` : '<p class="empty">暂无可归入独立评分桶的记录。</p>'}
-      ${report.calibration?.unscored ? `<p class="review-caption">未评分 ${esc(report.calibration.unscored.total)} 笔（终态 ${esc(report.calibration.unscored.n)}，在途 ${esc(report.calibration.unscored.open)}），全部保留在台账。</p>` : ''}
-      <p class="review-caption">另一份评分的分桶保留至独立复核。</p></div>
+    <div class="review-grid"><div><h3>Agent 事前评分</h3><p class="review-caption">每桶至少 30 条终态记录，才讨论区分度。只画这一条曲线。</p>
+      ${buckets.length ? `<div class="calibration-row calibration-heading"><span>事前分数</span><span>终态记录</span><span>当前结论</span></div>${buckets.map(bucket => `<div class="calibration-row"><div><span>${esc(bucket.bucket)}</span><small>已结 ${esc(bucket.closed)} · 作废 ${esc(bucket.voided)}</small></div><span class="mono">${esc(bucket.n)}</span><div>${bucket.enough ? `<span>达标率 ${number(bucket.hit_rate * 100, 1)}%</span><small>已结平均 <span class="mono ${direction(bucket.mean_r_closed)}">${signed(bucket.mean_r_closed)}R</span></small>` : '<span class="muted">样本不足，不下结论</span>'}</div></div>`).join('')}` : '<p class="empty">暂无可归入 agent 评分桶的记录。</p>'}</div>
       <div><h3>预定的审查时点</h3>${(report.alerts || []).map(alert => `<div class="review-alert"><div><span>${esc(alert.title)}</span><span class="muted">${statusText[alert.status] || '待观察'}</span></div>${renderAlertReading(alert)}</div>`).join('')}
       ${(report.pending || []).length ? `<details class="disclosure"><summary>尚待具备的审查条件</summary>${report.pending.map(item => `<div class="review-pending"><span>${esc(item.title)}</span><p>${esc(item.reason)}</p></div>`).join('')}</details>` : ''}
       <p class="review-caption">审查只作${(report.allowed_decisions || ['继续','停止','重开新版本']).map(esc).join('、')}，由人决定。</p></div></div>`;
@@ -618,7 +630,7 @@ function renderShell() {
   $('#nav-rotation').href = navHref(params().toString(), '/rotation', state?.mode);
   $('#nav-home').setAttribute('aria-current', page() === 'rotation' ? 'false' : 'page');
   $('#nav-rotation').setAttribute('aria-current',page() === 'rotation' ? 'page' : 'false');
-  $('#observation-controls').hidden = page() === 'new' || !observation;
+  $('#observation-controls').hidden = page() === 'new' || page() === 'events' || !observation;
   if (observation) {
     $('#observation-date').value = params().get('as_of') || observation.requested_date || '';
     if (observation.completed_date) $('#observation-date').max = observation.completed_date;
@@ -635,7 +647,7 @@ function renderShell() {
   renderOverview();
   $('#overview').hidden = selectedId !== null;
   $('#detail').hidden = selectedId === null;
-  if (!selectedId) $('#breadcrumb').textContent = page() === 'rotation' ? 'ETF 前向机会台账 › 轮动' : page() === 'market' ? 'ETF 前向机会台账 › 机会 › 行情检查' : page() === 'new' ? 'ETF 前向机会台账 › 立卡' : 'ETF 前向机会台账 › 机会';
+  if (!selectedId) $('#breadcrumb').textContent = page() === 'rotation' ? 'ETF 前向机会台账 › 轮动' : page() === 'market' ? 'ETF 前向机会台账 › 机会 › 行情检查' : page() === 'new' ? 'ETF 前向机会台账 › 立卡' : page() === 'events' ? 'ETF 前向机会台账 › 事件草稿' : 'ETF 前向机会台账 › 机会';
 }
 
 function fact(label, value) {
@@ -699,11 +711,11 @@ function renderDetail(data) {
       <section class="detail-section"><div class="section-heading"><h2>判断从何而来</h2><span class="eyebrow">${esc(card.evidence_status)}</span></div>${(data.evidence || []).length ? data.evidence.map(e => `<article class="evidence-item"><p>${esc(e.summary)}</p><div class="evidence-meta mono">${esc(e.source_id)} · 发布 ${time(e.published_at)}<br>首次看到 ${time(e.first_seen_at)} · 可得 ${time(e.available_at)}</div>${/^https?:\/\//.test(e.url || '') ? `<a href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">查看原始来源 ↗</a>` : ''}</article>`).join('') : `<p class="empty">${card.evidence_status === '未检索' ? '这是一条机械触发的记录，创建时未检索外部证据。' : '创建时已检索，没有登记可用证据。'}</p>`}</section>
       <section class="detail-section"><div class="section-heading"><h2>同类历史</h2><span class="eyebrow">证据尚不足</span></div><p class="summary-note">尚未形成可靠的结果盲选样口径，不能判断哪些历史记录可作同类。这里不挑选盈利案例，也不把旧回放成绩当成这张卡的预期。</p></section>
       <section class="detail-section"><div class="section-heading"><h2>后续观察</h2><span class="eyebrow">原记录保留</span></div>${renderEvents(data)}</section>
-    </div><aside aria-label="独立判断与操作">${renderScores(scores, actions, card)}${renderActions(data)}<div class="action-section"><h2>下一观察点</h2><p>${esc(observed({...card,status:data.status,next_observation:data.next_observation}))}</p>${data.tracking ? `<p class="space-top">出场后跟踪 <span class="mono">${esc(data.tracking.completed)} / ${esc(data.tracking.required)}</span> 个交易日</p>` : ''}</div><button class="detail-back" id="detail-back">← 返回全部机会</button></aside></div>`;
+    </div><aside aria-label="证据强度与操作">${renderScores(scores)}${renderSpot(data)}${renderActions(data)}<div class="action-section"><h2>下一观察点</h2><p>${esc(observed({...card,status:data.status,next_observation:data.next_observation}))}</p>${data.tracking ? `<p class="space-top">出场后跟踪 <span class="mono">${esc(data.tracking.completed)} / ${esc(data.tracking.required)}</span> 个交易日</p>` : ''}</div><button class="detail-back" id="detail-back">← 返回全部机会</button></aside></div>`;
   $('#detail-back').addEventListener('click', showHome);
-  $('#score-form')?.addEventListener('submit', event => {
+  $('#spot-form')?.addEventListener('submit', event => {
     event.preventDefault(); const fields = new FormData(event.currentTarget);
-    mutate(`/api/cards/${encodeURIComponent(card.id)}/score`, {score:Number(fields.get('score')),reason:fields.get('reason')}, '独立评分已封存。');
+    mutate(`/api/cards/${encodeURIComponent(card.id)}/spot-check`, {verdict:fields.get('verdict'), note:fields.get('note')}, '抽查已记下。卡片没有改动。');
   });
   $('#void-form')?.addEventListener('submit', event => {
     event.preventDefault(); const fields = new FormData(event.currentTarget);
@@ -717,9 +729,16 @@ function renderDetail(data) {
   wireNavigation();
 }
 
-function renderScores(scores, actions, card) {
-  const scoreRow = (label, score) => `<div class="score-record"><div><span class="small muted">${label}</span><div class="score-value">${esc(score.score)}<span class="small muted"> / 5</span></div></div><div><p>${esc(score.reason)}</p><span class="small muted">${time(score.scored_at)}</span></div></div>`;
-  return `<section class="action-section"><h2>独立评分</h2>${scores.owner ? scoreRow('我的评分', scores.owner) : `<p>${actions.can_score ? '先只看冻结判断，独立给出你的证据强度。' : '本次未记录独立评分。'}</p>`}${scores.agent_hidden ? '<p class="space-top">另一份评分保持封存。</p>' : scores.agent ? scoreRow('Agent 评分', scores.agent) : ''}${actions.can_score && state.writable ? `<form id="score-form" class="action-form"><fieldset class="score-fieldset"><legend class="field-label">证据强度</legend><div class="score-options">${[0,1,2,3,4,5].map(score=>`<label><input type="radio" name="score" value="${score}" required aria-label="${score} 分"><span>${score}</span></label>`).join('')}</div><div class="score-endpoints"><span>0 · 最弱</span><span>5 · 最强</span></div></fieldset><label class="field-label" for="score-reason">一句话理由</label><textarea id="score-reason" name="reason" required maxlength="1000" placeholder="哪些事前证据支持你的判断？"></textarea><p class="score-deadline">截至 ${time(actions.score_deadline || card.owner_score_deadline)} · 提交后锁定</p><button class="primary-button" type="submit">封存我的评分</button></form>` : ''}</section>`;
+function renderScores(scores) {
+  const agent = scores.agent;
+  if (!agent) return '<section class="action-section"><h2>证据强度</h2><p class="empty">这张卡没有 agent 评分。</p></section>';
+  return `<section class="action-section"><h2>证据强度</h2><div class="score-record"><div><span class="small muted">Agent 评分</span><div class="score-value">${esc(agent.score)}<span class="small muted"> / 5</span></div></div><div><p>${esc(agent.reason)}</p><span class="small muted">${time(agent.scored_at)}</span></div></div></section>`;
+}
+function renderSpot(data) {
+  const past = (data.spot_checks || []).map(row => `<div class="event-line"><span class="mono">${time(row.checked_at)}</span>${esc(row.verdict)} · ${esc(row.note)}</div>`).join('');
+  const form = data.actions?.can_spot ? `<form id="spot-form" class="action-form"><fieldset class="score-fieldset"><legend class="field-label">结论</legend><div class="score-options"><label><input type="radio" name="verdict" value="无误" required><span>无误</span></label><label><input type="radio" name="verdict" value="有误" required><span>有误</span></label></div></fieldset><label class="field-label" for="spot-note">一句说明</label><textarea id="spot-note" name="note" required maxlength="200" placeholder="只记这一句，不改卡片。"></textarea><button class="text-button" type="submit">记下抽查</button></form>` : '';
+  if (!past && !form) return '';
+  return `<section class="action-section"><h2>抽查</h2>${past || '<p class="empty">还没有抽查记录。</p>'}${form}</section>`;
 }
 
 function renderActions(data) {
@@ -781,6 +800,13 @@ async function loadPage(focusDetail = false) {
     const currentState=await api('/api/state');
     if (sequence !== loadSequence) return;
     state=currentState;
+    if (page() === 'events') {
+      selectedId = null;
+      observation = null;
+      renderShell();
+      window.scrollTo({top: 0});
+      return;
+    }
     if (page() === 'new') {
       selectedId = null;
       observation = null;

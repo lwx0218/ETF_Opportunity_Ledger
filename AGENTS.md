@@ -81,7 +81,7 @@ skills 和 domain modeling 是按需能力，不是默认关卡。
 <!-- PROJECT:OWNED:START -->
 ## 项目合同 · ETF_Opportunity-Ledger
 
-### 执行者与交接（2026-10-11 起，Owner 批准 D1–D4）
+### 执行者与交接（2026-10-11 起，Owner 批准 D1–D6）
 
 - Claude（规划 session）：规划、切 round、出 UI 方向稿（单文件 HTML）、评审每次推送（用真实渲染截图对照原型，不以测试数代替）。不改代码。
 - Cloud Agent（主力开发）：在 dev 分支开发并推送；每轮 python -m unittest discover -s tests -t . 通过再推；UI 改动附深浅两套真实渲染截图；每轮推送后更新 docs/status.md 的基线与待办。合并到 main 要 Owner 点头。
@@ -90,6 +90,9 @@ skills 和 domain modeling 是按需能力，不是默认关卡。
 - 页面观察口径（D1）：轮动页、首页观察、横截面排名默认使用 37 个容器的执行 ETF（universe.csv 的 execution_fund_code，腾讯 raw 日线），基准 H00300；CSI 全收益研究序列只用于正式研究/回测，页面上作为可选切换。页面注明「ETF 价格，与指数差异按年 1% 打折」。
 - 无正式卡时（D3）：首页「未来」栏显示观察候选（已有形态状态/指标处于可进态的容器），明确标注「观察 · 未入账 · 规则未启用」，不创建卡、不开规则，A7 不变。
 - 每轮交付由开发与编排方对照原始产品目标（docs/status.md 与 prototypes/ 原型）验收，给出可复现证据（真实渲染、端到端运行、对照数字），主动指出未完成项；不以「子任务完成」或「测试通过」代替对目标的核对。简单任务直接执行并验证，不因此加重流程。
+- D4：取消 owner 盲分。`evidence_strength` 只保留 agent 一栏，校准只画 agent 一条曲线。历史 owner 字段和表保留，不再写入。
+- D5：事件卡由起草 agent 检索、校验后自动入账。Owner 不逐张确认，只抽查。抽查只追加记录，不改卡、不自动作废。
+- D6：事件卡起草暂由 Grok bot 负责。它每个交易日把草稿推到仓库的 `events` 分支；服务器在每日作业前拉取。
 
 ### 目标与必读资料
 

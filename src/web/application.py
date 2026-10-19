@@ -226,6 +226,7 @@ class Application:
                         "ledger_note": "此观察入口不载入正式判断/扫描结果。"}
             now = self.demo.now() if mode == "demo" else self.clock_text()
             cards = []
+            unchecked = None
             observation_as_of = None
             review = None
             latest_processed_day = None
@@ -243,19 +244,17 @@ class Application:
                         (SELECT r_current FROM daily WHERE card_id=c.id ORDER BY date DESC LIMIT 1) AS r_current,
                         (SELECT close FROM daily WHERE card_id=c.id ORDER BY date DESC LIMIT 1) AS daily_close,
                         (SELECT date FROM daily WHERE card_id=c.id ORDER BY date DESC LIMIT 1) AS daily_date,
-                        EXISTS(SELECT 1 FROM strength_scores WHERE card_id=c.id AND rater='owner') AS owner_scored,
                         c.evidence_status
                         FROM cards c JOIN card_status s ON s.id=c.id
                         LEFT JOIN entries e ON e.card_id=c.id LEFT JOIN exits x ON x.card_id=c.id
                         LEFT JOIN finals f ON f.card_id=c.id WHERE c.sealed=1 ORDER BY c.created_at DESC,c.id DESC""")
-            for card in cards:
-                card["owner_score_status"] = ("已评分" if card.pop("owner_scored") else
-                    "不适用" if card["evidence_status"] == "未检索" else
-                    "已过期" if now >= card["owner_score_deadline"] else "待独立评分")
+                    unchecked = con.execute("""SELECT count(*) FROM cards c WHERE c.sealed = 1
+                        AND NOT EXISTS (SELECT 1 FROM spot_checks s WHERE s.card_id = c.id)""").fetchone()[0]
             problems = []
             enabled = ["事件驱动"] if mode == "demo" else list(load_rule_config(ROOT / "config" / "ledger-rules.json", problems))
             authed = mode == "readonly" and self.session_ok(session)
             payload = {"mode": mode, "as_of": now, "observation_as_of": observation_as_of,
+                    "unchecked": unchecked if mode != "market" else None,
                     "demo_available": self.demo is not None, "readonly_available": self.mode != "market" and not self.demo_only,
                     "writable": mode == "demo" or authed, "write_enabled": mode == "readonly" and self.write,
                     "authenticated": authed,
@@ -332,7 +331,6 @@ class Application:
     def detail(self, card_id, mode=None, session=None):
         with self.lock:
             mode = self.effective_mode(mode)
-            now = self.demo.now() if mode == "demo" else self.clock_text()
             with self._reader(mode) as con:
                 card = one(con, f"SELECT {','.join(CARD_FIELDS)} FROM cards WHERE id=? AND sealed=1", (card_id,)) if con else None
                 if not card:
@@ -342,9 +340,9 @@ class Application:
                          for name, table in (("entry", "entries"), ("exit", "exits"), ("final", "finals"), ("void", "voids"))}
                 daily = rows(con, "SELECT * FROM daily WHERE card_id=? ORDER BY date", (card_id,))
                 signals = rows(con, "SELECT * FROM exit_signals WHERE card_id=? ORDER BY seq", (card_id,))
-                owner = one(con, "SELECT score,reason,scored_at FROM strength_scores WHERE card_id=? AND rater='owner'", (card_id,))
-                has_agent = con.execute("SELECT 1 FROM strength_scores WHERE card_id=? AND rater='agent'", (card_id,)).fetchone()
+                agent = one(con, "SELECT score,reason,scored_at FROM strength_scores WHERE card_id=? AND rater='agent'", (card_id,))
                 evidence = rows(con, "SELECT * FROM evidence WHERE card_id=? ORDER BY seq", (card_id,))
+                checks = rows(con, "SELECT seq,verdict,note,checked_at FROM spot_checks WHERE card_id=? ORDER BY seq", (card_id,))
                 comparisons = counterfactual(con, card_id)
             completed = sum(d["date"] > parts["exit"]["exit_date"] for d in daily) if parts["exit"] else 0
             signal_date = daily[-1]["date"] if daily else None
@@ -352,12 +350,12 @@ class Application:
                 len(signals) == 1 and signals[0]["reason"] in ("失效位", "移动止盈") and signals[0]["signal_date"] == signal_date)
             can = mode == "demo" or self.session_ok(session)
             return {"card": card, "status": status, **parts, "daily": daily, "evidence": evidence, "signals": signals,
-                    "counterfactual": comparisons,
-                    "scores": {"owner": owner, "agent": None, "agent_hidden": bool(has_agent)},
-                    "actions": {"can_score": can and owner is None and now < card["owner_score_deadline"] and card["evidence_status"] != "未检索",
+                    "counterfactual": comparisons, "spot_checks": checks,
+                    "scores": {"agent": agent},
+                    "actions": {"can_spot": mode == "readonly" and self.session_ok(session),
                                 "can_void": can and status == "候选",
                                 "can_signal": can and can_signal,
-                                "signal_date": signal_date, "score_deadline": card["owner_score_deadline"]},
+                                "signal_date": signal_date},
                     "tracking": {"completed": completed, "required": card["tracking_days"]}}
 
     def mutate(self, action, body, *, card_id=None, mode=None, session=None):
@@ -374,7 +372,9 @@ class Application:
             self._check_revision(body)
             if set(body) & set(FROZEN_FIELDS):
                 raise RequestError("请求含不允许的字段；冻结字段不可修改")
-            fields = {"score": {"score", "reason"}, "void": {"reason"}, "exit-signal": {"reason", "manual_reason"}}
+            fields = {"void": {"reason"}, "exit-signal": {"reason", "manual_reason"}, "spot-check": {"verdict", "note"}}
+            if action == "score":
+                raise RequestError("owner 盲分已取消", 404)
             if action not in fields or not isinstance(body, dict) or set(body) - (fields[action] | {"revision"}):
                 raise RequestError("请求含不允许的字段；冻结字段不可修改")
             with self._writer() as ledger:
@@ -383,8 +383,8 @@ class Application:
             return self.state(mode, session)
 
     def _mutate_demo(self, action, body, *, card_id, mode):
-        fields = {"score": {"score", "reason"}, "void": {"reason"},
-                  "exit-signal": {"reason", "manual_reason"}, "advance": set(), "reset": set()}
+        fields = {"void": {"reason"}, "exit-signal": {"reason", "manual_reason"},
+                  "spot-check": {"verdict", "note"}, "advance": set(), "reset": set()}
         if action not in fields:
             raise RequestError("未知操作", 404)
         if not isinstance(body, dict) or set(body) - (fields[action] | {"revision"}):
@@ -403,16 +403,37 @@ class Application:
         if not isinstance(body, dict) or body.get("revision") != self.revision:
             raise RequestError("页面已更新，请刷新后重试", 409)
 
+    def event_feed(self, day=None):
+        """事件草稿的锁卡 / 退回。不要求登录，起草方靠它看反馈。"""
+        mode = "demo" if self.mode == "demo" else "readonly"
+        with self._reader(mode) as con:
+            if con is None:
+                return {"day": day, "drafts": [], "days": [], "note": "台账不存在"}
+            days = [r[0] for r in con.execute("SELECT DISTINCT day FROM event_drafts ORDER BY day DESC")]
+            chosen = day or (days[0] if days else None)
+            if chosen and chosen not in days and day:
+                drafts = []
+            else:
+                drafts = rows(con, """SELECT day, seq, container, outcome, reason, card_id, events_commit, file_sha256
+                                       FROM event_drafts WHERE day = ? ORDER BY seq""", (chosen,)) if chosen else []
+            return {"day": chosen, "drafts": drafts, "days": days}
+
     def _apply(self, ledger, action, body, card_id, detail):
+        if action == "spot-check":
+            if not detail["actions"]["can_spot"]:
+                raise RequestError("登录后才能抽查", 403)
+            verdict = body.get("verdict")
+            note = body.get("note")
+            if verdict not in ("无误", "有误"):
+                raise RequestError("抽查结论只能是「无误」或「有误」")
+            if not isinstance(note, str) or not note.strip() or len(note.strip()) > 200:
+                raise RequestError("请写一句说明（1–200 字）")
+            ledger.spot_check(card_id, verdict, note.strip())
+            return
         reason = body.get("reason")
         if not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
             raise RequestError("请填写理由（1–2000 字）")
-        if action == "score":
-            score = body.get("score")
-            if type(score) is not int or not 0 <= score <= 5:
-                raise RequestError("评分须为 0–5 的整数")
-            ledger.owner_score(card_id, score, reason)
-        elif action == "void":
+        if action == "void":
             ledger.void(card_id, reason)
         else:
             if reason not in ("手动", "论点作废") or not detail["actions"]["can_signal"]:

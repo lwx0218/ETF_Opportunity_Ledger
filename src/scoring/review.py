@@ -1,7 +1,6 @@
 """已定口径的审查提醒与冻结对照值；不替 Owner 作审查决定。
 
-口径：card schema §6、ledger-storage「统计口径」。Agent 分桶不进入 Owner 报告，
-包括已作废但仍可独立评分的卡；独立复核另行读取，避免终态过滤仍泄露双盲分数。
+口径：card schema §6、ledger-storage「统计口径」。D4 之后校准只画 agent 一条曲线。
 """
 from __future__ import annotations
 
@@ -13,12 +12,8 @@ from src.ledger import read
 
 def review_report(con: sqlite3.Connection) -> dict:
     """只查询现有台账。连接需 sqlite3.Row；不建表、不推导未裁定的季度或年度口径。"""
-    owner = read.calibration(con, "owner")
-    unscored = dict(con.execute("""SELECT count(*) AS total,
-        coalesce(sum(status IN ('已结','作废')),0) AS n,
-        coalesce(sum(status NOT IN ('已结','作废')),0) AS open
-        FROM card_status WHERE evidence_status <> '未检索' AND owner_strength IS NULL""").fetchone())
-    for bucket in owner:
+    agent = read.calibration(con, "agent")
+    for bucket in agent:
         bucket["interpretation"] = ("仅列事实，审查结论由独立复核给出" if bucket["enough"]
                                     else "样本不足，不下结论")
     closed = [dict(r) for r in con.execute("""
@@ -42,11 +37,7 @@ def review_report(con: sqlite3.Connection) -> dict:
         alert["status"] = ("insufficient" if alert["triggered"] is None else
                            "triggered" if alert["triggered"] else "clear")
     return {
-        "calibration": {
-            "owner": owner,
-            "unscored": unscored,
-            "agent": {"status": "held_until_review", "reason": "Owner 入口不披露 agent 个体评分或分桶，避免双盲信息泄露。"},
-        },
+        "calibration": {"agent": agent},
         "alerts": alerts,
         "pending": [
             {"id": "random_container", "title": "随机容器反事实", "status": "pending",

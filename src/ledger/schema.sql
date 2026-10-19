@@ -441,6 +441,52 @@ BEGIN
     SELECT RAISE(ABORT, '处理日晚于当前日期') WHERE NEW.day > substr(ledger_now(), 1, 10);
 END;
 
+-- v1.1-j：抽查只追加。不改卡、不作废、不覆盖。同一张卡可以有多条，序号接着写。
+CREATE TABLE IF NOT EXISTS spot_checks (
+    card_id      TEXT NOT NULL REFERENCES cards(id),
+    seq          INTEGER NOT NULL CHECK (typeof(seq) = 'integer' AND seq >= 1),
+    verdict      TEXT NOT NULL CHECK (verdict IN ('无误', '有误')),
+    note         TEXT NOT NULL CHECK (length(trim(note)) BETWEEN 1 AND 200),
+    checked_at   TEXT NOT NULL CHECK (strftime('%Y-%m-%dT%H:%M', checked_at) IS checked_at),
+    recorded_at  TEXT NOT NULL,
+    PRIMARY KEY (card_id, seq)
+) WITHOUT ROWID;
+
+CREATE TRIGGER IF NOT EXISTS spot_checks_insert BEFORE INSERT ON spot_checks
+BEGIN
+    SELECT RAISE(ABORT, '抽查行已存在（REPLACE 也不行）')
+     WHERE EXISTS (SELECT 1 FROM spot_checks WHERE card_id = NEW.card_id AND seq = NEW.seq);
+    SELECT RAISE(ABORT, 'recorded_at 必须是数据库时钟') WHERE NEW.recorded_at IS NOT ledger_now();
+    SELECT RAISE(ABORT, '只能抽查已封存的卡') WHERE (SELECT sealed FROM cards WHERE id = NEW.card_id) IS NOT 1;
+    SELECT RAISE(ABORT, '抽查序号必须接着上一条')
+     WHERE NEW.seq IS NOT coalesce((SELECT max(seq) FROM spot_checks WHERE card_id = NEW.card_id), 0) + 1;
+    SELECT RAISE(ABORT, '抽查时刻不在卡片创建与当前时刻之间')
+     WHERE NEW.checked_at < (SELECT created_at FROM cards WHERE id = NEW.card_id) OR NEW.checked_at > ledger_now();
+END;
+
+-- v1.1-j：事件草稿的入账结果，只追加。同一天同一序号只记一次；重跑不覆盖第一次的结论。
+CREATE TABLE IF NOT EXISTS event_drafts (
+    day            TEXT NOT NULL CHECK (date(day) IS day),
+    seq            INTEGER NOT NULL CHECK (typeof(seq) = 'integer' AND seq >= 0),
+    container      TEXT,
+    outcome        TEXT NOT NULL CHECK (outcome IN ('锁卡', '退回')),
+    reason         TEXT NOT NULL,
+    card_id        TEXT,
+    events_commit  TEXT,
+    file_sha256    TEXT,
+    recorded_at    TEXT NOT NULL,
+    PRIMARY KEY (day, seq),
+    CHECK ((outcome = '锁卡') = (card_id IS NOT NULL)),
+    CHECK (outcome = '锁卡' OR length(trim(reason)) > 0)
+) WITHOUT ROWID;
+
+CREATE TRIGGER IF NOT EXISTS event_drafts_insert BEFORE INSERT ON event_drafts
+BEGIN
+    SELECT RAISE(ABORT, '该日该条草稿已有结果（REPLACE 也不行）')
+     WHERE EXISTS (SELECT 1 FROM event_drafts WHERE day = NEW.day AND seq = NEW.seq);
+    SELECT RAISE(ABORT, 'recorded_at 必须是数据库时钟') WHERE NEW.recorded_at IS NOT ledger_now();
+END;
+
 -- ------------------------------------------------------------------ 状态与统计
 CREATE VIEW IF NOT EXISTS card_status AS
 SELECT c.id, c.container, c.trigger_type, c.created_at, c.supersedes, c.evidence_status, c.scoring_rule,

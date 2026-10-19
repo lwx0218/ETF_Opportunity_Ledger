@@ -707,7 +707,7 @@ class Pieces(unittest.TestCase):
         self.assertEqual(set(self.load({**CONFIG, "恐慌下轨": {**CONFIG["恐慌下轨"], "target_r": 3}})), {"事件驱动"})
         self.assertTrue(self.problems and "菜单第 2 项" in self.problems[0])                   # 恐慌被拒不静默
         self.load(json.loads((ROOT / "config" / "ledger-rules.json").read_text(encoding="utf-8")))
-        self.assertEqual(self.problems, [])                                                    # 全关：没有请求，不算问题
+        self.assertEqual(self.problems, [])                                                    # D5 打开事件驱动是合法启用，不算拒绝
 
     def test_rule_config_requires_confirmed_terms_and_enabled(self):
         self.assertEqual(R.TERMS_VERSION, "jobs-daily-v5")
@@ -723,14 +723,15 @@ class Pieces(unittest.TestCase):
                     {"scoring_rule": "schema-v1-§3"}):
             self.assertNotIn("恐慌下轨", self.load({**CONFIG, "恐慌下轨": {**CONFIG["恐慌下轨"], **bad}}), bad)
 
-    def test_shipped_config_is_all_off(self):
-        """A7：配置值按 v1.1 写好，但 V1 结论前全部关闭；Cowork 填 confirmed_terms 并打开 enabled 后才启用。"""
+    def test_shipped_config_enables_events_only(self):
+        """D5：事件驱动开启。恐慌下轨保持关闭，形态突破不在配置里。"""
         cfg = json.loads((ROOT / "config" / "ledger-rules.json").read_text(encoding="utf-8"))
-        self.assertEqual(R.load_rule_config(ROOT / "config" / "ledger-rules.json"), {})
-        self.assertEqual((cfg["恐慌下轨"]["enabled"], cfg["事件驱动"]["enabled"]), (False, False))
-        on = {**cfg, "confirmed_terms": R.TERMS_VERSION, "恐慌下轨": {**cfg["恐慌下轨"], "enabled": True},
-              "事件驱动": {**cfg["事件驱动"], "enabled": True}}
-        self.assertEqual(self.load(on), RULES)                                                 # 只差确认与开关
+        self.assertEqual(cfg["confirmed_terms"], R.TERMS_VERSION)
+        self.assertEqual((cfg["恐慌下轨"]["enabled"], cfg["事件驱动"]["enabled"]), (False, True))
+        self.assertNotIn("形态突破", cfg)
+        self.assertEqual(R.load_rule_config(ROOT / "config" / "ledger-rules.json"), {"事件驱动": {}})
+        on = {**cfg, "恐慌下轨": {**cfg["恐慌下轨"], "enabled": True}}
+        self.assertEqual(self.load(on), RULES)
 
     def test_preflight(self):
         tmp = Path(tempfile.mkdtemp())
@@ -902,16 +903,19 @@ class Pieces(unittest.TestCase):
             self.assertEqual(jobs_main(args), 0)
         L = sqlite3.connect(tmp / "replay.sqlite")
         self.assertEqual(L.execute("SELECT value FROM ledger_meta WHERE key = 'clock'").fetchone()[0], "replay")
-        self.assertEqual(L.execute("SELECT value FROM ledger_meta WHERE key = 'schema'").fetchone()[0], "v1.1-i")
+        self.assertEqual(L.execute("SELECT value FROM ledger_meta WHERE key = 'schema'").fetchone()[0], "v1.1-j")
         self.assertEqual(L.execute("SELECT count(*) FROM cards").fetchone()[0], 1)
         ew = L.execute("SELECT min(date), max(date), (SELECT ew_level FROM ew_daily ORDER BY date LIMIT 1) FROM ew_daily").fetchone()
         self.assertEqual(ew, ("2026-01-02", "2026-03-31", 1.0))                                 # 回放的等权日收益记在回放库里
         self.assertEqual(L.execute("PRAGMA journal_mode").fetchone()[0], "delete")
         L.close()
         self.assertFalse(any(tmp.glob("replay.sqlite-*")))
-        # 规则全关（仓库里的配置）：直接退出，不建库
+        # 两条规则都关：直接退出，不建库。仓库配置已按 D5 打开事件驱动，不再走这条早退。
+        off = {**CONFIG, "恐慌下轨": {**CONFIG["恐慌下轨"], "enabled": False}, "事件驱动": {"enabled": False}}
+        (tmp / "off.json").write_text(json.dumps(off, ensure_ascii=False), encoding="utf-8")
         with mock.patch("builtins.print"):
-            self.assertEqual(jobs_main([*args[:7], "--rules", str(ROOT / "config" / "ledger-rules.json"), "--db", str(tmp / "b.sqlite")]), 2)
+            self.assertEqual(jobs_main([*args[:7], "--rules", str(tmp / "off.json"), "--db", str(tmp / "b.sqlite"),
+                                        "--calendar", str(tmp / "no-such-market.sqlite")]), 2)
         self.assertFalse((tmp / "b.sqlite").exists())
 
 

@@ -75,9 +75,7 @@ class DemoTests(unittest.TestCase):
 
     def test_score_void_signal_next_open_fill_and_twenty_day_tracking(self):
         with self.demo.open_ledger() as ledger:
-            ledger.owner_score("T-2026-005", 1, "演示：没有真实证据，独立给低分。")
-            with self.assertRaises(LedgerError):
-                ledger.owner_score("T-2026-005", 2, "重复评分必须拒绝")
+            self.assertFalse(hasattr(ledger, "owner_score"))
             ledger.void("T-2026-006", "演示：候选判断不成立，保留分母")
             close = ledger.daily_rows("T-2026-004")[-1]["close"]
             ledger.signal_exit("T-2026-004", INITIAL_DAY, "手动", close, "演示：主动退出")
@@ -88,8 +86,6 @@ class DemoTests(unittest.TestCase):
         self.assertEqual(report["entries"], ["T-2026-005"])
         with self.demo.open_ledger() as ledger:
             self.assertEqual(ledger.status("T-2026-004"), "过去")
-            with self.assertRaises(LedgerError):
-                ledger.owner_score("T-2026-006", 1, "过期评分必须拒绝")
         for _ in range(19):
             self.demo.advance()
         with self.demo.open_ledger() as ledger:

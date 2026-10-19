@@ -593,22 +593,46 @@ class Section25(Base):
         cid = self.make()
         self.rejects("UPDATE strength_scores SET score = 5 WHERE card_id = ?", cid)
         self.replace("strength_scores", self.cols("strength_scores", cid), score=5)
-        self.at("2026-10-10T20:00").L.owner_score(cid, 2, "只有一条库存数据")
+        self.assertFalse(hasattr(self.L, "owner_score"))
+        self.at("2026-10-10T20:00")
+        self.L._tx(lambda: self.L._insert("strength_scores", {"card_id": cid, "rater": "owner", "score": 2,
+                                                              "reason": "历史行仍可留在表里", "scored_at": self.L.now()}))
         with self.assertRaises(LedgerError):
-            self.L.owner_score(cid, 4, "改主意")
+            self.L._tx(lambda: self.L._insert("strength_scores", {"card_id": cid, "rater": "owner", "score": 4,
+                                                                  "reason": "改主意", "scored_at": self.L.now()}))
         owner = dict(self.L.conn.execute("SELECT * FROM strength_scores WHERE card_id = ? AND rater = 'owner'", (cid,)).fetchone())
         self.replace("strength_scores", owner, score=5)
         self.rejects("UPDATE strength_scores SET score = 5 WHERE card_id = ? AND rater = 'owner'", cid)
 
+    def test_owner_score_path_is_unavailable(self):
+        self.assertFalse(hasattr(Ledger, "owner_score"))
+        self.assertFalse(hasattr(self.L, "owner_score"))
+
     def test_owner_deadline_uses_database_clock(self):
         cid = self.make()
+        self.at("2026-10-12T09:30")
         with self.assertRaisesRegex(LedgerError, "截止"):
-            self.at("2026-10-12T09:30").L.owner_score(cid, 2, "晚了")
+            self.L._tx(lambda: self.L._insert("strength_scores", {"card_id": cid, "rater": "owner", "score": 2,
+                                                                  "reason": "晚了", "scored_at": "2026-10-12T09:30"}))
         # 调用方写一个截止前的 scored_at 也没用：判定看数据库时钟
         with self.assertRaisesRegex(LedgerError, "截止"):
             self.L._tx(lambda: self.L._insert("strength_scores", {"card_id": cid, "rater": "owner", "score": 2, "reason": "倒填",
                                                                    "scored_at": "2026-10-10T08:00"}))
         self.assertIsNone(self.L.conn.execute("SELECT owner_strength FROM card_status WHERE id = ?", (cid,)).fetchone()[0])
+
+    def test_spot_checks_are_append_only(self):
+        cid = self.make()
+        before = self.cols("cards", cid)
+        self.L.spot_check(cid, "无误", "论点与证据相符")
+        self.L.spot_check(cid, "有误", "链接打不开")
+        self.assertEqual(self.cols("cards", cid), before)
+        rows = self.L.conn.execute("SELECT seq, verdict, note FROM spot_checks WHERE card_id = ? ORDER BY seq", (cid,)).fetchall()
+        self.assertEqual([tuple(r) for r in rows], [(1, "无误", "论点与证据相符"), (2, "有误", "链接打不开")])
+        self.rejects("UPDATE spot_checks SET note = '改过' WHERE card_id = ?", cid)
+        self.rejects("DELETE FROM spot_checks WHERE card_id = ?", cid)
+        with self.assertRaises(LedgerError):
+            self.L.spot_check(cid, "存疑", "不在菜单里")
+        self.assertIsNone(self.L.conn.execute("SELECT 1 FROM voids WHERE card_id = ?", (cid,)).fetchone())
 
     def test_no_card_deleted_including_voided(self):
         a, b = self.make(), self.make()

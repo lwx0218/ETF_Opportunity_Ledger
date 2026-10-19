@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     for x in rule_problems:
         print(f"规则配置：{x}", file=sys.stderr)
     if not rules and not (a.cmd == "daily" and a.maintain_only):
-        print(f"规则配置里没有启用的规则：confirmed_terms 须为 {R.TERMS_VERSION}、规则 enabled 为 true（V1 结论前全部关闭，A7）",
+        print(f"规则配置里没有启用的规则：confirmed_terms 须为 {R.TERMS_VERSION}、规则 enabled 为 true",
               file=sys.stderr)
         return 2
 
@@ -95,7 +95,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if a.maintain_only:
                 held = open_cards(L)
-                if not held:
+                names = R.draft_container_names(a.events_dir, day.isoformat()) if "事件驱动" in rules else []
+                if not held and not names:
                     dates = [] if trading_days is None else [item.date().isoformat() for item in trading_days]
                     if day.isoformat() in dates:
                         L.mark_processed(day.isoformat())
@@ -103,13 +104,21 @@ def main(argv: list[str] | None = None) -> int:
                     else:
                         print(json.dumps({"day": day.isoformat(), "open_cards": 0, "marked": False, "note": "非交易日或没有官方日历"}, ensure_ascii=False))
                     return 0
-                panel, bench, bench_open, trading_days = execution_panel(a.market, held, day)
+                inst = instruments()
+                targets = [dict(card) for card in held]
+                seen = {card["container"] for card in targets}
+                for name in names:
+                    if name in seen or name not in inst:
+                        continue
+                    targets.append({"container": name, "instrument_code": inst[name]["code"]})
+                    seen.add(name)
+                panel, bench, bench_open, trading_days = execution_panel(a.market, targets, day)
                 blocking = preflight_open(day.isoformat(), held, panel, bench, trading_days, L.processed_days())
                 if blocking:
                     print("\n".join(["运行前检查未通过，台账未动："] + blocking), file=sys.stderr)
                     return 3
                 covs, problems, notes = [], [], []
-                job = DailyJob(L, panel, bench, rules=rules, instruments={}, events_dir=a.events_dir,
+                job = DailyJob(L, panel, bench, rules=rules, instruments=inst, events_dir=a.events_dir,
                                bench_open=bench_open, trading_days=trading_days)
                 rep = job.run(day.isoformat(), maintain_only=True)
             else:

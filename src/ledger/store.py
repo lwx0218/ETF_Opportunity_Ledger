@@ -30,7 +30,7 @@ DEFAULT_DB = ROOT / "data" / "ledger.sqlite"          # 入 Git（replan §11）
 BEIJING = ZoneInfo("Asia/Shanghai")
 
 APPEND_ONLY = ("cards", "evidence", "strength_scores", "entries", "daily", "exit_signals", "exits", "finals", "voids",
-               "source_loads", "fixed_sources", "ew_daily", "job_days")
+               "source_loads", "fixed_sources", "ew_daily", "job_days", "spot_checks", "event_drafts")
 CARD_FIELDS = (
     "id", "created_at", "close_date", "scan_key", "container", "instrument_code", "instrument_name", "research_index_code",
     "trigger_type", "state_at_entry", "thesis", "evidence_status", "expectation_horizon_days", "expectation_target_excess_pct",
@@ -44,8 +44,8 @@ FROZEN_FIELDS = CARD_FIELDS + ("recorded_at",)
 EVIDENCE_FIELDS = ("source_id", "published_at", "summary", "url", "first_seen_at", "available_at", "snapshot_path", "snapshot_sha256")
 SCORING_RULE = "schema-v1-§3"          # 菜单第 1 项（按超额与期限）
 SCORING_RULE_R = "schema-v1.1-R"        # 菜单第 2 项（按 R 倍数，规则卡；v1.1-c）
-SCHEMA_VERSION = "v1.1-i"               # v1.1-i：手动 / 论点作废第一条信号须在信号日后第一个工作日 09:30 前记录；之前建的库拒绝打开
-                                         # （v1.1-h：exit_signals 加 seq；v1.1-g.1：ew_daily / job_days 进库；v1.1-g：exit_signals）
+SCHEMA_VERSION = "v1.1-j"               # v1.1-j：spot_checks 与 event_drafts；v1.1-i 的库用 python -m src.ledger migrate 补表
+                                         # （v1.1-i：手动 / 论点作废时限；v1.1-h：exit_signals 加 seq；v1.1-g：出场信号）
 
 
 class LedgerError(ValueError):
@@ -85,6 +85,33 @@ def mechanical_score(card: dict, exit_row: dict) -> str:
     if value >= target:
         return "达标"
     return "部分" if value > 0 else "未达"
+
+
+def migrate(path: Path | str) -> str:
+    """把已有的 v1.1-i 库补上 v1.1-j 的表。幂等：已是 v1.1-j 时再跑不改任何数据行。
+    不重建库、不删行。schema 版本写在 ledger_meta，该表平时禁止 UPDATE；这一步先摘掉那条触发器，改完立刻装回。"""
+    path = Path(path)
+    if str(path) != ":memory:" and not path.exists():
+        raise LedgerError(f"库不存在：{path}。先 init，或对已有的 v1.1-i 库做 migrate")
+    conn = sqlite3.connect(str(path), isolation_level=None)
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if "ledger_meta" not in tables:
+            raise LedgerError("这不是台账库，不能迁移")
+        old = dict(conn.execute("SELECT key, value FROM ledger_meta"))
+        schema = old.get("schema")
+        if schema not in ("v1.1-i", SCHEMA_VERSION):
+            raise LedgerError(f"这个库的 schema 是 {schema or 'v1'}，migrate 只接受 v1.1-i 或 {SCHEMA_VERSION}")
+        conn.executescript(SCHEMA.read_text(encoding="utf-8"))
+        conn.executescript(_freeze_triggers())
+        if schema != SCHEMA_VERSION:
+            conn.execute("DROP TRIGGER IF EXISTS ledger_meta_no_update")
+            conn.execute("UPDATE ledger_meta SET value = ? WHERE key = 'schema'", (SCHEMA_VERSION,))
+            conn.execute("CREATE TRIGGER ledger_meta_no_update BEFORE UPDATE ON ledger_meta "
+                         "BEGIN SELECT RAISE(ABORT, 'ledger_meta 只写一次'); END")
+        return schema
+    finally:
+        conn.close()
 
 
 def read_sources_csv(path: Path = FIXED_SOURCES) -> tuple[str, dict[str, tuple[str, str]]]:
@@ -214,10 +241,24 @@ class Ledger:
         r = self.conn.execute("SELECT id FROM cards WHERE scan_key = ? AND sealed = 1", (scan_key,)).fetchone()
         return r[0] if r else None
 
-    def owner_score(self, card_id: str, score: int, reason: str) -> None:
-        """owner 评分的时刻取数据库时钟，不接受调用方给的时间。"""
-        self._tx(lambda: self._insert("strength_scores", {"card_id": card_id, "rater": "owner", "score": score,
-                                                          "reason": reason, "scored_at": self.now()}))
+    def spot_check(self, card_id: str, verdict: str, note: str) -> None:
+        """抽查只追加一条。不改卡、不作废。结论只有「无误 / 有误」，外加一句说明。"""
+        if verdict not in ("无误", "有误"):
+            raise LedgerError("抽查结论只能是「无误」或「有误」")
+        text = note.strip()
+        if not text or len(text) > 200:
+            raise LedgerError("抽查说明须为一句，1–200 字")
+
+        def run():
+            seq = self.conn.execute("SELECT coalesce(max(seq), 0) + 1 FROM spot_checks WHERE card_id = ?", (card_id,)).fetchone()[0]
+            self._insert("spot_checks", {"card_id": card_id, "seq": seq, "verdict": verdict, "note": text, "checked_at": self.now()})
+        self._tx(run)
+
+    def record_event_draft(self, row: dict) -> None:
+        """事件草稿的锁卡或退回，只追加。同一天同一序号已有结果则不动。"""
+        if self.conn.execute("SELECT 1 FROM event_drafts WHERE day = ? AND seq = ?", (row["day"], row["seq"])).fetchone():
+            return
+        self._tx(lambda: self._insert("event_drafts", row))
 
     def enter(self, card_id: str, entry_date: str, entry_price: float, size_pct: float) -> None:
         self._tx(lambda: self._insert("entries", {"card_id": card_id, "entry_date": entry_date, "entry_price": entry_price,

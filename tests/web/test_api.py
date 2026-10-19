@@ -63,64 +63,36 @@ class HttpTests(unittest.TestCase):
         return self.request("POST", path, payload,
                             {"Content-Type": "application/json", "X-CSRF-Token": state["csrf_token"], **(headers or {})}, server)
 
-    def assert_blind(self, value):
-        if isinstance(value, dict):
-            for key, item in value.items():
-                self.assertNotIn(key, {"agent_strength", "agent_score", "agent_reason", "agent_scores"})
-                if key == "agent":
-                    self.assertIn(item, (None, {
-                        "status": "held_until_review",
-                        "reason": "Owner 入口不披露 agent 个体评分或分桶，避免双盲信息泄露。",
-                    }))
-                if key == "rater":
-                    self.assertNotEqual(item, "agent")
-                self.assert_blind(item)
-        elif isinstance(value, list):
-            for item in value:
-                self.assert_blind(item)
-
-    def test_state_and_all_details_never_return_agent_score_or_reason(self):
+    def test_detail_shows_agent_score_and_owner_path_is_gone(self):
         state = self.state()
         self.assertEqual(state["summary"]["denominator"], 6)
         self.assertTrue(state["demo_available"])
         self.assertTrue(state["readonly_available"])
+        self.assertIsInstance(state["unchecked"], int)
+        self.assertNotIn("owner_score_status", state["cards"][0])
         self.assertEqual({c["status"] for c in state["cards"]}, {"候选", "当下", "过去", "已结", "作废"})
         holding = next(c for c in state["cards"] if c["status"] == "当下")
         self.assertGreater(holding["daily_date"], holding["close_date"])
-        self.assert_blind(state)
         with self.app.demo.open_ledger() as ledger:
-            reasons = [r[0] for r in ledger.conn.execute("SELECT reason FROM strength_scores WHERE rater='agent'")]
+            reasons = dict(ledger.conn.execute("SELECT card_id, reason FROM strength_scores WHERE rater='agent'"))
         for candidate in state["cards"]:
             status, detail = self.request("GET", f"/api/cards/{candidate['id']}")
             self.assertEqual(status, 200)
-            self.assertIsNone(detail["scores"]["agent"])
-            self.assert_blind(detail)
-            for secret in reasons:
-                self.assertNotIn(secret, json.dumps(detail, ensure_ascii=False))
-        status, updated = self.post("/api/cards/T-2026-005/score", {"score": 1, "reason": "独立判断，没有证据"})
-        self.assertEqual(status, 200, updated)
-        self.assert_blind(updated)
-        status, detail = self.request("GET", "/api/cards/T-2026-005")
-        self.assertEqual(status, 200)
-        self.assertEqual(detail["scores"]["owner"]["score"], 1)
-        self.assertIsNone(detail["scores"]["agent"])
-        self.assert_blind(detail)
-        self.assertFalse(detail["actions"]["can_score"])
+            self.assertNotIn("can_score", detail["actions"])
+            self.assertNotIn("owner", detail["scores"])
+            if candidate["id"] in reasons:
+                self.assertEqual(detail["scores"]["agent"]["reason"], reasons[candidate["id"]])
+            else:
+                self.assertIsNone(detail["scores"]["agent"])
+        self.assertEqual(self.post("/api/cards/T-2026-005/score", {"score": 1, "reason": "独立判断，没有证据"})[0], 404)
 
-    def test_score_validation_duplicate_deadline_and_stale_revision(self):
+    def test_owner_score_route_is_unavailable_and_stale_revision_still_conflicts(self):
         initial = self.state()
-        for score in (True, "2", -1, 6, 2.5):
+        for score in (True, "2", -1, 6, 2.5, 1):
             with self.subTest(score=score):
-                status, _ = self.post("/api/cards/T-2026-005/score", {"score": score, "reason": "评分必须是整数"})
-                self.assertEqual(status, 400)
-        self.assertEqual(self.post("/api/cards/T-2026-005/score", {"score": 1, "reason": "独立判断"})[0], 200)
-        self.assertEqual(self.post("/api/cards/T-2026-005/score", {"score": 1, "reason": "重复判断"})[0], 409)
-        self.assertEqual(self.post("/api/cards/T-2026-006/void", {"reason": "旧页面"}, state=initial)[0], 409)
+                self.assertEqual(self.post("/api/cards/T-2026-005/score", {"score": score, "reason": "评分路径已取消"})[0], 404)
         self.assertEqual(self.post("/api/demo/advance")[0], 200)
-        status, detail = self.request("GET", "/api/cards/T-2026-006")
-        self.assertEqual(status, 200)
-        self.assertFalse(detail["actions"]["can_score"])
-        self.assertEqual(self.post("/api/cards/T-2026-006/score", {"score": 1, "reason": "已经过期"})[0], 409)
+        self.assertEqual(self.post("/api/cards/T-2026-006/void", {"reason": "旧页面"}, state=initial)[0], 409)
 
     def test_void_stays_in_denominator_and_signal_fills_only_after_advance(self):
         status, after_void = self.post("/api/cards/T-2026-006/void", {"reason": "撤销候选，保留记录"})
@@ -146,21 +118,18 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(detail["exit"]["exit_reason"], "手动")
         self.assertEqual(self.state()["summary"]["denominator"], 6)
 
-    def test_score_at_the_exact_deadline_is_rejected(self):
-        _, detail = self.request("GET", "/api/cards/T-2026-005")
+    def test_score_route_does_not_write(self):
         before = self.app.demo.path.read_bytes()
-        with patch.object(self.app.demo, "now", return_value=detail["actions"]["score_deadline"]):
-            _, at_deadline = self.request("GET", "/api/cards/T-2026-005")
-            self.assertFalse(at_deadline["actions"]["can_score"])
-            status, _ = self.post("/api/cards/T-2026-005/score", {"score": 1, "reason": "正好截止时仍应拒绝"})
-            self.assertEqual(status, 409)
+        status, _ = self.post("/api/cards/T-2026-005/score", {"score": 1, "reason": "路径已取消"})
+        self.assertEqual(status, 404)
         self.assertEqual(self.app.demo.path.read_bytes(), before)
 
     def test_frozen_fields_and_arbitrary_paths_cannot_be_submitted(self):
         before = self.app.demo.path.read_bytes()
         for field in ("thesis", "invalidation_price", "expectation_target_excess_pct", "evidence", "db", "path", "scored_at"):
-            status, _ = self.post("/api/cards/T-2026-005/score", {"score": 2, "reason": "测试", field: "forbidden"})
+            status, _ = self.post("/api/cards/T-2026-006/void", {"reason": "测试", field: "forbidden"})
             self.assertEqual(status, 400, field)
+        self.assertEqual(self.post("/api/cards/T-2026-005/score", {"score": 2, "reason": "测试"})[0], 404)
         for path in ("/api/state?db=/tmp/anything.sqlite", "/api/state?mode=demo&mode=readonly",
                      "/api/cards/T-2026-005?path=/tmp/anything.sqlite", "/api/state?mode=other"):
             self.assertEqual(self.request("GET", path)[0], 400, path)
@@ -214,7 +183,7 @@ class HttpTests(unittest.TestCase):
                 self.assertEqual(self.post("/api/demo/advance", state=state, server=server,
                     headers={"Host": host, "Origin": f"http://{host}", "X-CSRF-Token": "wrong"})[0], 403)
                 self.assertEqual(self.post("/api/cards/T-2026-005/score", {"score": 1, "reason": "远程合成演示"},
-                    state=state, server=server, headers={"Host": host, "Origin": f"http://{host}"})[0], 200)
+                    state=state, server=server, headers={"Host": host, "Origin": f"http://{host}"})[0], 404)
                 self.assertEqual(self.post("/api/demo/advance", server=server,
                     headers={"Host": host, "Origin": f"http://{host}"})[0], 200)
                 for path in ("/?mode=readonly", "/api/state?mode=readonly", "/api/cards/T-2026-005?mode=readonly"):
@@ -304,11 +273,12 @@ class HttpTests(unittest.TestCase):
             self.assertEqual(state["observation_as_of"], "2026-10-12")
             status, detail = self.request("GET", f"/api/cards/{cid}?mode=readonly")
             self.assertEqual(status, 200)
-            self.assert_blind(state)
-            self.assert_blind(detail)
-            self.assertNotIn("不可披露的真实模式测试评分", json.dumps(detail, ensure_ascii=False))
-            self.assertFalse(any(detail["actions"][key] for key in ("can_score", "can_void", "can_signal")))
-            self.assertEqual(self.post(f"/api/cards/{cid}/score?mode=readonly", {"score": 1, "reason": "拒绝写入"}, state=state)[0], 403)
+            self.assertEqual(detail["scores"]["agent"]["reason"], "不可披露的真实模式测试评分")
+            self.assertEqual(detail["scores"]["agent"]["score"], 4)
+            self.assertFalse(detail["actions"]["can_spot"])
+            self.assertFalse(any(detail["actions"][key] for key in ("can_void", "can_signal")))
+            self.assertNotIn("can_score", detail["actions"])
+            self.assertEqual(self.post(f"/api/cards/{cid}/score?mode=readonly", {"score": 1, "reason": "拒绝写入"}, state=state)[0], 404)
         self.assertEqual(self.formal.read_bytes(), before)
         self.assertFalse(self.market.exists())
         self.assertFalse(Path(str(self.formal) + "-journal").exists())

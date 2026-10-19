@@ -164,6 +164,14 @@ select option{background:var(--bg)}
 .login-form{display:flex;gap:8px;align-items:center}
 .login-form input{width:9em;padding:6px 8px;border:1px solid var(--hair-2);background:transparent;color:var(--ink);font-size:12px}
 .next-create{margin:12px 0 0;font-size:13px}
+.aux-entry{margin:4px 0 28px;font-size:12px;color:var(--muted)}
+.unchecked{margin-top:10px;color:var(--accent);font-size:13px}
+.event-days{display:flex;flex-wrap:wrap;gap:12px;margin:8px 0 20px;font-size:13px}
+.event-list{display:flex;flex-direction:column;gap:18px}
+.event-draft{border-top:1px solid var(--hair);padding-top:14px}
+.event-draft h3{font-size:22px;font-weight:560;letter-spacing:-.03em;margin-top:6px}
+.event-draft p{margin-top:8px;font-size:14px;line-height:1.6}
+.event-sha{color:var(--muted);font-size:12px;word-break:break-all}
 .composer{max-width:720px;padding:28px 0 48px}
 .composer h1{margin:8px 0 12px}
 .composer .lede{color:var(--muted);font-size:13px;margin-bottom:8px}

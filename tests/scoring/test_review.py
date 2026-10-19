@@ -23,7 +23,8 @@ class Review(Base):
 
     def test_empty_report_does_not_infer_zero_performance_or_approval(self):
         report = review_report(self.L.conn)
-        self.assertEqual(report["calibration"]["owner"], [])
+        self.assertEqual(report["calibration"]["agent"], [])
+        self.assertNotIn("owner", report["calibration"])
         self.assertTrue(all(a["status"] == "insufficient" and a["value"] is None for a in report["alerts"]))
         self.assertEqual(report["allowed_decisions"], ["继续", "停止", "重开新版本"])
         self.assertFalse(report["automatic_actions"])
@@ -69,37 +70,38 @@ class Review(Base):
         self.run_to_exit(reason="手动", manual="合成理由")
         self.assertTrue(self.alert("manual_exit_share")["triggered"])
 
-    def test_owner_calibration_reuses_terminal_denominator_and_small_sample_notice(self):
+    def test_agent_calibration_reuses_terminal_denominator_and_small_sample_notice(self):
         for _ in range(30):
             cid = self.at(T0).make(evidence=[])
-            self.L.owner_score(cid, 3, "Owner 合成独立判断")
             self.L.void(cid, "合成作废")
             if _ == 28:
-                bucket = review_report(self.L.conn)["calibration"]["owner"][0]
+                bucket = review_report(self.L.conn)["calibration"]["agent"][0]
                 self.assertFalse(bucket["enough"])
                 self.assertEqual(bucket["interpretation"], "样本不足，不下结论")
-        bucket = review_report(self.L.conn)["calibration"]["owner"][0]
+        bucket = review_report(self.L.conn)["calibration"]["agent"][0]
         self.assertTrue(bucket["enough"])
-        self.assertEqual({k: v for k, v in bucket.items() if k != "interpretation"}, read.calibration(self.L.conn, "owner")[0])
+        self.assertEqual({k: v for k, v in bucket.items() if k != "interpretation"}, read.calibration(self.L.conn, "agent")[0])
         self.assertEqual((bucket["n"], bucket["voided"], bucket["closed"]), (30, 30, 0))
+        self.assertNotIn("owner", review_report(self.L.conn)["calibration"])
 
-    def test_agent_score_and_reason_never_disclosed_even_void_before_owner_deadline(self):
+    def test_agent_curve_is_aggregate_and_does_not_repeat_the_reason_text(self):
         cid = self.L.create_card(card(evidence_status="已检索无证据"), [],
                                  {"score": 5, "reason": "PRIVATE_AGENT_REASON", "scored_at": T0})
-        self.L.void(cid, "仍在独立评分窗口")
+        self.L.void(cid, "终态后进入 agent 曲线")
         payload = json.dumps(review_report(self.L.conn), ensure_ascii=False)
         self.assertNotIn("PRIVATE_AGENT_REASON", payload)
-        self.assertNotIn("4–5", payload)
-        self.assertEqual(review_report(self.L.conn)["calibration"]["agent"]["status"], "held_until_review")
+        bucket = review_report(self.L.conn)["calibration"]["agent"][0]
+        self.assertEqual(bucket["bucket"], "4–5")
+        self.assertNotIn("owner", review_report(self.L.conn)["calibration"])
 
-    def test_unscored_cards_remain_counted_outside_owner_buckets(self):
-        first, second = self.make(evidence=[]), self.make(evidence=[])
-        self.L.void(first, "尚未评分的作废卡仍需计数")
-        self.assertEqual(review_report(self.L.conn)["calibration"]["unscored"], {"total": 2, "n": 1, "open": 1})
-        self.L.owner_score(second, 1, "独立评分后转入自己的桶")
-        report = review_report(self.L.conn)["calibration"]
-        self.assertEqual(report["unscored"], {"total": 1, "n": 1, "open": 0})
-        self.assertEqual(report["owner"][0]["open"], 1)
+    def test_unsearched_cards_stay_in_their_own_agent_bucket(self):
+        searched = self.make(evidence=[])
+        mechanical = self.make_rule_card()
+        self.L.void(searched, "检索过的作废卡进分数桶")
+        self.L.void(mechanical, "未检索的作废卡单独成桶")
+        buckets = {b["bucket"]: b for b in review_report(self.L.conn)["calibration"]["agent"]}
+        self.assertEqual(buckets["2–3"]["voided"], 1)
+        self.assertEqual(buckets["未检索"]["voided"], 1)
 
     def test_counterfactual_returns_frozen_and_recorded_values_without_inferred_returns(self):
         cid = self.run_to_exit(r=0.75, excess=1.25)

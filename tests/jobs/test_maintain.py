@@ -39,8 +39,9 @@ class MaintainOnly(unittest.TestCase):
         with mock.patch("builtins.print"):
             self.assertEqual(jobs_main(self.args("2026-09-28")), 0)
             self.assertEqual(jobs_main(self.args("2026-09-28")), 0)
-            self.assertEqual(jobs_main(["daily", "--no-update", "--date", "2026-09-29", "--market", str(self.market),
-                                        "--db", str(self.ledger), "--rules", str(self.rules)]), 2)
+        with self.assertRaises(SystemExit):
+            jobs_main(["daily", "--no-update", "--date", "2026-09-29", "--market", str(self.market),
+                       "--db", str(self.ledger), "--rules", str(self.rules)])
         ledger = Ledger(self.ledger)
         self.addCleanup(ledger.close)
         self.assertEqual(ledger.processed_days(), {"2026-09-28"})
@@ -57,8 +58,10 @@ class MaintainOnly(unittest.TestCase):
             job.return_value.run.return_value = report
             self.assertEqual(jobs_main(self.args("2026-09-28")), 0)
         self.assertEqual(job.return_value.run.call_args.kwargs["maintain_only"], True)
-        self.assertEqual(job.call_args.kwargs["rules"], {})
+        self.assertEqual(job.call_args.kwargs["rules"], {"事件驱动": {}})
+        self.assertEqual(job.call_args.kwargs["instruments"]["地产"]["code"], "512200")
         ledger = Ledger(self.ledger)
         self.addCleanup(ledger.close)
         self.assertEqual(ledger.processed_days(), {"2026-09-28"})
-        self.assertEqual(json.loads(self.rules.read_text(encoding="utf-8"))["事件驱动"]["enabled"], False)
+        cfg = json.loads(self.rules.read_text(encoding="utf-8"))
+        self.assertEqual((cfg["事件驱动"]["enabled"], cfg["恐慌下轨"]["enabled"]), (True, False))

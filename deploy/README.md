@@ -11,7 +11,13 @@ cd /opt/etf-ledger
 .venv/bin/python -m src.ledger init --db data/ledger.sqlite
 ```
 
-这个文件留在服务器上，不提交。
+若这只库是用 R5 的 schema（v1.1-i）建的，拉到含 v1.1-j 的代码后补一次表。命令幂等，重复跑不重建、不丢已有行：
+
+```bash
+.venv/bin/python -m src.ledger migrate --db data/ledger.sqlite
+```
+
+新 `init` 直接就是 v1.1-j，不必再 migrate。这个文件留在服务器上，不提交。
 
 ## 2. 写口令
 
@@ -37,7 +43,7 @@ sudo systemctl enable --now ledger-web.service
 sudo systemctl status ledger-web.service
 ```
 
-浏览器打开 `http://<公网地址>:8765/`。右上角「登录记账」，口令就是 `LEDGER_WRITE_TOKEN`。登录后首页「下一个」栏出现「立卡」，地址是 `/new`。
+浏览器打开 `http://<公网地址>:8765/`。右上角「登录记账」，口令就是 `LEDGER_WRITE_TOKEN`。登录后首页三栏下面有辅助入口「手填立卡」，地址是 `/new`。事件草稿的反馈在 `/events`，不登录也能看。
 
 没加 `--write` 的 readonly 仍然完全只读。market 与 demo 的启动方式不变。
 
@@ -57,7 +63,7 @@ crontab deploy/ledger-daily.cron
 crontab -l
 ```
 
-作业是 `python -m src.jobs daily --maintain-only`。它不扫描、不生成候选，只给已经在场的卡写进场、每日行、出场和跟踪。规则文件保持全部关闭。
+作业是 `bash deploy/daily.sh`。它先 `git fetch origin events`：当天的 `events/<D>.json` 若在分支上，就复制到 `data/events/<D>.json`，并在日志记下 events 分支的 commit SHA 和文件 SHA256。D 与作业默认日期同一口径，是最近一个已收盘的 A 股交易日。拉取失败只写日志，接着仍跑 `python -m src.jobs daily --maintain-only --rules config/ledger-rules.json --events-dir data/events`。维护路径给在场卡写进场、每日行、出场和跟踪；事件驱动已按 D5 开启，合格草稿会在这一步锁卡。恐慌下轨保持关闭，不扫描研究池。
 
 ## 5. 看日志
 
@@ -75,7 +81,7 @@ tail -n 80 outputs/logs/daily-$(date +%Y%m%d).log
 
 ```bash
 cd /opt/etf-ledger
-.venv/bin/python -m src.jobs daily --maintain-only --rules config/ledger-rules.json --date 2026-09-30
+bash deploy/daily.sh --date 2026-09-30
 ```
 
 行情已经在库里、只想重算台账时加上 `--no-update`。同一天再跑一遍结果不变。非交易日、或在场卡缺当天行情时，作业以非零退出，不把这一天标成已处理。

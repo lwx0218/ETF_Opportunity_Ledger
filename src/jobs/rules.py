@@ -3,7 +3,8 @@
 
 每条规则产出 Candidate。规则卡（恐慌下轨）按 schema v1.1-c 用评分菜单第 2 项（R 倍数：horizon 为空、+2R、基准等权），
 evidence_status = 未检索、不写 agent 分（v1.1-a）；事件卡用菜单第 1 项，horizon / target / benchmark 与检索状态由起草人逐卡填。
-规则配置 config/ledger-rules.json：confirmed_terms 须等于 TERMS_VERSION，且该规则 enabled 为真才启用（V1 结论前全部关闭，A7）。
+规则配置 config/ledger-rules.json：confirmed_terms 须等于 TERMS_VERSION，且该规则 enabled 为真才启用。
+事件驱动按 D5 开启（草稿通过校验即入账）；恐慌下轨保持关闭，形态突破仍不实现（A7）。
 """
 from __future__ import annotations
 
@@ -81,28 +82,48 @@ def panic_candidates(day_rows: pd.DataFrame, z_threshold: float) -> list[Candida
             for r in rows.itertuples(index=False)]
 
 
-def event_candidates(day_rows: pd.DataFrame, events_dir: Path | None, day: str) -> tuple[list[Candidate], list[str]]:
-    """事件卡由人确认后的草稿文件 <events_dir>/<day>.json 进来（schema §7：起卡需要一次确认）。每条：
-    {container, thesis, evidence_status（已检索无证据 / 有证据）, evidence[], agent_score{score, reason},
-     expectation{horizon_days, target_excess_pct, benchmark}, thesis_invalidation{source_id, deadline, statement}}。"""
+def draft_container_names(events_dir: Path | None, day: str) -> list[str]:
+    """草稿里出现的容器名。文件缺失、不是 JSON 或不是列表时返回空，不在这里报错。"""
+    if not events_dir:
+        return []
+    f = Path(events_dir) / f"{day}.json"
+    if not f.is_file():
+        return []
+    try:
+        drafts = json.loads(f.read_text(encoding="utf-8"))
+    except ValueError:
+        return []
+    if not isinstance(drafts, list):
+        return []
+    names = []
+    for item in drafts:
+        if isinstance(item, dict) and isinstance(item.get("container"), str) and item["container"].strip():
+            names.append(item["container"].strip())
+    return names
+
+
+def describe_events(day_rows: pd.DataFrame, events_dir: Path | None, day: str) -> tuple[list[str], list[dict]]:
+    """D5：草稿进入 events-dir 并通过校验即视为确认。返回 (文件级错误, 逐条结果)。
+    每条结果含 seq、container、reason（退回时的完整原文，通过时为 None）、candidate（通过时才有）。"""
     if not events_dir:
         return [], []
     f = Path(events_dir) / f"{day}.json"
     if not f.exists():
         return [], []
-    by = {r.container: r for r in day_rows.itertuples(index=False)}
-    out, problems = [], []
     try:
         drafts = json.loads(f.read_text(encoding="utf-8"))
     except ValueError as err:
-        return [], [f"事件草稿文件 {f.name} 不是合法 JSON（{err}），当天不立事件卡"]
+        return [f"事件草稿文件 {f.name} 不是合法 JSON（{err}），当天不立事件卡"], []
     if not isinstance(drafts, list):
-        return [], [f"事件草稿文件 {f.name} 应是草稿列表，当天不立事件卡"]
+        return [f"事件草稿文件 {f.name} 应是草稿列表，当天不立事件卡"], []
+    by = {r.container: r for r in day_rows.itertuples(index=False)}
+    items = []
     for i, e in enumerate(drafts):
         if not isinstance(e, dict):
-            problems.append(f"事件草稿 {i}：不是对象，未立卡")
+            items.append({"seq": i, "container": None, "reason": f"事件草稿 {i}：不是对象，未立卡", "candidate": None})
             continue
         tag = f"事件草稿 {i}（{e.get('container')}）"
+        container = e.get("container") if isinstance(e.get("container"), str) else None
         r = by.get(e.get("container"))
         thesis = e.get("thesis").strip() if isinstance(e.get("thesis"), str) else ""
         ti, score, exp = (x if isinstance(x, dict) else {} for x in (e.get("thesis_invalidation"), e.get("agent_score"), e.get("expectation")))
@@ -120,12 +141,27 @@ def event_candidates(day_rows: pd.DataFrame, events_dir: Path | None, day: str) 
                        and exp.get("benchmark") in ("等权组合", "沪深300"))
                else None)
         if why:
-            problems.append(f"{tag}：{why}，未立卡")
+            items.append({"seq": i, "container": container, "reason": f"{tag}：{why}，未立卡", "candidate": None})
             continue
-        out.append(Candidate(container=r.container, trigger_type="事件驱动", state=r.state, close=float(r.close),
-                             atr20=float(r.atr20), thesis=thesis, priority=1e6 + i, evidence=evidence,
-                             agent_score=score, thesis_invalidation=ti, key_suffix=f"|{i}", evidence_status=status,
-                             expectation={"scoring_rule": "schema-v1-§3", "horizon_days": exp["horizon_days"],
-                                          "target_excess_pct": exp["target_excess_pct"], "target_r": None,
-                                          "benchmark": exp["benchmark"]}))
-    return out, problems
+        items.append({"seq": i, "container": r.container, "reason": None, "candidate": Candidate(
+            container=r.container, trigger_type="事件驱动", state=r.state, close=float(r.close),
+            atr20=float(r.atr20), thesis=thesis, priority=1e6 + i, evidence=evidence,
+            agent_score=score, thesis_invalidation=ti, key_suffix=f"|{i}", evidence_status=status,
+            expectation={"scoring_rule": "schema-v1-§3", "horizon_days": exp["horizon_days"],
+                         "target_excess_pct": exp["target_excess_pct"], "target_r": None,
+                         "benchmark": exp["benchmark"]})})
+    return [], items
+
+
+def event_candidates(day_rows: pd.DataFrame, events_dir: Path | None, day: str) -> tuple[list[Candidate], list[str]]:
+    """事件草稿 <events_dir>/<day>.json。通过校验的进入候选，其余整条退回（原文在 problems 里）。"""
+    errors, items = describe_events(day_rows, events_dir, day)
+    if errors:
+        return [], errors
+    cands, problems = [], []
+    for item in items:
+        if item["reason"]:
+            problems.append(item["reason"])
+        else:
+            cands.append(item["candidate"])
+    return cands, problems

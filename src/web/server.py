@@ -14,7 +14,7 @@ from src.ledger.store import LedgerError
 from .application import Application, RequestError
 
 STATIC = Path(__file__).with_name("static")
-CARD_ROUTE = re.compile(r"/api/cards/(T-[0-9]{4}-[0-9]{3,})(?:/(score|void|exit-signal))?\Z")
+CARD_ROUTE = re.compile(r"/api/cards/(T-[0-9]{4}-[0-9]{3,})(?:/(void|exit-signal|spot-check))?\Z")
 
 
 def validate_binding(host, public_host, demo_only, *, mode="demo", write=False):
@@ -78,9 +78,10 @@ def create_server(app: Application, port=8765, *, host="127.0.0.1", public_host=
                     raise RequestError("拒绝跨站请求", 403)
                 url = urlsplit(self.path)
                 query = parse_qs(url.query, keep_blank_values=True)
-                page = url.path in ("/", "/rotation", "/market", "/new")
+                page = url.path in ("/", "/rotation", "/market", "/new", "/events")
                 session = session_cookie(self.headers.get("Cookie"))
-                permitted = ({"mode", "as_of", "theme", "series", "card", "supersedes"} if page else
+                permitted = ({"date", "mode"} if url.path in ("/events", "/api/events") else
+                             {"mode", "as_of", "theme", "series", "card", "supersedes"} if page else
                              {"mode", "as_of", "theme", "series", "weeks"} if url.path == "/api/observation" else
                              {"mode", "theme"} if url.path == "/api/quote" else {"mode"})
                 if set(query) - permitted or any(len(values) != 1 for values in query.values()):
@@ -138,6 +139,8 @@ def create_server(app: Application, port=8765, *, host="127.0.0.1", public_host=
                     self.send(200, app.observation(mode, as_of=query.get("as_of", [None])[0],
                               theme=query.get("theme", [None])[0],
                               series=query.get("series", ["execution"])[0], weeks=int(window)))
+                elif url.path == "/api/events":
+                    self.send(200, app.event_feed(query.get("date", [None])[0]))
                 elif url.path == "/api/quote":
                     if not app.session_ok(session):
                         raise RequestError("未登录，不能记账", 403)

@@ -14,8 +14,10 @@
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
@@ -130,6 +132,8 @@ class DailyJob:
         today = self.panel[self.panel["date"] == D]
         if today.empty:
             rep.skipped.append("当日无任何容器的数据（非交易日或数据未更新）")
+            if maintain_only and "事件驱动" in self.rules and self.events_dir:
+                self._triggers(D, today, rep, events_only=True)
             return rep
         rep.blocked = self._ew_problem(D)
         if rep.blocked:
@@ -142,6 +146,8 @@ class DailyJob:
         self._finals(D, rep)
         if not maintain_only:
             self._triggers(D, today, rep)
+        elif "事件驱动" in self.rules and self.events_dir:
+            self._triggers(D, today, rep, events_only=True)
         self._reminders(D, rep)
         return rep
 
@@ -326,54 +332,97 @@ class DailyJob:
                             benchmark_beat=int(bench_ret > 0))
             rep.finals.append(cid)
 
-    def _triggers(self, D, today, rep):
+    def _events_meta(self, day: str) -> tuple[str | None, str | None]:
+        if not self.events_dir:
+            return None, None
+        path = Path(self.events_dir) / f"{day}.meta.json"
+        if not path.is_file():
+            return None, None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            return None, None
+        if not isinstance(data, dict):
+            return None, None
+        commit = data.get("commit") if isinstance(data.get("commit"), str) else None
+        digest = data.get("sha256") if isinstance(data.get("sha256"), str) else None
+        return commit, digest
+
+    def _remember_draft(self, day: str, seq: int, container, outcome: str, reason: str, card_id, commit, digest) -> None:
+        if not self.events_dir:
+            return
+        self.L.record_event_draft({"day": day, "seq": seq, "container": container, "outcome": outcome, "reason": reason,
+                                   "card_id": card_id, "events_commit": commit, "file_sha256": digest})
+
+    def _seal(self, c: R.Candidate, day: str, D, ranks, rep) -> tuple[str | None, str | None]:
+        """立一张候选。返回 (卡片 id, 退回原文)。已有同键卡时返回已有 id 且不重复创建。"""
+        key = f"{day}|{c.container}|{c.trigger_type}{c.key_suffix}"
+        existing = self.L.find_by_scan_key(key)
+        if existing:
+            return existing, None
+        inst = self.instruments.get(c.container)
+        if not inst:
+            msg = f"{c.container}：universe 里没有执行标的，未立卡"
+            rep.skipped.append(msg)
+            return None, msg
+        exp = c.expectation if c.trigger_type == "事件驱动" else self.rules[c.trigger_type]
+        stop = c.close - self.p.stop_atr * c.atr20
+        r_unit = c.close - stop
+        rank = ranks.get(c.container)
+        card = dict(created_at=self.L.now(), close_date=day, scan_key=key, container=c.container,
+                    instrument_code=inst["code"], instrument_name=inst["name"], research_index_code=inst.get("research_code"),
+                    trigger_type=c.trigger_type, state_at_entry=c.state, thesis=c.thesis, evidence_status=c.evidence_status,
+                    scoring_rule=exp["scoring_rule"], expectation_horizon_days=exp["horizon_days"],
+                    expectation_target_excess_pct=exp["target_excess_pct"], expectation_target_r=exp["target_r"],
+                    expectation_benchmark=exp["benchmark"], invalidation_price=round(stop, 6),
+                    invalidation_atr_value=round(c.atr20, 6), invalidation_atr_multiple=self.p.stop_atr,
+                    r_unit_per_share=round(r_unit, 6), r_unit_pct_of_nav=self.p.risk_per_trade * 100,
+                    planned_size_pct=round(min(self.p.risk_per_trade * c.close / r_unit, self.p.max_weight) * 100, 6),
+                    cf_ew_level=self._level(self.ew_store.series(), D), cf_hs300_level=self._level(self.bench, D),
+                    cf_container_price=c.close,
+                    crowd_rs_1m_rank=int(rank) if rank == rank and rank is not None else None,
+                    owner_score_deadline=next_weekday_open(day, self.trading_days))
+        if c.trigger_type == "事件驱动" and c.thesis_invalidation:
+            ti = c.thesis_invalidation
+            card.update(thesis_inval_source_id=ti.get("source_id"), thesis_inval_deadline=ti.get("deadline"),
+                        thesis_inval_statement=ti.get("statement"))
+        try:
+            score = self.scorer(c)
+            if score is not None:
+                score = {**score, "scored_at": score.get("scored_at") or self.L.now()}
+            cid = self.L.create_card(card, c.evidence, score)
+        except (LedgerError, ValueError, KeyError, TypeError, AttributeError) as e:
+            msg = f"{c.container} {c.trigger_type}：立卡被拒（{str(e)[:120]}）"
+            rep.skipped.append(msg)
+            return None, msg
+        rep.created.append(cid)
+        return cid, None
+
+    def _triggers(self, D, today, rep, *, events_only: bool = False):
         day = D.date().isoformat()
         if self.L.now() > creation_cutoff(day):
             rep.skipped.append(f"已过 {day} 的立卡时限（{creation_cutoff(day)}）：补跑只处理进出场与每日行，不补立卡")
             return
-        cands: list[R.Candidate] = []
-        if "恐慌下轨" in self.rules:
-            cands += R.panic_candidates(today, self.p.z_threshold)
-        if "事件驱动" in self.rules:
-            ev, problems = R.event_candidates(today, self.events_dir, day)
-            cands += ev
-            rep.skipped += problems
         ranks = self._ranks(today)
-        for c in sorted(cands, key=lambda c: (c.priority, c.container)):
-            key = f"{day}|{c.container}|{c.trigger_type}{c.key_suffix}"
-            if self.L.find_by_scan_key(key):
+        if not events_only and "恐慌下轨" in self.rules:
+            for c in sorted(R.panic_candidates(today, self.p.z_threshold), key=lambda c: (c.priority, c.container)):
+                self._seal(c, day, D, ranks, rep)  # 恐慌下轨不记事件草稿
+        if "事件驱动" not in self.rules:
+            return
+        errors, items = R.describe_events(today, self.events_dir, day)
+        commit, digest = self._events_meta(day)
+        if errors:
+            rep.skipped += errors
+            for i, msg in enumerate(errors):
+                self._remember_draft(day, i, None, "退回", msg, None, commit, digest)
+            return
+        for item in items:
+            if item["reason"]:
+                rep.skipped.append(item["reason"])
+                self._remember_draft(day, item["seq"], item["container"], "退回", item["reason"], None, commit, digest)
                 continue
-            inst = self.instruments.get(c.container)
-            if not inst:
-                rep.skipped.append(f"{c.container}：universe 里没有执行标的，未立卡")
-                continue
-            exp = c.expectation if c.trigger_type == "事件驱动" else self.rules[c.trigger_type]
-            stop = c.close - self.p.stop_atr * c.atr20
-            r_unit = c.close - stop
-            rank = ranks.get(c.container)
-            card = dict(created_at=self.L.now(), close_date=day, scan_key=key, container=c.container,
-                        instrument_code=inst["code"], instrument_name=inst["name"], research_index_code=inst.get("research_code"),
-                        trigger_type=c.trigger_type, state_at_entry=c.state, thesis=c.thesis, evidence_status=c.evidence_status,
-                        scoring_rule=exp["scoring_rule"], expectation_horizon_days=exp["horizon_days"],
-                        expectation_target_excess_pct=exp["target_excess_pct"], expectation_target_r=exp["target_r"],
-                        expectation_benchmark=exp["benchmark"], invalidation_price=round(stop, 6),
-                        invalidation_atr_value=round(c.atr20, 6), invalidation_atr_multiple=self.p.stop_atr,
-                        r_unit_per_share=round(r_unit, 6), r_unit_pct_of_nav=self.p.risk_per_trade * 100,
-                        planned_size_pct=round(min(self.p.risk_per_trade * c.close / r_unit, self.p.max_weight) * 100, 6),
-                        cf_ew_level=self._level(self.ew_store.series(), D), cf_hs300_level=self._level(self.bench, D),
-                        cf_container_price=c.close,
-                        crowd_rs_1m_rank=int(rank) if rank == rank and rank is not None else None,
-                        owner_score_deadline=next_weekday_open(day, self.trading_days))
-            if c.trigger_type == "事件驱动" and c.thesis_invalidation:
-                ti = c.thesis_invalidation
-                card.update(thesis_inval_source_id=ti.get("source_id"), thesis_inval_deadline=ti.get("deadline"),
-                            thesis_inval_statement=ti.get("statement"))
-            try:
-                score = self.scorer(c)
-                if score is not None:
-                    score = {**score, "scored_at": score.get("scored_at") or self.L.now()}
-                cid = self.L.create_card(card, c.evidence, score)
-            except (LedgerError, ValueError, KeyError, TypeError, AttributeError) as e:   # 一张卡被拒不挡住其余候选；原因进报告
-                rep.skipped.append(f"{c.container} {c.trigger_type}：立卡被拒（{str(e)[:120]}）")
-                continue
-            rep.created.append(cid)
+            cid, err = self._seal(item["candidate"], day, D, ranks, rep)
+            if cid and not err:
+                self._remember_draft(day, item["seq"], item["container"], "锁卡", "", cid, commit, digest)
+            else:
+                self._remember_draft(day, item["seq"], item["container"], "退回", err or "未立卡", None, commit, digest)

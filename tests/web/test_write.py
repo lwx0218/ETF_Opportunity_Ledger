@@ -76,8 +76,8 @@ class WriteGate(unittest.TestCase):
         self.assertTrue(session["authenticated"])
         self.assertTrue(session["writable"])
         self.assertIn("containers", session)
-        blocked, body = self.exchange(server, "POST", "/api/cards/T-2026-001/score",
-                                      {"score": 3, "reason": "独立判断", "thesis": "改冻结论点", "revision": session["revision"]},
+        blocked, body = self.exchange(server, "POST", "/api/cards/T-2026-001/void",
+                                      {"reason": "独立判断", "thesis": "改冻结论点", "revision": session["revision"]},
                                       {"Content-Type": "application/json", "X-CSRF-Token": session["csrf_token"],
                                        "Cookie": cookie.split(";", 1)[0]})
         self.assertEqual(blocked, 400)
