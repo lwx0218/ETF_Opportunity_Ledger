@@ -1,0 +1,17 @@
+# SHA256SUMS for archive/grok-raw batch grok-nav-shares-followup-20261019
+# Generated: 2026-10-19 21:53:59 (Asia/Taipei)
+# Format: SHA256  BYTES  PATH
+
+## Archive zip volume(s)
+bc37724afe1d8ea35f08f4f94762b78757d3b57ce03af8bd8ed6921e86515428  20533  raw.zip
+
+## Uncompressed files (relative to batch root as stored in zip)
+37cc9bfb4a5262540894c2f3f6f0817f6f2bc68a1e689b099010099eb62a3ac5  4871  159732_identity.md
+085b16926badeca872ebd9f73b56c51dcfdd60633565ffe4f2d3979d4ec0fe41  423  README.md
+fc8125584a7085ee98801b418091f5d1d35001638885ee554e6770f918a0a26a  447  SOURCES_MAP_PATCH.md
+1288f97b5435cbfa6d1256f14cb69789d9a854d1f69e05a7bb259e7161e60916  73902  manifest_followups.csv
+2dc61f675d1c80cbde7870f9ba72e9e893f8006de2c536f0dabaef43cabc7054  375  samples/etfgm_l_511880_sample.csv
+6a9845860ba4596bea18e5a3ae4ecacb8fd8f64f310b2ac4405f1dacd056a11d  533  samples/gmbd_501018_sample.csv
+ae0c62c9f6d35484f46e56af0ec6ae615405b37459267b8858e393b27906580f  559  samples/gmbd_511880_sample.csv
+212c7e6c3dc2b928c5a54178caf7cdbcf28b413d45b409b24813bdac3d575bce  438  samples/lof_501018_sample.csv
+835f95a8be33e9f7f6c8db6eeb87b25784fc25e05542aeacdd288233e7033b4d  7370  shares_alt_501018_511880.md
