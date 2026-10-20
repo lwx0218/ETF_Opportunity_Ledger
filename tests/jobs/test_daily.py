@@ -467,8 +467,8 @@ class Replay(unittest.TestCase):
         self.assertGreater(row["close"], row["stop_now"])
 
     def test_unexplained_gap_is_a_data_hole_and_does_not_exit(self):
-        """开盘跳空超过 5% 且推不出分红：当天不写出场决定，名次让出，止损不跟这个收盘上移或击穿。"""
-        panel, bench, ex = self._bond_panel(90.0, 90.0)
+        """开盘跳空超过阈值且推不出分红：当天不写出场决定，名次让出，止损不跟这个收盘上移或击穿。"""
+        panel, bench, ex = self._bond_panel(50.0, 90.0)
         job = DailyJob(self.L, panel, bench, rules=RULES, instruments=INST)
         reps = {}
         for d in DAYS[: DAYS.index(ex) + 1]:

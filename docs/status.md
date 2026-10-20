@@ -5,7 +5,7 @@
 - dev 内容：de1618a0cac548a5098df395214801f45713f1cc（R7 收尾：B1 拥挤排名改到 37 个执行 ETF 横截面，B2 详情逐条列出冻结证据，B3 用创建日基准复权价避开除息误出场；D4–D6 仍在这条上。状态说明在其后的提交）
 - events：9dff8292838f5d6f9f2b8b2f40bdd7535b4c7b1e（孤儿分支，只有 README 和空的 events/）
 - 行情库：data/market.sqlite，87 序列 / 309,275 行，末日 2026-09-30；38 只执行 ETF 腾讯日线全量；CSI 全收益 18 个容器，仅价格指数 15 个，无研究序列 3 个（T16 / T36 / T38）；回填在 Cursor 沙箱完成（operations/work_logs/2026-10-11-csi-research-backfill.md），Pi 服务器 IP 对 csindex 仍 403
-- 正式台账 data/ledger.sqlite：不存在（A7 未放行）
+- 正式台账 data/ledger.sqlite：服务器上已建
 - 启动：.venv/bin/python -m src.web --port 8765（demo）；--mode readonly；--mode readonly --write（须 LEDGER_WRITE_TOKEN，至少 16 字符）；--mode market
 - 测试：mkdir -p outputs && .venv/bin/python -m unittest discover -s tests -t .
 
@@ -21,18 +21,18 @@
 - 研究序列切换：37 个容器中 34 个有合格相对强弱（缺 T16/T36/T38）；research_ready 仍为 false
 
 ## 当前 round
-- R7 已收尾，待评审。未合入 main。内容是 de1618a0cac548a5098df395214801f45713f1cc。评审通过前不合入 main。下一轮仍是 R6：按 deploy/ 在 Pi 上部署，并开始连续 5 个交易日无人值守计数。本轮不部署
+- R7 已收尾，待评审。未合入 main。内容是 de1618a0cac548a5098df395214801f45713f1cc。评审通过前不合入 main。R6 已于 4b130fa 部署在服务器
 
 ## 待办（按顺序）
-1. R6：Pi 部署 + 连续 5 个交易日计数。先在已有 v1.1-i 库上跑 `python -m src.ledger migrate`。代码已对中证请求间隔 1.5 秒，403 等 90 秒重试一次；若服务器 IP 仍被拒绝，作业非零退出且不覆盖已有行情。Grok bot 本身不在本仓库，它要按 `docs/events-drafts.md` 把草稿推到 `events` 分支，快照先推到 `archive/grok-raw` 的 `events-snapshots/<D>/<文件名>`
+1. R6 已于 4b130fa 部署在服务器。连续 5 个交易日计数仍待完成。代码已对中证请求间隔 1.5 秒，403 等 90 秒重试一次；若服务器 IP 仍被拒绝，作业非零退出且不覆盖已有行情。Grok bot 本身不在本仓库，它要按 `docs/events-drafts.md` 把草稿推到 `events` 分支，快照先推到 `archive/grok-raw` 的 `events-snapshots/<D>/<文件名>`
 2. 份额折算：开盘跳空超过 5% 又推不出分红时，只把当天标成 data_hole、不做出场决定。下一交易日仍用新的价格水平去比锁死止损，可能写出场信号。本次不把冻结延伸到之后的交易日
 3. backlog：四触发器里只开了事件驱动（恐慌下轨关，形态突破未接）；反事实；NAV/份额/成交额；V1 放行；A7。校准只剩 agent 一条曲线，还没有足够的已结卡。不拆分行情库，不换 T12 的基金，不增加新的草稿校验规则
 
 ## 对照原型，这轮没做完的
 - `prototypes/home/` 的三栏和详情方向已在产品里；原型数字停在 2026-09-14，不是现网。Direction A/B/C 只是留档
 - `prototypes/rotation-panel/` 是 17 个容器的静态快照。产品轮动页是 37 个容器；研究序列横截面仍不完整（10/37），`research_ready` 仍为 false
-- 正式台账 `data/ledger.sqlite` 仍不存在（A7 未放行）
-- V1 五条验收未通过，不重跑样本外。NAV、份额、成交额未做
+- 服务器上的正式台账 `data/ledger.sqlite` 已建
+- V1 未运行（prereg §13 待填）。NAV、份额、成交额未做
 
 ## 原型与设计
 - docs/design/teardown-design-rules-v3.md、docs/design/teardown-tokens.css
