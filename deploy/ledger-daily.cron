@@ -1,4 +1,6 @@
-# 交易日、A 股收盘 15:30 之后跑一次。下面的 40 15 是服务器本地时区的分和时。
-# 先核对时区再改：timedatectl | grep Time.zone    或    date +%Z
-# 服务器本地时区若不是 Asia/Shanghai，把 15 改成「本地时钟走到北京时间 15:30 之后」的那个小时。
-40 15 * * 1-5 cd /opt/etf-ledger && mkdir -p outputs/logs && bash deploy/daily.sh >> outputs/logs/daily-$(date +\%Y\%m\%d).log 2>&1
+# 北京时间周一到周五 21:30 跑一次，23:30 再跑一次兜底。
+# 中证 H00300 的当天收盘点位当晚才发布。15:40 跑会因基准没有收盘退出，次日被漏跑挡住。
+# 作业幂等：已处理的日子重跑不产生新行。flock 防止两次重叠。
+CRON_TZ=Asia/Shanghai
+30 21 * * 1-5 cd /project/data_science/ETF_Opportunity_Ledger && mkdir -p outputs/logs && /usr/bin/flock -n /project/data_science/ETF_Opportunity_Ledger/outputs/logs/daily.lock bash -c 'bash deploy/daily.sh >> outputs/logs/daily-$(date +\%Y\%m\%d).log 2>&1; ec=$?; echo "exit=$ec $(date +\%Y-\%m-\%dT\%H:\%M:\%S)" >> outputs/logs/daily-$(date +\%Y\%m\%d).log; exit $ec'
+30 23 * * 1-5 cd /project/data_science/ETF_Opportunity_Ledger && mkdir -p outputs/logs && /usr/bin/flock -n /project/data_science/ETF_Opportunity_Ledger/outputs/logs/daily.lock bash -c 'bash deploy/daily.sh >> outputs/logs/daily-$(date +\%Y\%m\%d).log 2>&1; ec=$?; echo "exit=$ec $(date +\%Y-\%m-\%dT\%H:\%M:\%S)" >> outputs/logs/daily-$(date +\%Y\%m\%d).log; exit $ec'

@@ -155,10 +155,10 @@ def connect(path=MARKET_DB, *, readonly: bool = False, schema: str = SCHEMA) -> 
     if readonly:
         if not Path(path).exists():
             raise DbError(f"{path} 不存在")
-        con = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+        con = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=60)
     else:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        con = sqlite3.connect(str(path))
+        con = sqlite3.connect(str(path), timeout=60)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     existing = _check_schema(con, path)

@@ -1,6 +1,6 @@
 """python -m src.jobs daily  --rules config/ledger-rules.json [--date D] [--db data/ledger.sqlite] [--market data/market.sqlite]
                             [--events-dir data/events] [--no-update]
-                                                             （北京时间 15:30 之后运行：A 股 D 日已收盘；海外容器按 I-20 用 D−1 的 K 线，也已收盘）
+                                                             （北京时间 21:30 运行，23:30 兜底：A 股 D 日已收盘；中证 H00300 的当天收盘当晚才发布。海外容器按 I-20 用 D−1 的 K 线，也已收盘）
 python -m src.jobs replay --panel panel-D.sqlite --from D1 --to D2 --rules R --db 回放库.sqlite [--events-dir …] [--calendar 库]
 
 daily：P1 update（写 market.sqlite）→ 从库现算面板（P2）→ 台账流程（本包）。定时与无人值守运行交 astra（replan §4 S3）。

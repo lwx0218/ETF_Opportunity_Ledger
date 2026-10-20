@@ -47,16 +47,9 @@ sudo systemctl status ledger-web.service
 
 没加 `--write` 的 readonly 仍然完全只读。market 与 demo 的启动方式不变。
 
-## 4. 核对时区，再装 cron
+## 4. 装 cron
 
-cron 的时刻按**服务器本地时钟**填写，不按网页里的台账时钟。
-
-```bash
-timedatectl | grep 'Time zone'
-date '+%Y-%m-%d %H:%M %Z'
-```
-
-`deploy/ledger-daily.cron` 里的 `40 15` 表示本地 15:40，且只在周一到周五。本地时区是 `Asia/Shanghai` 时，这就是收盘 15:30 之后。本地时区不是上海时，把小时改成「本地时间已经过了上海 15:30」的那个钟点，再安装：
+`deploy/ledger-daily.cron` 自带 `CRON_TZ=Asia/Shanghai`。周一到周五北京时间 21:30 跑一次，23:30 再跑一次兜底。中证 H00300 的当天收盘点位当晚才发布。两行都用 `/usr/bin/flock -n` 防止重叠。路径是 `/project/data_science/ETF_Opportunity_Ledger`。作业幂等，已处理的日子重跑不产生新行。每次运行后往当天的 `outputs/logs/daily-YYYYMMDD.log` 再追加一行 `exit=<退出码>` 和时间。
 
 ```bash
 crontab deploy/ledger-daily.cron

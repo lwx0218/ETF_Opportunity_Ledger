@@ -93,7 +93,7 @@ def migrate(path: Path | str) -> str:
     path = Path(path)
     if str(path) != ":memory:" and not path.exists():
         raise LedgerError(f"库不存在：{path}。先 init，或对已有的 v1.1-i 库做 migrate")
-    conn = sqlite3.connect(str(path), isolation_level=None)
+    conn = sqlite3.connect(str(path), isolation_level=None, timeout=60)
     try:
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         if "ledger_meta" not in tables:
@@ -134,7 +134,7 @@ class Ledger:
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.clock, self._frozen, self.sources_path = clock or beijing_now, None, Path(sources)
-        self.conn = sqlite3.connect(str(path), isolation_level=None)      # 事务由 _tx 显式控制
+        self.conn = sqlite3.connect(str(path), isolation_level=None, timeout=60)      # 事务由 _tx 显式控制
         self.conn.row_factory = sqlite3.Row
         self.conn.create_function("ledger_now", 0, lambda: self._frozen or self.clock())
         self.conn.execute("PRAGMA foreign_keys = ON")
