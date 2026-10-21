@@ -7,14 +7,14 @@
 
 | 环节 | 承担者 | 做什么 |
 | --- | --- | --- |
-| 1. 规划 | Orchestration session | 澄清需求、收敛范围、切分 round |
-| 2. 分发 | `pi-fleet` | 每个 round 一个独立 Pi session |
-| 3. 执行 | 按宿主选择子代理 | Web UI 内置工具；CLI 用 `pi-subagents`，分配 builder / reviewer |
+| 1. 按需规划 | 当前会话与 Owner | 范围不清时澄清，必要时切分 round |
+| 2. 按需委派 | 当前会话 | 不使用 `/fleet` 分发，不要求独立 Pi session |
+| 3. 执行 | 当前会话；必要时子代理 | 清楚且已授权的任务直接执行并验证；并行或专门复核时才委派 |
 | 4. 门禁 | `ponytail` | 新增代码准入判定 |
 
-**你只需要介入第 1 步**：确认规划与 round 划分。round 内的复核结论由 reviewer subagent 出，代码准入由 ponytail 判定。
+需要规划时由你确认范围与 round 划分；已授权的清楚任务不重复增加审批。使用 reviewer 时由其出复核结论，代码准入仍由 ponytail 判定。
 
-Web UI 内置工具可用时使用 `subagent_spawn`，匹配角色模板优先 `delegate_task`；CLI 或无 Web UI 工具时使用独立 `pi-subagents`，不做兼容适配。reviewer 的只读是角色约束，不是运行时沙箱承诺。
+委派按需使用当前宿主可用的能力，匹配角色模板优先；不以子代理、Fleet 或终端复用器是否可用阻塞可直接完成的任务，不为分发安装或兼容适配包。reviewer 的只读是角色约束，不是运行时沙箱承诺。
 
 ## 第一次 session
 
@@ -26,17 +26,11 @@ pi --name "00-orchestration"
 
 Plan Preview 应让你能检查 goal、scope、non-goals、assumptions、risks、validation 和 round 划分。接受 recommended defaults 不等于批准规划。
 
-## 分发 round
+## 执行 round
 
-规划确认后，在 Orchestration session 里：
+本项目不再通过 `/fleet` 分发任务。规划确认后可在当前会话逐项执行 round，不要求每 round 新建 session，不要求 `session_spawn` / `session_bus` 或终端复用器。
 
-```
-/fleet
-```
-
-为每个 round `session_spawn` 一个开发 session（名字用 round 标识），round 间通过 `session_bus` 同步状态。不要靠人工复制上下文交接。
-
-需要终端复用器（tmux / Ghostty / Zellij）。配置在 `~/.pi/agent/pi-fleet.json`。
+确需并行或专门复核时再委派，并明确目标、改动面、验证方式和完成判据；分发本身不是门禁。旧模板或历史记录中的 Fleet 前置步骤不再适用，以 `AGENTS.md` 的项目 owned 约定为准。
 
 ## 已有 baseline 后
 
@@ -77,9 +71,13 @@ sh harness.sh <本项目目录> --apply   # 写入
 
 启动命令见 README.md。现状与待办见 docs/status.md。
 
-进入项目目录执行 `pi --name "00-orchestration"`，完成材料核对和实施 Plan Preview；本次初始化授权不等于业务实施授权。不运行研究，不自动安装依赖或修改全局配置。
+### 当前任务执行约定（2026-10-21）
 
-Package 与全局依赖说明见 `README.md`：参考项目的 subagents / frontend-check 版本保留，Web UI 不作项目声明，Fleet 使用当前服务器全局声明，Ponytail 按 Harness 必需合同下发。换机器先核对 Fleet；尚未进行 package 运行验证。
+项目不再通过 `/fleet` 分发。清楚且已授权的任务在当前会话直接执行并验证，委派按需；Fleet、独立 session、终端复用器和强制子代理均不是前置门禁。此约定对应 `AGENTS.md` 的项目 owned 条款；Harness 同步或旧 `.pi/` 模板不得恢复旧分发要求。
+
+`pi --name "00-orchestration"` 的首次规划说明仅适用于 greenfield / 无 baseline 场景，不是已有项目每次任务的必经步骤。初始化授权不等于业务实施授权。不运行未授权研究，不自动安装依赖或修改全局配置；项目冻结状态不因本次文档更新而解除。
+
+Package 与全局依赖说明见 `README.md`。包的历史声明不构成任务流程要求，换机器不再要求先核对 Fleet；仅在实际需要某项能力时核对对应包。不因本次文档修改安装、卸载或调整任何包。
 
 本次 Owner 已授权初始化后的单次 GitHub 推送，后续推送仍需另行授权。
 <!-- PROJECT:OWNED:END -->

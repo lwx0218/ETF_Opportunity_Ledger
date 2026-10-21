@@ -16,12 +16,12 @@
 
 ### 交付主线
 
-1. **Orchestration session** — `pi --name "00-orchestration"`，澄清需求、收敛范围、切分开发 round。此阶段不写业务代码。
-2. **按启用路径分发** — 项目启用 `pi-web-ui` 时，round/任务分发直接使用 Web UI 内置 `subagent_spawn`，匹配角色模板优先 `delegate_task`；不经过 `pi-fleet` 或独立 `pi-subagents`，不先 `session_spawn`。已启用但内置工具不可用时，明确报告能力阻塞，不静默回落。仅未启用 Web UI 的 CLI 路径用 `/fleet` 为每个 round `session_spawn` 一个独立开发 session，round 间通过 `session_bus` 通信。
-3. **Subagents 执行** — builder / reviewer 沿用第 2 步的路径：Web UI 使用内置工具，CLI 使用独立 `pi-subagents`（角色定义在 `.pi/agents/`）。不为兼容升级或 patch 包。builder 实现，reviewer 只读复核并给出 `approve` / `approve_with_follow_up` / `return_to_planning`；只读是角色约束，不是运行时沙箱承诺。
+1. **按需规划** — 目标、范围或风险不清时先澄清，必要时切分 round；清楚且已授权的 bounded task 在当前会话直接执行，不强制另开 Orchestration session。
+2. **按需委派，不设分发门禁** — 本项目不再通过 `/fleet` 分发任务。任务和 round 均可在当前会话执行；独立 Pi session、`session_spawn`、`session_bus`、终端复用器或子代理可用性都不是开工、验证或交付前置条件。仅在任务确需并行或专门复核时，使用当前宿主可用的委派能力；不为分发而安装、升级或 patch 包。
+3. **可选 Subagents 执行** — 需要委派时匹配角色模板优先；builder 实现，reviewer 只读复核并给出 `approve` / `approve_with_follow_up` / `return_to_planning`。未委派的任务由当前会话执行相称验证；只读是角色约束，不是运行时沙箱承诺。
 4. **ponytail 门禁** — 新增代码由 ponytail 做准入判定。
 
-**Owner 只在第 1 步介入**，确认规划与 round 划分。round 内的内容复核由 reviewer subagent 出结论，代码准入由 ponytail 判定。**不得把逐轮 review 结论推回 Owner**；只有 reviewer 与 ponytail 都无法结论、或结论与 round 目标冲突时，才升回 Orchestration session。
+需要规划时由 Owner 确认范围与 round 划分；已授权的清楚任务直接执行。使用 reviewer 时由其出复核结论，代码准入仍由 ponytail 判定。**不得把逐轮 review 结论推回 Owner**；只有无法结论、与任务目标冲突或触及安全边界时，才向 Owner 升级，不以另开会话作为前置条件。
 
 不存在需要 Owner 逐条批准的 formal mode、fixed Round ledger、independent review gate 或 session handoff 合同。历史 evidence 不激活任何旧流程。
 
@@ -80,6 +80,12 @@ skills 和 domain modeling 是按需能力，不是默认关卡。
 
 <!-- PROJECT:OWNED:START -->
 ## 项目合同 · ETF_Opportunity-Ledger
+
+### 任务执行约定（Owner 更新，2026-10-21）
+
+- 本项目不再通过 `/fleet` 分发任务，不以 Fleet、独立 session、终端复用器或强制子代理分发作为门禁。清楚且已授权的任务默认在当前会话直接执行并验证；委派按需。
+- 本条是项目分发方式的权威约定；若 Harness managed 分区、manual、`.pi/` 模板/技能或历史记录仍要求先 `/fleet`、每 round 新建 session，则以本条为准，不恢复旧门禁。Harness 同步不得覆盖本 owned 约定。
+- 本次只取消分发前置要求，不解除项目冻结、执行者职责边界、研究纪律、安全约束、必要验证或提交/推送授权要求。
 
 ### 执行者与交接（2026-10-11 起，Owner 批准 D1–D6）
 
