@@ -51,8 +51,10 @@ sudo systemctl status ledger-web.service
 
 `deploy/ledger-daily.cron` 自带 `CRON_TZ=Asia/Shanghai`。周一到周五北京时间 21:30 跑一次，23:30 再跑一次兜底。中证 H00300 的当天收盘点位当晚才发布。两行都用 `/usr/bin/flock -n` 防止重叠。路径是 `/project/data_science/ETF_Opportunity_Ledger`。作业幂等，已处理的日子重跑不产生新行。每次运行后往当天的 `outputs/logs/daily-YYYYMMDD.log` 再追加一行 `exit=<退出码>` 和时间。
 
+用 `crontab -e` 把 `deploy/ledger-daily.cron` 里的两行加进现有 crontab，其他条目不动。
+
 ```bash
-crontab deploy/ledger-daily.cron
+crontab -e
 crontab -l
 ```
 
